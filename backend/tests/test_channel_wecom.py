@@ -1601,6 +1601,13 @@ def test_wecom_endpoint_restart_flow_via_spy_manager(monkeypatch) -> None:
         def ensure_binding(self, bid):
             calls.append(f"ensure:{bid}")
 
+        def pause_binding(self, bid):
+            self.stop_binding(bid)
+
+        def resume_binding(self, bid, *, start=True):
+            if start:
+                self.ensure_binding(bid)
+
     monkeypatch.setattr(app.channels, "get_wecom_stream_manager", lambda: SpyManager())
     monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: True)
 

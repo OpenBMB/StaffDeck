@@ -73,6 +73,12 @@ class _FakeHost:
         self._workspace.mkdir(parents=True, exist_ok=True)
         return self._workspace
 
+    def sandbox(self, ctx):
+        from types import SimpleNamespace
+        from app.core.harness_capability_invoker import _materialize_general_skill_package
+        return SimpleNamespace(materialize_package=lambda context, package:
+                               _materialize_general_skill_package(self._workspace, package))
+
 
 @pytest.fixture
 def host(db, guard, security_ctx, tmp_path):

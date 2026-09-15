@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.channels.storage import channel_session
+
 import json
 from dataclasses import asdict
 from typing import Any
@@ -75,7 +77,7 @@ def stage_wecom_inbound(
         return StageResult(StageDisposition.SECURITY_DROP, error_code="event_payload_too_large")
 
     try:
-        with Session(db_engine) as db:
+        with channel_session(db_engine) as db:
             binding = db.get(ChannelBinding, binding_id)
             from app.channels.service_identity import external_account_scope
 

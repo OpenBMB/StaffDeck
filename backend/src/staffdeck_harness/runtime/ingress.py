@@ -12,6 +12,10 @@ def accept(registry: Any, request: Any) -> Any:
     if registry is None:
         return request
     channel = request.channel
+    if channel == "team" or str(getattr(request, "interaction_mode", "")).startswith("team_"):
+        from app.teams.module_scope import require_team_module
+
+        require_team_module(registry=registry)
     name = (
         "scheduler"
         if channel == "scheduled_task"

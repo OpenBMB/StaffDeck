@@ -252,8 +252,11 @@ class RuntimeOverrides:
     engine: str = "harness_v3"
     security_profile: str = "OSS_LOCAL"
     disabled_modules: list[str] = field(default_factory=list)
+    enabled_modules: list[str] = field(default_factory=list)
     extra_modules: list[str] = field(default_factory=list)   # "pkg.mod:register" specs
     placements: dict[str, str] = field(default_factory=dict)  # module_id -> taxonomy sub id (display only)
+    selections: dict[str, str] = field(default_factory=dict)
+    module_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
     base: BaseConnection = field(default_factory=BaseConnection)
     updated_at: str | None = None
     updated_by: str | None = None
@@ -271,6 +274,10 @@ class RuntimeOverrides:
         return d
 
     def normalized(self) -> "RuntimeOverrides":
+        from staffdeck_harness.modules.parameters import validate_public_parameters
+        validate_public_parameters(self.module_configs)
+        if self.security_profile not in SECURITY_PROFILES:
+            raise ValueError("unknown security profile; refusing an implicit permission downgrade")
         placements = {}
         for k, v in list(self.placements.items())[:500]:
             k2, v2 = str(k).strip(), str(v).strip()
@@ -280,8 +287,11 @@ class RuntimeOverrides:
             engine="harness_v3",  # migrate saved legacy selections without changing business data
             security_profile=self.security_profile if self.security_profile in SECURITY_PROFILES else "OSS_LOCAL",
             disabled_modules=sorted({str(x).strip() for x in self.disabled_modules if str(x).strip()}),
+            enabled_modules=sorted({str(x).strip() for x in self.enabled_modules if str(x).strip()}),
             extra_modules=[str(x).strip() for x in self.extra_modules if str(x).strip()],
             placements=dict(sorted(placements.items())),
+            selections={str(k): str(v) for k,v in self.selections.items()},
+            module_configs={str(k): dict(v) for k,v in self.module_configs.items()},
             base=self.base.normalized(),
             updated_at=self.updated_at, updated_by=self.updated_by,
         )
@@ -292,7 +302,7 @@ class RuntimeOverrides:
         if other is None:
             return False
         a, b = self.normalized(), other.normalized()
-        core_equal = (a.engine, a.security_profile, a.disabled_modules, a.extra_modules) == (b.engine, b.security_profile, b.disabled_modules, b.extra_modules)
+        core_equal = (a.engine, a.security_profile, a.disabled_modules, a.enabled_modules, a.extra_modules, a.selections, a.module_configs) == (b.engine, b.security_profile, b.disabled_modules, b.enabled_modules, b.extra_modules, b.selections, b.module_configs)
         if not core_equal:
             return False
         if "BUSINESS_BASE" in (a.security_profile, b.security_profile):
@@ -304,7 +314,7 @@ def _split(value: Any) -> list[str]:
     return [x.strip() for x in str(value or "").split(",") if x.strip()]
 
 
-_ENV_FIELDS = ("harness_v3_enabled", "security_profile", "harness_disabled_modules", "harness_modules", *BaseConnection._SETTINGS_FIELDS.values())
+_ENV_FIELDS = ("harness_v3_enabled", "security_profile", "harness_disabled_modules", "harness_enabled_modules", "harness_modules", "harness_module_selections", "harness_module_configs", *BaseConnection._SETTINGS_FIELDS.values())
 _env_snapshot: dict[str, Any] | None = None
 
 
@@ -348,7 +358,10 @@ def defaults_from_settings(settings: Any) -> RuntimeOverrides:
         engine="harness_v3",
         security_profile=str(env_value(settings, "security_profile") or "OSS_LOCAL"),
         disabled_modules=_split(env_value(settings, "harness_disabled_modules")),
+        enabled_modules=_split(env_value(settings, "harness_enabled_modules")),
         extra_modules=_split(env_value(settings, "harness_modules")),
+        selections=dict(env_value(settings, "harness_module_selections") or {}),
+        module_configs=dict(env_value(settings, "harness_module_configs") or {}),
     ).normalized()
 
 
@@ -359,13 +372,15 @@ def _safe_base(raw: Any) -> BaseConnection:
         return BaseConnection()
 
 
-def load_overrides(settings: Any) -> RuntimeOverrides:
-    path = config_path(settings)
+def load_overrides(settings: Any, *, _path: Path | None = None, strict: bool = False) -> RuntimeOverrides:
+    path = _path or config_path(settings)
     if not path.exists():
         return defaults_from_settings(settings)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        if strict:
+            raise ValueError("无法读取已应用的装配记录，禁止静默回退") from None
         return defaults_from_settings(settings)
     base = defaults_from_settings(settings)
     placements = raw.get("placements")
@@ -373,8 +388,11 @@ def load_overrides(settings: Any) -> RuntimeOverrides:
         engine=str(raw.get("engine") or base.engine),
         security_profile=str(raw.get("security_profile") or base.security_profile),
         disabled_modules=list(raw.get("disabled_modules") or []),
+        enabled_modules=list(raw.get("enabled_modules") or []),
         extra_modules=list(raw.get("extra_modules") or []),
         placements=dict(placements) if isinstance(placements, dict) else {},
+        selections=dict(raw.get("selections") or {}),
+        module_configs=dict(raw.get("module_configs") or {}),
         base=_safe_base(raw.get("base")),
         updated_at=raw.get("updated_at"),
         updated_by=raw.get("updated_by"),
@@ -386,11 +404,31 @@ def save_overrides(settings: Any, overrides: RuntimeOverrides, *, by: str | None
     ov.updated_at = datetime.now(timezone.utc).isoformat()
     ov.updated_by = by
     path = config_path(settings)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(ov.to_stored(), ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    _write_override(path, ov)
     return ov
+
+
+def _write_override(path: Path, ov: RuntimeOverrides):
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as temporary:
+        json.dump(ov.to_stored(), temporary, ensure_ascii=False, indent=2)
+        temporary.flush()
+        os.fsync(temporary.fileno())
+        name = temporary.name
+    os.replace(name, path)
+
+
+def applied_config_path(settings):
+    return config_path(settings).with_suffix(".applied.json")
+
+
+def load_applied(settings):
+    return load_overrides(settings, _path=applied_config_path(settings), strict=True)
+
+
+def save_applied(settings, overrides):
+    _write_override(applied_config_path(settings), overrides.normalized())
 
 
 def settings_updates(settings: Any, overrides: RuntimeOverrides) -> dict[str, Any]:
@@ -401,7 +439,10 @@ def settings_updates(settings: Any, overrides: RuntimeOverrides) -> dict[str, An
         "harness_v3_enabled": ov.engine == "harness_v3",
         "security_profile": ov.security_profile,
         "harness_disabled_modules": ",".join(ov.disabled_modules),
+        "harness_enabled_modules": ",".join(ov.enabled_modules),
         "harness_modules": ",".join(ov.extra_modules),
+        "harness_module_selections": dict(ov.selections),
+        "harness_module_configs": dict(ov.module_configs),
     }
     eff = ov.base.effective(settings)
     for f, sname in BaseConnection._SETTINGS_FIELDS.items():

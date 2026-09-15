@@ -60,14 +60,14 @@ class PhaseHost:
         return all_tool_schemas()
 
     def invoke_proxy(self, proxy_name: str, arguments: Any, ctx: Any) -> tuple[ModuleResult, None]:
-        hint = "请直接输出符合 output_contract 的 JSON object，不要调用工具。" if self.phase == "plan" else "请直接输出回复正文，不要调用工具。"
+        hint = "请直接输出符合 output_contract 的 JSON object，不要调用工具。" if self.phase in {"plan", "sop_result_repair"} else "请直接输出回复正文，不要调用工具。"
         return ModuleResult.fail("ACTIVATION_FENCED", f"{self.phase} 阶段不能调用能力。{hint}"), None
 
 
 class EnginePhaseRunner:
     """Run one tool-less prompt on the turn's engine process and return the assistant text."""
 
-    def __init__(self, runtime: Any, pooled: Any, *, tenant_id: str, session_id: str, trace: TraceSink, cancelled: Callable[[], bool], image_payloads=()):
+    def __init__(self, runtime: Any, pooled: Any, *, tenant_id: str, session_id: str, trace: TraceSink, cancelled: Callable[[], bool], image_payloads=(), deadline_monotonic=None):
         self.runtime = runtime
         self.pooled = pooled
         self.tenant_id = tenant_id
@@ -75,6 +75,7 @@ class EnginePhaseRunner:
         self.trace = trace
         self.cancelled = cancelled
         self.image_payloads = tuple(image_payloads)
+        self.deadline_monotonic = deadline_monotonic
 
     def prompt(self, *, phase: str, model_config: Any, system_text: str, user_text: str, engine_session: str, on_text: Callable[[str], None] | None = None) -> str:
         from staffdeck_harness.bridge.task_agent import IdlePhaseHost
@@ -96,8 +97,15 @@ class EnginePhaseRunner:
                     return
                 self.trace(event, payload)
 
-            events, final_text, finish_reason = run_session(self.pooled.process, engine_session, [{"type": "text", "text": text}], self.cancelled, phase_trace, tenant_id=self.tenant_id, host_session_id=self.session_id, timeout_seconds=getattr(getattr(self.runtime, "worker_config", None), "request_timeout_seconds", 600) or 600)
+            timeout = getattr(getattr(self.runtime, "worker_config", None), "request_timeout_seconds", 600) or 600
+            if self.deadline_monotonic is not None:
+                timeout = min(timeout, self.deadline_monotonic - time.monotonic())
+                if timeout <= 0:
+                    raise TimeoutError('structured repair deadline expired')
+            events, final_text, finish_reason = run_session(self.pooled.process, engine_session, [{"type": "text", "text": text}], self.cancelled, phase_trace, tenant_id=self.tenant_id, host_session_id=self.session_id, timeout_seconds=timeout)
             self.trace(f"harness_v3_{phase}_finished", {"engine_session": engine_session, "finish_reason": finish_reason, "duration_ms": int((time.monotonic() - started) * 1000), "events": len(events)})
+            if getattr(host, "model_error", None):
+                raise EnginePhaseError(phase, host.model_error)
             if finish_reason == "error" or (not final_text.strip() and finish_reason not in (None, "completed", "end_turn", "stop")):
                 # The engine ended the turn on an error (typically the model provider); say so
                 # instead of reporting "empty output" and letting a schema-repair retry mask it.

@@ -59,6 +59,7 @@ from app.core.task_request_compiler import (
 from app.core.turn_planner import turn_plan_router_decision
 from app.db.models import (
     ChatSession,
+    ExternalBusinessTask,
     HarnessRunRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
@@ -66,7 +67,7 @@ from app.db.models import (
     Skill,
     Team,
 )
-from app.knowledge.citations import compact_knowledge_citation_labels
+from app.knowledge.citations import compact_knowledge_citation_labels, normalize_knowledge_citations, knowledge_citation_identity
 from app.memory.service import memory_read
 from app.session.helpers import public_session
 from app.session.session_schema import (
@@ -205,7 +206,7 @@ class TurnCoordinator:
         from staffdeck_harness.sop.host import SopHost
 
         self.sop = SopHost(SopDependencies(
-            self.db, self.events, self.services.create_human_handoff_request,
+            self.events, self.services.create_human_handoff_request,
         ), self.registry)
         self.planner = None  # the runtime supplies model execution; policies remain reusable
         self.compiler = TaskRequestCompiler()
@@ -236,39 +237,25 @@ class TurnCoordinator:
             memory_config,
         )
         from staffdeck_harness.composition.compiler import CompositionCompiler
-        from staffdeck_harness.composition.staff import project_staff
-        from staffdeck_harness.security.profile import get_profile
+        from staffdeck_harness.composition.sources import resolve_staff, source_context
+        from staffdeck_harness.security.profile import get_profile, Guard
 
-        snapshot = getattr(self, "snapshot", None)
-        if snapshot is None:
-            snapshot = CompositionCompiler().compile(
-                project_staff(self.db, request.tenant_id, session.agent_id),
-                generation=self.registry.generation,
-            )
-            self.snapshot = snapshot
         profile = getattr(self, "profile", None) or get_profile()
-        from app.db.models import User
-        from staffdeck_harness.security.profile import Guard
-        from staffdeck_harness.contracts.security import ResourceRef
-
-        user = self.db.get(User, request.user_id) if request.user_id else None
-        context = (
-            profile.identity.from_user(user, channel=request.channel)
-            if user
-            else profile.identity.from_service(f"channel:{request.channel}", request.tenant_id)
-        )
-        from staffdeck_harness.composition.projection import runtime_staff_ref
-
-        ref = ResourceRef(
-            type="agent",
-            id=snapshot.staff_id,
-            tenant_id=request.tenant_id,
-            attributes=snapshot.staff_ref_attributes,
-        )
-        Guard("staff", profile).require(
-            context, "staff.use/v1", runtime_staff_ref(self.db, ref, session)
-        )
+        snapshot = getattr(self, "snapshot", None)
+        context = getattr(self, "security_context", None)
+        if snapshot is None or context is None:
+            staff, context = resolve_staff(self.registry, self.db,
+                source_context(request, session_id=session.id, staff_id=session.agent_id), profile)
+            snapshot = CompositionCompiler().compile(staff, generation=self.registry.generation, strict=False)
+            self.snapshot, self.security_context = snapshot, context
+            self.staff_composition = staff
         self.sop.bind_security(Guard("sop.runtime", profile), context)
+        from staffdeck_harness.composition.sources import resolve_source
+        from staffdeck_harness.contracts.manifest import SlotName
+        sop_source = resolve_source(self.registry, SlotName.SOP_SOURCE, self.db)
+        source_ctx = source_context(request, session_id=session.id, staff_id=session.agent_id)
+        self.sop.bind_definitions(tuple(s for s in self.staff_composition.sops if snapshot.sop(s.skill_id)), request.tenant_id,
+                                 reference_resolver=lambda sop_id: sop_source.reference(source_ctx, sop_id))
         provider = resolve_memory_provider(
             registry=self.registry, snapshot=snapshot, sop_id=session.active_skill_id
         )
@@ -302,7 +289,11 @@ class TurnCoordinator:
         from staffdeck_harness.runtime.ingress import accept
 
         with self.registry.turn_lease():
-            return self._run(accept(self.registry, request))
+            try:
+                return self._run(accept(self.registry, request))
+            finally:
+                from staffdeck_harness.runtime.execution import end
+                end(self)
 
     # Built-in turn_stopping handlers that are no-ops without an active SOP execution slice.
     _SOP_ONLY_SUPERVISORS = frozenset({"sop.output_supervisor", "handoff.detect"})
@@ -382,6 +373,11 @@ class TurnCoordinator:
         return reply
 
     def _run(self, request: ChatTurnRequest) -> ChatTurnResponse:
+        if not str(request.client_turn_id or "").strip():
+            # A server-issued turn still uses the same durable Store and recovery lifecycle.
+            # Only caller-supplied ids provide cross-request replay semantics.
+            from app.db.models import new_id
+            request.client_turn_id = new_id("serverturn")
         session_request = _with_recoverable_first_session(request)
         if session_request.session_id:
             self._session_lock_id = session_request.session_id
@@ -397,6 +393,8 @@ class TurnCoordinator:
         self.turn_record = turn_claim.record
         if turn_claim.replay is not None:
             return turn_claim.replay
+        from staffdeck_harness.runtime.execution import begin
+        begin(self, request, session, turn_claim.record)
         self.services.mark_session_running(session)
         user_message = self.services.append_message(
             request.tenant_id,
@@ -523,6 +521,37 @@ class TurnCoordinator:
                 planner_state,
                 interaction_mode=request.interaction_mode,
                 team_context=team_context,
+            )
+        ready_frame = next(
+            (
+                item
+                for item in self.store.planner_state(session)
+                if item.get("status") == "ready_to_resume"
+                and item.get("kind") == "sop"
+            ),
+            None,
+        )
+        if ready_frame is not None and plan.decision not in {
+            "complete_task",
+            "handoff_human",
+        }:
+            resume = planned_frame_from_record(
+                self.db.exec(
+                    select(HarnessTaskFrameRecord).where(
+                        HarnessTaskFrameRecord.session_id == session.id,
+                        HarnessTaskFrameRecord.task_id == ready_frame["task_id"],
+                    )
+                ).one()
+            )
+            plan = plan.model_copy(
+                update={
+                    "decision": "switch_to_pending",
+                    "selected_task_id": resume.task_id,
+                    "target_skill_id": resume.target_skill_id,
+                    "target_step_id": resume.target_step_id,
+                    "task_frames": [resume],
+                    "task_updates": [],
+                }
             )
         self._renew_session_lease()
         self._raise_if_cancelled(request, session)
@@ -655,6 +684,14 @@ class TurnCoordinator:
                 self.db.commit()
                 break
             self._raise_if_cancelled(request, session)
+            if row.status == "waiting_external_task":
+                waiting = TaskExecutionResult(task_frame_id=row.task_id, status="waiting_external_task",
+                    reply_fragment=str((row.result_json or {}).get("reply_fragment") or "外部任务仍在处理中，请勿重复提交。"),
+                    task_summary="等待已提交的外部任务", action_count=0)
+                last_step_result = StepAgentResult(reply=waiting.reply_fragment)
+                execution_results.append(waiting)
+                execution_payloads.append(_response_task_payload(row, waiting, None, last_step_result))
+                continue
             if not self.store.dependencies_satisfied(row, records):
                 self.store.defer_for_dependencies(row)
                 waiting = TaskExecutionResult(
@@ -837,6 +874,11 @@ class TurnCoordinator:
         self._renew_session_lease()
         reply, citations = compact_knowledge_citation_labels(reply, citations)
         reply = self.supervise_reply(request, session, reply, response_skill, last_step_result)
+        execution_error = next((r.error for r in execution_results
+            if r.status in {"failed", "action_budget"} and isinstance(r.error, dict) and r.error.get("code")), None)
+        runtime_error_code = str(execution_error["code"]) if execution_error else None
+        if execution_error:
+            reply += f"\n\n本次执行未完成（{runtime_error_code}）：{execution_error.get('message') or '请查看执行记录'}"
         if self.services.stream_sink is not None:
             from app.core.reply_stream import reconcile_reply
 
@@ -845,6 +887,7 @@ class TurnCoordinator:
         assistant_metadata: dict[str, Any] = {
             "execution_engine": getattr(self.events, "execution_engine", None) or "harness_v2",
             "task_frame_ids": [row.task_id for row in records],
+            "runtime_error_code": runtime_error_code,
         }
         if team_publish_result is not None:
             assistant_metadata["team_run_id"] = team_publish_result.run_id
@@ -893,6 +936,7 @@ class TurnCoordinator:
         response = ChatTurnResponse(
             reply=reply,
             session_id=session.id,
+            runtime_error_code=runtime_error_code,
             router_decision=router_decision,
             step_result=last_step_result,
             tool_result=None,
@@ -1117,6 +1161,22 @@ class TurnCoordinator:
                 # The human reply is already the handoff completion signal. Do not
                 # re-enter the same terminal handoff node during the resume turn.
                 result.status = "completed"
+            if result.status == "waiting_external_task":
+                # Resume the same node with its receipt; only SOP supervision
+                # may decide transitions/required slots, not the background worker.
+                resume_step_id = None
+                external_task = self.db.exec(
+                    select(ExternalBusinessTask).where(
+                        ExternalBusinessTask.task_frame_id == row.task_id,
+                        ExternalBusinessTask.session_id == session.id,
+                        ExternalBusinessTask.status.in_(["queued", "accepted", "working"]),
+                    )
+                ).first()
+                if external_task is not None:
+                    external_task.resume_step_id = resume_step_id
+                    self.db.add(external_task)
+                result.next_step_id = resume_step_id
+                self.db.commit()
             deferred_continuation = False
             if frame.kind == "sop":
                 deferred_result = _defer_failed_step_after_completed_checkpoint(
@@ -1219,6 +1279,16 @@ class TurnCoordinator:
             checkpoint=loop_checkpoint,
             last_run_id=run.id if run is not None else None,
         )
+        if combined.status == "waiting_external_task":
+            # Close the fast-completion race only after the frame and v3 receipt
+            # checkpoint are durable and the frame lease has been released.
+            from app.tools.external_tasks import _prepare_sop_resume
+            for external_task in self.db.exec(select(ExternalBusinessTask).where(
+                ExternalBusinessTask.tenant_id == request.tenant_id,
+                ExternalBusinessTask.session_id == session.id,
+                ExternalBusinessTask.task_frame_id == row.task_id,
+            )).all():
+                _prepare_sop_resume(self.db, external_task)
         self.events.record(
             request.tenant_id,
             session.id,
@@ -1521,7 +1591,9 @@ def _is_recoverable_action_protocol_failure(result: TaskExecutionResult) -> bool
     """Keep a SOP AgentLoop resumable when only the model action envelope is invalid."""
 
     error = result.error if isinstance(result.error, dict) else {}
-    return result.status == "failed" and str(error.get("code") or "") == ("HARNESS_ACTION_INVALID")
+    return result.status == "failed" and str(error.get("code") or "") in {
+        "HARNESS_ACTION_INVALID", "HARNESS_ARGUMENTS_REPAIR_FAILED", "SOP_RESULT_REPAIR_EXHAUSTED",
+    }
 
 
 def _defer_failed_step_after_completed_checkpoint(
@@ -1728,7 +1800,7 @@ def _globalize_citations(
     labels_by_identity: dict[str, str] = {}
     for result in results:
         relabeled: list[dict[str, Any]] = []
-        for citation in result.citations:
+        for citation in normalize_knowledge_citations(result.citations):
             identity = _citation_identity(citation)
             if not identity:
                 continue
@@ -1745,16 +1817,7 @@ def _globalize_citations(
 
 
 def _citation_identity(citation: dict[str, Any]) -> str:
-    for field in ("concept_id", "chunk_id"):
-        value = str(citation.get(field) or "").strip()
-        if value:
-            return f"{field}:{value}"
-    components = [
-        str(citation.get(field) or "").strip()
-        for field in ("source_path", "section_path", "title", "excerpt")
-    ]
-    normalized = "|".join(component for component in components if component)
-    return normalized[:2_000]
+    return knowledge_citation_identity(citation)
 
 
 def _aggregate_artifacts(
@@ -1805,13 +1868,15 @@ def _with_recoverable_first_session(
 
     if request.session_id or not str(request.client_turn_id or "").strip():
         return request
-    identity = "\x1f".join(
-        (
+    parts = [
             request.tenant_id.strip(),
             str(request.user_id or "").strip(),
             str(request.client_turn_id or "").strip(),
-        )
-    )
+    ]
+    namespace = getattr(request, "_runtime_namespace", "oss-local")
+    if namespace != "oss-local":
+        parts.append(namespace)
+    identity = "\x1f".join(parts)
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
     return request.model_copy(update={"session_id": f"session_{digest[:16]}"})
 

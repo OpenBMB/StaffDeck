@@ -28,7 +28,7 @@ def invoke_local(host: Any, inv: ModuleInvocation) -> ModuleResult:
             version_by_base={k: v.id for k, v in versions.items()},
         )
     if inv.operation == "general_skill.consume/v1":
-        return GeneralSkillFacade(host._deps(), host._workspace_root(inv.context)).consume(
+        return GeneralSkillFacade(host._deps(), host._workspace_root(inv.context), host.sandbox(inv.context)).consume(
             inv, expected_digest=digest
         )
     if inv.operation in {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"}:

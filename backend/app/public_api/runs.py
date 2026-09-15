@@ -60,6 +60,7 @@ _TRACE_EVENT_MAP = {
     "capability_search_completed": "run.capability.search",
     "capability_described": "run.capability.described",
     "harness_tool_completed": "run.capability.completed",
+    "harness_tool_result": "run.capability.completed",
     "harness_action_created": "run.action.started",
     "harness_action_failed": "run.action.failed",
     "harness_step_timeout": "run.sop.step.timeout",
@@ -101,6 +102,12 @@ def _redact(value: Any) -> Any:
 
 
 def _job_actor(db: Session, job: APIJob):
+    from app.public_api.auth import principal_for_credential
+    principal = principal_for_credential(db, job.credential_id)
+    if principal.tenant_id != job.tenant_id or not principal.can("runs:create"):
+        raise PublicAPIError(403, "RUN_AUTHORIZATION_REVOKED", "Run authorization has been revoked.")
+    if job.agent_id:
+        ensure_public_agent(db, principal, job.agent_id)
     credential = db.get(APICredential, job.credential_id)
     if not credential or credential.tenant_id != job.tenant_id:
         raise RuntimeError("Run credential is unavailable")
@@ -201,10 +208,12 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
     seen_event_ids: set[str] = set()
     worker_done = threading.Event()
     worker_result: dict[str, Any] = {}
+    from staffdeck_harness.runtime.services import runtime_services
+    data_services = runtime_services(db)
 
     def execute_harness() -> None:
         try:
-            with Session(engine) as worker_db:
+            with data_services.session(None, purpose="public-run-worker") as worker_db:
                 for item in AgentLoop(worker_db).handle_turn_stream(request):
                     if item.get("event") != "complete":
                         continue
@@ -220,15 +229,27 @@ def execute_run(db: Session, job: APIJob) -> dict[str, Any]:
 
     thread = threading.Thread(target=execute_harness, name=f"public-run-{job.id}", daemon=True)
     thread.start()
-    while not worker_done.is_set():
-        ensure_not_cancelled(db, job)
-        _relay_agent_events(db, job, session_id, seen_event_ids)
-        worker_done.wait(0.1)
+    try:
+        while not worker_done.is_set():
+            ensure_not_cancelled(db, job)
+            _relay_agent_events(db, job, session_id, seen_event_ids)
+            worker_done.wait(0.1)
+    except BaseException:
+        # Keep the queued job's assembly lease until its child loop really exits.
+        # A cancelled relay must not leave a worker using unloaded modules.
+        cancel_chat_turn(session_id, job.id)
+        while not worker_done.wait(0.1):
+            pass
+        thread.join()
+        raise
     thread.join(timeout=1)
     _relay_agent_events(db, job, session_id, seen_event_ids)
     if "error" in worker_result:
         raise worker_result["error"]
     result = ChatTurnResponse.model_validate(worker_result.get("response"))
+    if result.runtime_error_code:
+        status = 409 if "UNKNOWN" in result.runtime_error_code else 502
+        raise PublicAPIError(status, result.runtime_error_code, result.reply)
     response_json = result.model_dump(mode="json")
     state = dict(response_json.get("session_state") or {})
     turn = db.exec(

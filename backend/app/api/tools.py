@@ -584,13 +584,21 @@ def test_tool(
     current_user: User = Depends(get_current_user),
 ) -> ToolResult:
     ensure_current_user_tenant(request.tenant_id, current_user)
-    row = _get_tool(db, request.tenant_id, tool_id)
-    _ensure_tool_visible(db, request.tenant_id, row, agent_id)
-    return ToolExecutor(db).execute(
-        request.tenant_id,
-        ToolCall(name=row.name, arguments=request.arguments),
-        agent_id=agent_id,
-    )
+    from staffdeck_harness.capabilities.testing import test_saved_tool
+    from staffdeck_harness.modules.registry import get_registry
+    from staffdeck_harness.security.profile import get_profile
+    settings = get_settings()
+    result = test_saved_tool(db, registry=get_registry(settings), profile=get_profile(settings),
+        tenant_id=request.tenant_id, agent_id=agent_id, user_id=current_user.id,
+        tool_id=tool_id, arguments=request.arguments)
+    name = str(result.extensions.get("tool_name") or tool_id)
+    if result.success:
+        if isinstance(result.data, dict) and "tool_name" in result.data and "success" in result.data:
+            return ToolResult.model_validate(result.data)
+        return ToolResult(tool_name=name, success=True, data=result.data)
+    error = result.error or {}
+    return ToolResult(tool_name=name, success=False,
+        error=ToolError(code=str(error.get("code") or "TOOL_TEST_FAILED"), message=str(error.get("message") or "工具测试失败")))
 
 
 def _get_tool(db: Session, tenant_id: str, tool_id: str) -> Tool:

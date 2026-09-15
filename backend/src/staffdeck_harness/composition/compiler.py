@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 from staffdeck_harness.composition.slots import ResolvedSlot, resolve_slots
-from staffdeck_harness.composition.staff import StaffComposition
+from staffdeck_harness.contracts.staff import StaffComposition
 from staffdeck_harness.contracts.errors import ContractIncompatible, DependencyCycle, HookCycle
 from staffdeck_harness.contracts.manifest import HOOK_POINTS, HookContribution, HookPoint, SlotBinding, SlotName
 
@@ -60,6 +60,7 @@ class SopExecutionPlan:
     content: Mapping[str, Any]
     resolved_slots: tuple[ResolvedSlot, ...]
     sub_sop_ids: tuple[str, ...]
+    authorization_ref: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -207,9 +208,10 @@ class CompositionCompiler:
         self.hooks = tuple(hooks)
         self.supported_contracts = {**SUPPORTED_CONTRACTS, **(supported_contracts or {})}
 
-    def compile(self, staff: StaffComposition, *, generation: int = 0, metadata: Mapping[str, Any] | None = None) -> CompositionSnapshot:
+    def compile(self, staff: StaffComposition, *, generation: int = 0, metadata: Mapping[str, Any] | None = None, strict: bool = True) -> CompositionSnapshot:
         visible = staff.visible_resource_ids()
         grants: list[CapabilityGrant] = []
+        unavailable_sops = []
 
         def provider_for(op: str, binding_metadata: Mapping[str, Any] | None = None) -> tuple[str | None, str | None]:
             """Resolve the provider module id/version for ``op``.
@@ -220,6 +222,11 @@ class CompositionCompiler:
             """
 
             pin = str((binding_metadata or {}).get("provider_module_id") or "").strip() or None
+            namespace = (binding_metadata or {}).get('resource_namespace')
+            def checked(installed):
+                if namespace and namespace not in installed.manifest.metadata.get('resource_namespaces', ()):
+                    raise ContractIncompatible(f'能力模块 {installed.manifest.module_id} 不支持资源命名空间 {namespace}')
+                return installed.manifest.module_id, installed.manifest.version
             if pin:
                 # version is informational; it rides the grant so a mid-turn registry swap of the same
                 # pin is detectable (the snapshot is the frozen contract).
@@ -228,14 +235,14 @@ class CompositionCompiler:
                 reg = peek_registry()
                 installed = reg.get(pin) if reg is not None else None
                 if installed is not None:
-                    return pin, installed.manifest.version
+                    return checked(installed)
                 return pin, None
             from staffdeck_harness.modules.registry import peek_registry
 
             reg = peek_registry()
             default = reg.for_operation(op) if reg is not None else None
             if default is not None:
-                return default.manifest.module_id, default.manifest.version
+                return checked(default)
             return None, None
 
         # L1 direct capabilities: available in ordinary conversation.
@@ -256,25 +263,41 @@ class CompositionCompiler:
         # L2 SOPs: logical slots -> Staff bindings, plus sub-SOP graph validation.
         sop_edges: dict[str, list[str]] = {}
         plans: list[SopExecutionPlan] = []
-        cap_names = {(c.resource_type, c.resource_id): c.name for c in staff.capabilities}
-        cap_binding = {(c.resource_type, c.resource_id): c.binding_id for c in staff.capabilities}
-        cap_metadata = {(c.resource_type, c.resource_id): c.metadata for c in staff.capabilities}
+        staff_caps = {(c.resource_type, c.resource_id): c for c in staff.capabilities}
         for sop in staff.sops:
+            sop_caps = {(c.resource_type, c.resource_id): c for c in sop.capabilities}
             _check_contracts((d.operation for d in sop.declared_slots), self.supported_contracts)
-            resolved = resolve_slots(
-                sop.declared_slots,
-                sop.slot_bindings,
-                visible_resources={k: v for k, v in visible.items() if k in {"knowledge_base", "general_skill", "tool"}},
-            )
+            from staffdeck_harness.contracts.errors import RequiredSlotMissing, SlotNotBound
+            try:
+                resolved = resolve_slots(
+                    sop.declared_slots,
+                    sop.slot_bindings,
+                    visible_resources={k: v for k, v in visible.items() if k in {"knowledge_base", "general_skill", "tool"}},
+                )
+            except (RequiredSlotMissing, SlotNotBound) as exc:
+                if strict:
+                    raise
+                unavailable_sops.append({"sop_id": sop.skill_id, "code": exc.code, "message": exc.message})
+                continue
             subs = _sub_sop_ids(sop.content)
             sop_edges[sop.skill_id] = list(subs)
-            plans.append(SopExecutionPlan(skill_id=sop.skill_id, version=sop.version, name=sop.name, content=sop.content, resolved_slots=tuple(resolved), sub_sop_ids=subs))
+            plans.append(SopExecutionPlan(skill_id=sop.skill_id, version=sop.version, name=sop.name,
+                content=sop.content, resolved_slots=tuple(resolved), sub_sop_ids=subs,
+                authorization_ref={k: sop.ref.attributes[k] for k in ("sop_id", "definition_hash")
+                                   if k in sop.ref.attributes}))
             for slot in resolved:
                 if slot.resource_type in {"handoff", "skill", "capability"}:
                     continue
                 key = (slot.resource_type, slot.resource_id)
-                mid, ver = provider_for(slot.declaration.operation, {**(cap_metadata.get(key) or {}), **slot.metadata})
-                requested_version = slot.metadata.get("module_version")
+                staff_cap, sop_cap = staff_caps.get(key), sop_caps.get(key)
+                cap = sop_cap or staff_cap
+                # One precedence for every execution field: direct Staff defaults,
+                # then this SOP's delegation, then this logical slot's overrides.
+                # The visibility union must never supply a sibling SOP's metadata.
+                config = {**(staff_cap.metadata if staff_cap else {}),
+                          **(sop_cap.metadata if sop_cap else {}), **slot.metadata}
+                mid, ver = provider_for(slot.declaration.operation, config)
+                requested_version = config.get("module_version")
                 if requested_version and requested_version != ver:
                     raise ContractIncompatible(f"slot {slot.declaration.name}: provider version unavailable")
                 grants.append(
@@ -282,8 +305,9 @@ class CompositionCompiler:
                         operation=slot.declaration.operation,
                         resource_type=slot.resource_type,
                         resource_id=slot.resource_id,
-                        name=cap_names.get(key, slot.resource_id),
-                        binding_id=slot.binding_id or cap_binding.get(key),
+                        name=cap.name if cap else slot.resource_id,
+                        binding_id=slot.binding_id or slot.metadata.get(
+                            "binding_id", cap.binding_id if cap else None),
                         scope="sop_specific",
                         sop_id=sop.skill_id,
                         node_id=slot.declaration.node_id,
@@ -291,8 +315,8 @@ class CompositionCompiler:
                         required=slot.declaration.required,
                         provider_module_id=mid,
                         provider_version=ver,
-                        resource_digest=(cap_metadata.get(key) or {}).get("resource_digest"),
-                        provider_config=dict(slot.metadata.get("provider_config") or (cap_metadata.get(key) or {}).get("provider_config") or {}),
+                        resource_digest=config.get("resource_digest"),
+                        provider_config=dict(config.get("provider_config") or {}),
                     )
                 )
         _detect_cycle(sop_edges, error=DependencyCycle, what="sub-SOP")
@@ -357,6 +381,6 @@ class CompositionCompiler:
             team_id=staff.team.team_id if staff.team else None,
             interactions=tuple(staff.interactions),
             generation=generation,
-            metadata=dict(metadata or {}),
+            metadata={**dict(metadata or {}), **({"unavailable_sops": unavailable_sops} if unavailable_sops else {})},
             bindings=tuple(bindings),
         )

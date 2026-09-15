@@ -64,9 +64,11 @@ class FeishuProcessSupervisor:
         lock_wait_seconds: float = 3.0,
         parent_watchdog_grace_seconds: float = 0.1,
         startup_timeout_seconds: float = 10.0,
+        assembly_fingerprint: str = "",
     ):
         self._ctx = multiprocessing.get_context("spawn")
         self._runtime_path = runtime_path
+        self._assembly_fingerprint = assembly_fingerprint
         root = (data_dir or Path.cwd()).expanduser().resolve()
         self._database_path = (database_path or root / "skill_agent_loop.db").expanduser().resolve()
         self._watchdog_seconds = watchdog_seconds
@@ -173,6 +175,7 @@ class FeishuProcessSupervisor:
             binding_lock_path=str(lock_path),
             database_path=str(self._database_path),
             watchdog_seconds=self._watchdog_seconds,
+            assembly_fingerprint=self._assembly_fingerprint,
         )
         process = self._ctx.Process(
             target=connector_child_entry,

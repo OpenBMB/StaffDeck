@@ -101,6 +101,24 @@ def test_feishu_binding_credentials_activate_without_exposing_secret(monkeypatch
         assert binding.config_revision == 1
 
 
+def test_rejected_credentials_are_structured_and_never_saved(monkeypatch,caplog) -> None:
+    from app.channels.adapters.feishu import FeishuCredentialError
+    engine=_engine();owner=_seed(engine);client=_client(engine)
+    monkeypatch.setattr(channels_api,'channel_services_enabled',lambda:False)
+    binding=client.post('/api/enterprise/channels',json={'tenant_id':'tenant_a','agent_id':'agent_a','channel':'feishu'},headers=_auth(owner)).json()
+    def reject(*args):
+        raise FeishuCredentialError('飞书拒绝校验',code='FEISHU_CREDENTIALS_REJECTED',stage='tenant_token',provider_code=10003)
+    monkeypatch.setattr(channels_api,'validate_feishu_credentials',reject)
+    result=client.post(f"/api/enterprise/channels/{binding['id']}/feishu/credentials",
+        json={'tenant_id':'tenant_a','app_id':'cli_test','app_secret':'do-not-expose-secret'},headers=_auth(owner))
+    assert result.status_code==400 and result.json()['detail']['code']=='FEISHU_CREDENTIALS_REJECTED'
+    assert result.json()['detail']['stage']=='tenant_token' and result.json()['detail']['provider_code']==10003
+    assert 'do-not-expose-secret' not in result.text+caplog.text
+    with Session(engine) as db:
+        row=db.get(ChannelBinding,binding['id'])
+        assert not row.credentials_enc and row.config_revision==0 and not (row.config_json or {}).get('app_id')
+
+
 def test_feishu_app_id_is_immutable_after_activation(monkeypatch) -> None:
     engine = _engine()
     owner = _seed(engine)

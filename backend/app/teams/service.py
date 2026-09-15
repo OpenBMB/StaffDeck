@@ -8,8 +8,8 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from staffdeck_harness.runtime.staff_directory import staff_profile, optional_staff_profile
 from app.db.models import (
-    AgentProfile,
     ChatSession,
     Team,
     TeamBlackboardEntry,
@@ -402,13 +402,9 @@ def delete_team(db: Session, team: Team) -> None:
         remove_chat_session_workspace(tenant_id=tenant_id, session_id=session_id, db=db)
 
 
-def _ensure_team_agent(db: Session, team: Team, agent_id: str) -> AgentProfile:
-    agent = db.get(AgentProfile, agent_id)
-    if agent is None or agent.tenant_id != team.tenant_id:
-        raise HTTPException(status_code=404, detail="Agent not found in this tenant")
-    if agent.status != "active":
-        raise HTTPException(status_code=400, detail="Agent is not active")
-    return agent
+def _ensure_team_agent(db: Session, team: Team, agent_id: str):
+    actor = db.info.get("staffdeck_actor_id") or db.info.get("staffdeck_control_subject")
+    return staff_profile(db, team.tenant_id, agent_id, action="use" if actor else None, active_only=True)
 
 
 def add_member(db: Session, team: Team, *, agent_id: str, role: str = "member") -> TeamMember:
@@ -534,7 +530,7 @@ def team_roster_lines(db: Session, team: Team) -> list[str]:
     """团队花名册文本行:agent_id、名称、角色、能力标签,供注入 TL/成员上下文。"""
     lines: list[str] = []
     for member in list_team_members(db, team.id):
-        agent = db.get(AgentProfile, member.agent_id)
+        agent = optional_staff_profile(db, team.tenant_id, member.agent_id)
         if agent is None:
             continue
         metadata = agent.metadata_json if isinstance(agent.metadata_json, dict) else {}
@@ -779,7 +775,7 @@ def select_bid_candidates(db: Session, team: Team, task: TeamTask) -> list[str]:
     for member in list_team_members(db, team.id):
         if member.agent_id == leader_agent_id:
             continue
-        agent = db.get(AgentProfile, member.agent_id)
+        agent = optional_staff_profile(db, team.tenant_id, member.agent_id)
         if agent is None:
             continue
         metadata = agent.metadata_json if isinstance(agent.metadata_json, dict) else {}

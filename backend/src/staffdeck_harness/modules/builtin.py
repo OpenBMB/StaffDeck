@@ -35,9 +35,57 @@ class LocalCapabilityProvider:
     def invoke(self, context: Any, inv: Any) -> Any:
         return context.call_local()
 
+    def http_definition(self, context, inv):
+        return context.local_http_definition() if context.local_http_definition else None
+
 
 class KnowledgeProvider(LocalCapabilityProvider):
     module_id = "knowledge.local"
+
+    def publication_targets(self, context):
+        from app.api.knowledge_bases import list_knowledge_bases
+        from app.security.api_policy import resource_ref
+        from app.security.module_policy import require_resource
+        from fastapi import HTTPException
+        targets = []
+        for row in list_knowledge_bases(tenant_id=context.user.tenant_id, agent_id=None, db=context.db):
+            ref = resource_ref(context.db, context.user.tenant_id, "knowledge_base", row.id)
+            if ref is None or row.status != "active":
+                continue
+            try:
+                require_resource(context.user, ref, "manage", module="knowledge")
+            except HTTPException as exc:
+                if exc.status_code != 403:
+                    raise
+                continue
+            targets.append({"id": row.id, "name": row.name})
+        from staffdeck_harness.contracts.security import ResourceRef
+        try:
+            require_resource(context.user, ResourceRef("knowledge_base", "new-default-knowledge-base", context.user.tenant_id),
+                             "create", module="knowledge")
+            default_allowed = True
+        except HTTPException as exc:
+            if exc.status_code != 403:
+                raise
+            default_allowed = False
+        return {"targets": targets, "can_use_default": default_allowed}
+
+    def publish_document(self, context, payload):
+        from app.security.api_policy import resource_ref
+        from app.security.module_policy import require_resource
+        from staffdeck_harness.contracts.security import ResourceRef
+        from fastapi import HTTPException
+        target_id = payload.get("knowledge_base_id")
+        ref = resource_ref(context.db, context.user.tenant_id, "knowledge_base", target_id) if target_id else ResourceRef(
+            "knowledge_base", "new-default-knowledge-base", context.user.tenant_id)
+        if ref is None:
+            raise HTTPException(404, "知识发布目标不存在")
+        require_resource(context.user, ref, "edit" if target_id else "create", module="knowledge")
+        from app.api.knowledge import upload_document
+        from app.knowledge.schema import KnowledgeDocumentUploadRequest
+        result = upload_document(KnowledgeDocumentUploadRequest.model_validate(payload),
+                                 agent_id=None, db=context.db, current_user=context.user)
+        return result.model_dump(mode="json")
 
 
 class GeneralSkillProvider(LocalCapabilityProvider):
@@ -127,16 +175,41 @@ class BusinessBaseProfileModule:
 
 def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
     from staffdeck_harness.modules import kernel
+    from staffdeck_harness.composition.local_sources import register_sources
+
+    register_sources(registry)
+    from staffdeck_harness.runtime.workspace import LocalWorkspaceModule
+    registry.install(manifest("workspace.local", "本地工作空间", kind=ModuleKind.TRUSTED,
+        slots=[SlotName.RUNTIME_WORKSPACE], metadata={"switchable": True,
+            "exports_features": ["workspace.files", "workspace.commands", "workspace.packages", "workspace.artifacts"]}),
+        LocalWorkspaceModule(), slot=SlotName.RUNTIME_WORKSPACE)
+    from staffdeck_harness.runtime.services import LocalRuntimeServicesModule
+    registry.install(manifest("runtime.services.local", "本地运行数据服务", kind=ModuleKind.TRUSTED,
+        slots=[SlotName.RUNTIME_SERVICES], metadata={"switchable": True,
+        "exports_features": ["storage.oss.runtime", "storage.oss.resources", "runtime.background_sessions", "runtime.execution-records/v1"]}),
+        LocalRuntimeServicesModule(), slot=SlotName.RUNTIME_SERVICES)
 
     settings = ctx.get("settings")
+    from staffdeck_harness.runtime.control_auth import _load
+    control_spec = str(getattr(settings, "harness_control_auth_provider", "") or "")
+    control_auth = _load(control_spec) if control_spec else None
+    registry.install(manifest("control.authentication", "控制面认证（部署配置）", kind=ModuleKind.KERNEL,
+        slots=[SlotName.RUNTIME_KERNEL], metadata={"exports_features":
+            list(getattr(control_auth, "features", ())) if control_auth else ["control.identity.local"]}),
+        control_auth, slot=SlotName.RUNTIME_KERNEL)
     profile_name = str(getattr(settings, "security_profile", None) or "OSS_LOCAL").upper()
 
     # L3 capability providers (attach to staff.capability; SOP slots reuse them through the compiler)
     registry.install(manifest("knowledge.local", "知识库检索", summary="在员工绑定的知识库中检索资料，并把引用来源带回回答。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_KNOWLEDGE], provides=["knowledge.search/v1"], policy_actions=["knowledge.search/v1"]), KnowledgeProvider(), slot=SlotName.STAFF_CAPABILITY)
     registry.install(manifest("general_skill.local", "通用技能", summary="读取员工绑定的技能包，让员工按技能说明行事。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_SKILL], provides=["general_skill.consume/v1"], policy_actions=["general_skill.consume/v1"]), GeneralSkillProvider(), slot=SlotName.STAFF_CAPABILITY)
     registry.install(manifest("tool.local", "业务工具调用", summary="调用 HTTP 接口、MCP 服务或其他智能体，完成查询与操作。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_ACTION], provides=["tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"], policy_actions=["tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"]), ToolProvider(), slot=SlotName.STAFF_CAPABILITY)
-    registry.install(manifest("sandbox.local", "受控执行环境", summary="在隔离环境中执行命令、读写文件并输出工作产物。", kind=ModuleKind.TRUSTED, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_ACTION], provides=["sandbox.execute/v1", "artifact.publish/v1"], policy_actions=["sandbox.execute/v1"], metadata={"switchable": True}), SandboxProvider(), slot=SlotName.STAFF_CAPABILITY)
+    registry.install(manifest("sandbox.local", "受控执行环境", summary="在隔离环境中执行命令、读写文件并输出工作产物。", kind=ModuleKind.TRUSTED, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_ACTION], provides=["sandbox.execute/v1", "artifact.publish/v1"], policy_actions=["sandbox.execute/v1"], metadata={"switchable": True, "resource_free": True}), SandboxProvider(), slot=SlotName.STAFF_CAPABILITY)
     registry.mark_guarded(SlotName.STAFF_CAPABILITY)
+    for module_id in ('knowledge.local', 'general_skill.local', 'tool.local'):
+        item = registry.get(module_id)
+        registry.replace_provider(module_id, item.provider, metadata={
+            'catalog_contract': 'catalog.descriptor.local/v1',
+            'resource_namespaces': ['local']})
 
     # L4 interactions (hooks)
     components = {h.handler: f"interaction.{h.handler.replace('.', '_')}" for h in DEFAULT_HOOKS}
@@ -183,7 +256,7 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
                 adapter = get_builtin_channel_adapter(ch)
             except ValueError:
                 continue
-            registry.install(manifest(f"channel.{ch}", f"{CHANNEL_LABEL.get(ch, ch)}接入", summary=f"接收{CHANNEL_LABEL.get(ch, ch)}消息并回复，处理附件与卡片。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CHANNEL], provides=["channel.receive/v1", "channel.send/v1"], policy_actions=["channel.receive/v1", "channel.send/v1"]), adapter, slot=SlotName.STAFF_CHANNEL)
+            registry.install(manifest(f"channel.{ch}", f"{CHANNEL_LABEL.get(ch, ch)}接入", summary=f"接收{CHANNEL_LABEL.get(ch, ch)}消息并回复，处理附件与卡片。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CHANNEL], provides=["channel.receive/v1", "channel.send/v1"], policy_actions=["channel.receive/v1", "channel.send/v1"], metadata={"requires_features": ["runtime.background_sessions", "channel.routing"]}), adapter, slot=SlotName.STAFF_CHANNEL)
     except Exception:  # channel package optional in some deployments
         pass
     registry.mark_guarded(SlotName.STAFF_CHANNEL)
@@ -202,3 +275,6 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
 
     # Kernel / trusted leaves: registered so the module tree is complete and disable-able, never swappable.
     kernel.register(registry, ctx)
+    for mid, name in (("security.oss_local", "OSS_LOCAL"), ("security.business_base", "BUSINESS_BASE")):
+        item = registry.get(mid)
+        registry.replace_provider(mid, item.provider, metadata={"security_profile": name})

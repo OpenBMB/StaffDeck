@@ -506,6 +506,7 @@ def test_private_skill_branch_creator_metadata_is_written_from_agent_owner() -> 
 
 def test_list_agents_allows_tool_resource_bindings() -> None:
     with _test_session() as db:
+        db.add(_admin_user())
         db.add(Tenant(id="tenant_demo", name="Demo"))
         agent = AgentProfile(
             id="agent_tool_owner", tenant_id="tenant_demo", name="工具员工", is_overall=False
@@ -637,6 +638,7 @@ def test_copy_overall_scope_to_agent_does_not_auto_bind_open_gallery_knowledge_b
 
 def test_list_agents_knowledge_count_ignores_stale_or_empty_default_bindings() -> None:
     with _test_session() as db:
+        db.add(_admin_user())
         db.add(Tenant(id="tenant_demo", name="Demo"))
         agent = AgentProfile(
             id="agent_target", tenant_id="tenant_demo", name="研发员工", is_overall=False
@@ -687,6 +689,7 @@ def test_list_agents_knowledge_count_ignores_stale_or_empty_default_bindings() -
 
 def test_agent_summary_resources_match_operational_resource_lists() -> None:
     with _test_session() as db:
+        db.add(_admin_user())
         db.add(Tenant(id="tenant_demo", name="Demo"))
         agent = AgentProfile(
             id="agent_target", tenant_id="tenant_demo", name="研发员工", is_overall=False

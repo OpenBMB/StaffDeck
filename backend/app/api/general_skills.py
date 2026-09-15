@@ -62,7 +62,8 @@ from app.general_skills import (
 from app.general_skills.runner import GeneralSkillReader
 from app.general_skills.schema import GeneralSkillFile
 from app.llm.model_config_resolver import resolve_model_config_for_runtime
-from app.security.auth import get_current_user
+from app.security.auth import get_current_user, ensure_current_user_tenant
+from app.config import get_settings
 from app.security.permissions import (
     ensure_agent_scope_manager,
     ensure_open_gallery_admin,
@@ -97,6 +98,10 @@ def _agent_id_or_none(agent_id: object | None) -> str | None:
 
 
 def general_skill_read(row: GeneralSkill, status_override: str | None = None) -> GeneralSkillRead:
+    # A binding may narrow availability, never turn an unpublished source package into
+    # an executable one (e.g. an active employee binding after gallery withdrawal).
+    if status_override == "published" and row.status != "published":
+        status_override = row.status
     return GeneralSkillRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -574,6 +579,13 @@ def publish_general_skill(
     agent_id = _agent_id_or_none(agent_id)
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
     if agent and not agent.is_overall:
+        _ensure_general_skill_visible(db, tenant_id, row, agent.id)
+        if not is_open_gallery_resource(db, tenant_id, "general_skill", row) and _private_skill_owned_by_agent(db, tenant_id, row, agent.id):
+            row.status = "published"
+            row.updated_at = utc_now()
+            db.add(row)
+        elif row.status != "published":
+            raise HTTPException(status_code=409, detail="Source skill is not published")
         binding = _ensure_general_skill_binding(
             db,
             tenant_id,
@@ -617,6 +629,7 @@ def archive_general_skill(
     agent_id = _agent_id_or_none(agent_id)
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
     if agent and not agent.is_overall:
+        _ensure_general_skill_visible(db, tenant_id, row, agent.id)
         binding = _ensure_general_skill_binding(db, tenant_id, agent.id, row.id)
         binding.status = "inactive"
         binding.updated_at = utc_now()
@@ -711,15 +724,7 @@ def run_general_skill(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> GeneralSkillRunResponse:
-    skill = _get_general_skill(db, request.tenant_id, slug)
-    if skill.status != "published":
-        raise HTTPException(status_code=400, detail="General skill is not published")
-    require_agent_scope_viewer(request.tenant_id, request.agent_id, current_user, db)
-    _ensure_general_skill_visible(db, request.tenant_id, skill, request.agent_id)
-    model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-    skill_snapshot = _general_skill_snapshot(skill)
-    if request.operation == "read":
-        return _run_general_skill_operation(skill_snapshot, request, model_config, current_user.id)
+    skill = _resolve_skill_execution(db, request, current_user, slug)
     harness_request = _prepare_skill_execution(db, skill, request, current_user.id)
     return _execute_skill_test(db, skill.slug, harness_request)
 
@@ -731,28 +736,10 @@ def run_general_skill_stream(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> StreamingResponse:
-    skill = _get_general_skill(db, request.tenant_id, slug)
-    if skill.status != "published":
-        raise HTTPException(status_code=400, detail="General skill is not published")
-    require_agent_scope_viewer(request.tenant_id, request.agent_id, current_user, db)
-    _ensure_general_skill_visible(db, request.tenant_id, skill, request.agent_id)
-    skill_snapshot = _general_skill_snapshot(skill)
-    # Validate the explicitly selected model before starting a durable Harness
-    # turn. AgentLoop resolves the same config again in its worker session.
-    _get_request_model(db, request.tenant_id, request.model_config_id)
-    if request.operation == "read":
-        model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-
-        def read_stream_events() -> Iterator[str]:
-            response = _run_general_skill_operation(
-                skill_snapshot,
-                request,
-                model_config,
-                current_user.id,
-            )
-            yield _sse("complete", response.model_dump(mode="json"))
-
-        return StreamingResponse(read_stream_events(), media_type="text/event-stream")
+    skill = _resolve_skill_execution(db, request, current_user, slug)
+    skill_snapshot = skill
+    from staffdeck_harness.runtime.services import runtime_services
+    data_services = runtime_services(db)
 
     harness_request = _prepare_skill_execution(db, skill, request, current_user.id)
     session_id = harness_request.session_id
@@ -763,15 +750,38 @@ def run_general_skill_stream(
 
         def worker() -> None:
             try:
-                with Session(engine) as worker_db:
+                with data_services.session(None, purpose="skill-test-worker") as worker_db:
                     terminal.put(("complete", _execute_skill_test(worker_db, skill.slug, harness_request)))
             except Exception as exc:
                 terminal.put(("error", {"message": str(exc)}))
 
         threading.Thread(target=worker, daemon=True).start()
-        yield from _stream_skill_test_events(terminal, request, skill_snapshot, session_id, client_turn_id)
+        yield from _stream_skill_test_events(terminal, request, skill_snapshot, session_id, client_turn_id, data_services=data_services)
 
     return StreamingResponse(stream_events(), media_type="text/event-stream")
+
+
+def _resolve_skill_execution(db, request, user, target):
+    from types import SimpleNamespace
+    from staffdeck_harness.composition.sources import resolve_staff
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.modules.registry import get_registry
+    from staffdeck_harness.security.profile import get_profile
+    from staffdeck_harness.contracts.errors import ModuleSdkError
+    ensure_current_user_tenant(request.tenant_id, user)
+    settings = get_settings()
+    try:
+        staff, identity = resolve_staff(get_registry(settings), db,
+            SourceContext(request.tenant_id, request.agent_id, user_id=user.id), get_profile(settings))
+        candidates = [cap for cap in staff.capabilities if cap.resource_type == "general_skill" and target in
+                      {cap.resource_id, cap.metadata.get("slug"),
+                       (cap.metadata.get("provider_config") or {}).get("package_ref", {}).get("package_id")}]
+        if len(candidates) != 1:
+            raise HTTPException(404, "Skill 未绑定、未发布或标识不唯一，请使用员工绑定的资源 ID")
+        cap = candidates[0]
+        return SimpleNamespace(id=cap.resource_id, slug=cap.resource_id, name=cap.name)
+    except ModuleSdkError as exc:
+        raise HTTPException(400, exc.to_dict()) from exc
 
 
 def _prepare_skill_execution(db, skill, request, user_id):
@@ -785,10 +795,12 @@ def _prepare_skill_execution(db, skill, request, user_id):
         title=f"技能测试 · {skill.name}",
         channel=GENERAL_SKILL_DEBUG_CHANNEL,
     )
+    from staffdeck_harness.runtime.session_binding import bind_session
+    bind_session(db, debug_session, created=True)
     db.add(debug_session)
     db.commit()
 
-    return ChatTurnRequest(
+    result = ChatTurnRequest(
         tenant_id=request.tenant_id,
         session_id=session_id,
         agent_id=request.agent_id,
@@ -800,6 +812,10 @@ def _prepare_skill_execution(db, skill, request, user_id):
         message_visibility="internal",
         debug=True,
     )
+    result._read_only = request.operation == "read"
+    if result._read_only:
+        result.message += "\n本次只阅读并解释 Skill，不执行脚本、业务工具或文件修改。"
+    return result
 
 
 
@@ -809,10 +825,11 @@ def _execute_skill_test(db, slug, harness_request):
         Message.tenant_id == harness_request.tenant_id,
         Message.session_id == harness_request.session_id, Message.role == "assistant",
     ).order_by(Message.created_at.desc())).first()
-    return _harness_skill_run_response(slug, response, dict(assistant.metadata_json or {}) if assistant else {})
+    result = _harness_skill_run_response(slug, response, dict(assistant.metadata_json or {}) if assistant else {})
+    return result.model_copy(update={"operation": "read" if harness_request._read_only else "execute"})
 
 
-def _stream_skill_test_events(terminal, request, skill_snapshot, session_id, client_turn_id):
+def _stream_skill_test_events(terminal, request, skill_snapshot, session_id, client_turn_id, *, data_services=None):
     yield _sse(
         "stream_started",
         {
@@ -828,7 +845,8 @@ def _stream_skill_test_events(terminal, request, skill_snapshot, session_id, cli
     last_heartbeat_at = 0.0
     cursor: tuple[object, str] | None = None
     pending_terminal: tuple[str, object] | None = None
-    with Session(engine) as poll_db:
+    factory = data_services.session(None, purpose="skill-test-relay") if data_services else Session(engine)
+    with factory as poll_db:
         while True:
             rows = _skill_debug_events_after(
                 poll_db,
@@ -996,6 +1014,7 @@ def _ensure_general_skill_visible(
     tenant_id: str,
     row: GeneralSkill,
     agent_id: str | None,
+    *, require_active: bool = False,
 ) -> None:
     agent = get_agent(db, tenant_id, _agent_id_or_none(agent_id))
     if not agent or agent.is_overall:
@@ -1014,6 +1033,8 @@ def _ensure_general_skill_visible(
         db, tenant_id, "general_skill", row, binding
     ):
         raise HTTPException(status_code=404, detail="General skill not visible to this agent")
+    if require_active and binding.status != "active":
+        raise HTTPException(status_code=400, detail="General skill is disabled for this agent")
 
 
 def _ensure_general_skill_binding(

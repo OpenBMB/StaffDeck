@@ -4,7 +4,8 @@ import logging
 import os
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from pathlib import Path
 from typing import IO
 
@@ -22,6 +23,7 @@ _binding_lifecycle_locks_guard = threading.Lock()
 _connector_lock_file: IO[bytes] | None = None
 _connector_lock_pid: int | None = None
 _intake_sweep_thread: threading.Thread | None = None
+_binding_adapter_scope: ContextVar[dict | None] = ContextVar("binding_adapter_scope", default=None)
 
 
 def _acquire_connector_process_lock() -> bool:
@@ -131,6 +133,10 @@ def channel_services_enabled() -> bool:
     return get_settings().staffdeck_role in {"all", "connector"}
 
 
+def channel_services_running() -> bool:
+    return _connector_lock_file is not None and _connector_lock_pid == os.getpid()
+
+
 def _ensure_adapters_registered() -> None:
     # 各适配器模块导入即自注册(模块级 register_channel_adapter)
     import app.channels.adapters.dingtalk  # noqa: F401
@@ -159,69 +165,87 @@ def stop_binding_ingress(channel: str, binding_id: str) -> None:
         stopper(binding_id)
 
 
-def _ingress_manager(channel: str):
-    if channel == "wechat":
-        return get_wechat_poll_manager()
-    if channel == "wecom":
-        return get_wecom_stream_manager()
-    if channel == "feishu":
-        return get_feishu_process_manager()
-    if channel == "dingtalk":
-        return get_dingtalk_stream_manager()
-    return None
+def _binding_adapter(channel: str):
+    scope = _binding_adapter_scope.get()
+    if scope is not None and channel in scope:
+        return scope[channel]
+    _ensure_adapters_registered()
+    from app.channels.adapters.base import get_channel_adapter
+
+    adapter = get_channel_adapter(channel)
+    if scope is not None:
+        scope[channel] = adapter
+    return adapter
 
 
 @contextmanager
 def binding_lifecycle_lock(binding_id: str):
     """串行化同一 binding 的重配/删除,避免两个 HTTP 请求交错切换代际。"""
+    from staffdeck_harness.modules.registry import peek_registry
+
     with _binding_lifecycle_locks_guard:
         lock = _binding_lifecycle_locks.setdefault(binding_id, threading.RLock())
     with lock:
-        yield
+        registry = peek_registry()
+        # Reconfiguration is admitted work too: assembly disposal must wait until
+        # pause, drain, data update and resume have all used the same provider.
+        with registry.turn_lease() if registry else nullcontext():
+            token = _binding_adapter_scope.set({})
+            try:
+                yield
+            finally:
+                _binding_adapter_scope.reset(token)
 
 
 def pause_binding_ingress(channel: str, binding_id: str) -> None:
     """暂停 reconcile 并停止当前 producer/consumer。"""
-    _ensure_adapters_registered()
-    manager = _ingress_manager(channel)
-    pause = getattr(manager, "pause_binding", None)
+    _pause_binding(_binding_adapter(channel), binding_id)
+
+
+def _pause_binding(adapter, binding_id: str) -> None:
+    pause = getattr(adapter, "pause_binding", None)
     if callable(pause):
         pause(binding_id)
         return
-    stop_binding_ingress(channel, binding_id)
+    stop = getattr(adapter, "stop_ingress", None)
+    if callable(stop):
+        stop(binding_id)
 
 
 def resume_binding_ingress(channel: str, binding_id: str, *, start: bool = True) -> None:
     """解除 reconcile 暂停;start=False 时由后续 reconcile 按数据库旧配置恢复。"""
-    _ensure_adapters_registered()
-    manager = _ingress_manager(channel)
-    resume = getattr(manager, "resume_binding", None)
+    _resume_binding(_binding_adapter(channel), binding_id, start=start)
+
+
+def _resume_binding(adapter, binding_id: str, *, start: bool) -> None:
+    resume = getattr(adapter, "resume_binding", None)
     if callable(resume):
         resume(binding_id, start=start)
         return
     if start:
-        start_binding_ingress(channel, binding_id)
+        starter = getattr(adapter, "start_ingress", None)
+        if callable(starter):
+            starter(binding_id)
 
 
 def wait_binding_ingress_stopped(channel: str, binding_id: str, timeout_seconds: float = 5.0) -> bool:
     """有界等待指定绑定的 ingress 线程退出(重配凭证前调用)。"""
-    _ensure_adapters_registered()
-    if channel == "wechat":
-        return get_wechat_poll_manager().wait_binding_stopped(binding_id, timeout_seconds)
-    if channel == "wecom":
-        return get_wecom_stream_manager().wait_binding_stopped(binding_id, timeout_seconds)
-    if channel == "feishu":
-        return get_feishu_process_manager().wait_binding_stopped(binding_id, timeout_seconds)
-    if channel == "dingtalk":
-        return get_dingtalk_stream_manager().wait_binding_stopped(binding_id, timeout_seconds)
-    return True
+    return _wait_binding_stopped(_binding_adapter(channel), binding_id, timeout_seconds)
+
+
+def _wait_binding_stopped(adapter, binding_id: str, timeout_seconds: float) -> bool:
+    wait = getattr(adapter, "wait_binding_stopped", None)
+    # A stop request is not confirmation. Unsupported adapters fail closed before
+    # credentials/configuration are changed or a new producer is started.
+    return callable(wait) and wait(binding_id, timeout_seconds) is True
 
 
 def restart_binding_ingress(channel: str, binding_id: str, *, wait_seconds: float = 5.0) -> bool:
     """兼容入口:只有旧代际完全退出才启动新代际。"""
-    pause_binding_ingress(channel, binding_id)
-    stopped = wait_binding_ingress_stopped(channel, binding_id, wait_seconds)
-    resume_binding_ingress(channel, binding_id, start=stopped)
+    adapter = _binding_adapter(channel)
+    _pause_binding(adapter, binding_id)
+    stopped = _wait_binding_stopped(adapter, binding_id, wait_seconds)
+    _resume_binding(adapter, binding_id, start=stopped)
     return stopped
 
 

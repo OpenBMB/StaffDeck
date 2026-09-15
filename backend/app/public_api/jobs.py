@@ -27,6 +27,8 @@ from app.db.models import (
 from app.public_api.auth import PublicPrincipal, get_public_principal
 from app.public_api.errors import PublicAPIError
 from app.public_api.schemas import JobRead
+from app.public_api.runtime import enqueue, maintenance_sessions
+from staffdeck_harness.runtime.services import runtime_services
 from app.public_api.webhooks import (
     enqueue_webhook_deliveries,
     stage_webhook_deliveries,
@@ -80,14 +82,14 @@ def create_job(
         credential_id=principal.credential_id,
         agent_id=agent_id,
         kind=kind,
-        request_json=request_payload,
+        request_json=_job_payload(db, request_payload, principal.actor_user.id),
     )
     db.add(row)
     db.flush()
     emit_job_event(db, row, "job.queued", {"job_id": row.id, "kind": kind})
     db.commit()
     db.refresh(row)
-    enqueue_async_job(f"public_api.{kind}", run_job, row.id)
+    enqueue(db, f"public_api.{kind}", run_job, row.id, submit=enqueue_async_job)
     return row
 
 
@@ -111,7 +113,7 @@ def create_internal_job(
         credential_id="internal",
         agent_id=agent_id,
         kind=kind,
-        request_json=request_payload,
+        request_json=_job_payload(db, request_payload),
     )
     db.add(row)
     db.flush()
@@ -119,12 +121,19 @@ def create_internal_job(
     db.commit()
     db.refresh(row)
     try:
-        enqueue_async_job(f"internal.{kind}", run_job, row.id)
+        enqueue(db, f"internal.{kind}", run_job, row.id, submit=enqueue_async_job)
     except RuntimeError:
         # The durable queued row is intentionally retained. Startup recovery
         # will submit it to the replacement executor.
         pass
     return row
+
+
+def _job_payload(db, payload, actor_id=None):
+    from staffdeck_harness.runtime.session_binding import current_binding
+    subject = db.info.get("staffdeck_control_subject")
+    return {**payload, "_runtime_context": {"binding": current_binding(db),
+        "actor_id": actor_id or (subject.user_id if subject else None)}}
 
 
 def emit_job_event(
@@ -172,7 +181,7 @@ def emit_job_event(
 def _commit_and_dispatch(db: Session) -> None:
     delivery_ids = list(db.info.pop("public_api_webhook_deliveries", []))
     db.commit()
-    enqueue_webhook_deliveries(delivery_ids)
+    enqueue_webhook_deliveries(delivery_ids, data_services=runtime_services(db))
 
 
 def update_job(
@@ -395,8 +404,12 @@ def _emit_terminal_job_event(
     _commit_and_dispatch(db)
 
 
-def run_job(job_id: str) -> None:
-    with Session(engine) as db:
+def run_job(job_id: str, *, data_services=None) -> None:
+    if data_services is None:
+        for seed in maintenance_sessions(engine):
+            run_job(job_id, data_services=runtime_services(seed))
+        return
+    with data_services.session(None, purpose="api-job") as db:
         owner = new_id("apijoblease")
         job = _claim_job(db, job_id, owner)
         if job is None:
@@ -406,6 +419,24 @@ def run_job(job_id: str) -> None:
         emit_job_event(db, job, f"{job.kind}.started", {"job_id": job.id})
         _commit_and_dispatch(db)
         try:
+            from staffdeck_harness.runtime.session_binding import current_binding
+            captured = (job.request_json or {}).get("_runtime_context") or {}
+            if captured.get("binding") is not None and captured["binding"] != current_binding(db):
+                raise PublicAPIError(409, "JOB_ASSEMBLY_CHANGED", "The queued job belongs to another assembly.")
+            if job.credential_id == "internal" and captured.get("actor_id"):
+                from app.db.models import User
+                from app.public_api.runtime import bind_actor
+                actor = db.get(User, captured["actor_id"])
+                if actor is None or actor.tenant_id != job.tenant_id:
+                    raise PublicAPIError(403, "JOB_ACTOR_UNAVAILABLE", "The internal job actor is unavailable.")
+                bind_actor(db, actor)
+            if job.credential_id != "internal":
+                from app.public_api.auth import principal_for_credential
+                principal = principal_for_credential(db, job.credential_id)
+                if principal.tenant_id != job.tenant_id:
+                    raise PublicAPIError(403, "JOB_TENANT_MISMATCH", "Job identity changed")
+                if job.kind == "run" and not principal.can("runs:create"):
+                    raise PublicAPIError(403, "RUN_AUTHORIZATION_REVOKED", "Run permission revoked")
             if handler is None:
                 raise RuntimeError(f"JOB_HANDLER_MISSING:{job.kind}")
             if job.cancel_requested:
@@ -442,6 +473,8 @@ def run_job(job_id: str) -> None:
             if job is None:
                 return
             code = "JOB_HANDLER_MISSING" if str(exc).startswith("JOB_HANDLER_MISSING:") else "JOB_EXECUTION_FAILED"
+            if isinstance(exc, PublicAPIError):
+                code = exc.code
             error = {"code": code, "message": str(exc)[:2000]}
             terminal = _terminalize_job(
                 db,
@@ -451,7 +484,7 @@ def run_job(job_id: str) -> None:
                 status="failed",
                 stage="failed",
                 error_json=error,
-                retryable=code != "JOB_HANDLER_MISSING",
+                retryable=(exc.status_code >= 500 if isinstance(exc, PublicAPIError) else code != "JOB_HANDLER_MISSING"),
             )
             if terminal is not None:
                 _emit_terminal_job_event(db, terminal, status="failed", error=error)
@@ -546,12 +579,21 @@ def stream_job_events(
     _require_job_scope(principal, row, "read")
     if last_event_id and last_event_id.isdigit():
         after = max(after, int(last_event_id))
+    data_services = runtime_services(db)
+    import threading
+    from contextlib import nullcontext
+    from staffdeck_harness.runtime.management import ManagedStream
+    from staffdeck_harness.contracts.runtime_services import StreamingServiceResponse
+    stopped = threading.Event()
+    registry = getattr(data_services, "registry", None)
+    lease = registry.turn_lease() if registry else nullcontext()
+    lease.__enter__()
 
-    def events() -> Iterator[str]:
+    def event_chunks() -> Iterator[str]:
         cursor = max(0, after)
         idle_ticks = 0
-        while True:
-            with Session(engine) as event_db:
+        while not stopped.is_set():
+            with data_services.session(None, purpose="api-job-events") as event_db:
                 current = event_db.get(APIJob, row.id)
                 if not current:
                     return
@@ -575,19 +617,13 @@ def stream_job_events(
                 yield ": keepalive\n\n"
             sleep(0.15)
 
-    return StreamingResponse(
-        events(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
-    )
+    return ManagedStream(StreamingServiceResponse(200, {"content-type": "text/event-stream"},
+        (chunk.encode("utf-8") for chunk in event_chunks()), stopped.set),
+        lambda: lease.__exit__(None, None, None))
 
 
 def recover_public_jobs() -> None:
-    with Session(engine) as db:
+    for db in maintenance_sessions(engine):
         running = db.exec(select(APIJob).where(APIJob.status == "running")).all()
         for job in running:
             error = {
@@ -631,13 +667,13 @@ def recover_public_jobs() -> None:
         _reconcile_terminal_run_sessions(db)
         queued = db.exec(select(APIJob).where(APIJob.status == "queued")).all()
         _commit_and_dispatch(db)
-    for job in queued:
-        enqueue_async_job(f"public_api.{job.kind}", run_job, job.id)
+        for job in queued:
+            enqueue(db, f"public_api.{job.kind}", run_job, job.id, submit=enqueue_async_job)
 
 
 def cleanup_public_api_records() -> None:
     cutoff = utc_now() - timedelta(days=get_settings().public_api_retention_days)
-    with Session(engine) as db:
+    for db in maintenance_sessions(engine):
         old_events = db.exec(
             select(APIJobEvent).where(APIJobEvent.created_at < cutoff)
         ).all()

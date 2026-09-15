@@ -47,6 +47,11 @@ from app.harness import (
 from app.harness.execution_context import SANDBOX_WORKSPACE
 from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
+from app.knowledge.result_projection import (
+    _MODEL_EXCERPT_CHARS as _MODEL_EXCERPT_CHARS,
+    _MODEL_MAX_ITEMS as _MODEL_MAX_ITEMS,
+    model_facing_knowledge as _model_facing_knowledge,
+)
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.service import KnowledgeService
 from app.tools.tool_executor import ToolExecutor
@@ -110,73 +115,20 @@ class KnowledgeFacade:
             self.d.model_config,
         )
         payload = response.model_dump(mode="json")
+        payload['query'] = query
         citations = knowledge_citations_from_results([payload])
         # The model sees a compact, citation-labelled view (like the legacy invoker's inline
         # budget); the full response travels in ``extensions`` for evidence/UI, never to the model.
         return ModuleResult.ok(_model_facing_knowledge(payload, citations), citations=tuple(citations), extensions={"evidence": payload})
 
 
-_MODEL_EXCERPT_CHARS = 1200
-_MODEL_MAX_ITEMS = 8
-
-
-def _model_facing_knowledge(payload: dict[str, Any], citations: list[dict[str, Any]]) -> dict[str, Any]:
-    """What the model gets back from knowledge_search: the evidence texts with their [N] labels.
-
-    Full bucket rows (metadata, traces, route trace, whole documents) stay out of the
-    transcript: they blow past the engine's inline result budget and get spilled to a file the
-    model cannot use, and they carry nothing the model needs beyond the excerpts.
-    """
-
-    by_identity: dict[str, str] = {}
-    for c in citations:
-        for key in ("chunk_id", "concept_id"):
-            if c.get(key):
-                by_identity[str(c[key])] = str(c.get("label") or "")
-    items: list[dict[str, Any]] = []
-    tiers = (payload.get("evidence_pack"), payload.get("chunks"), payload.get("selected_concepts"))
-    for raw in tiers:
-        if not isinstance(raw, list) or not raw:
-            continue
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            ident = str(item.get("chunk_id") or item.get("id") or item.get("concept_id") or "")
-            text = str(item.get("content") or item.get("text") or item.get("excerpt") or item.get("summary") or "")
-            if not text.strip():
-                continue
-            items.append({
-                "label": by_identity.get(ident) or (f"[{len(items) + 1}]"),
-                "title": item.get("title") or item.get("section_title") or item.get("document_title") or "",
-                "source": item.get("source_path") or item.get("document_id") or item.get("knowledge_base_id") or "",
-                "excerpt": text[:_MODEL_EXCERPT_CHARS],
-            })
-            if len(items) >= _MODEL_MAX_ITEMS:
-                break
-        if items:
-            break
-    if not items:
-        # fall back to bucket summaries so the model at least knows what exists
-        for b in payload.get("selected_buckets") or []:
-            if isinstance(b, dict) and (b.get("summary") or b.get("title")):
-                items.append({"label": f"[{len(items) + 1}]", "title": b.get("title") or "", "source": b.get("knowledge_base_id") or "", "excerpt": str(b.get("summary") or "")[:_MODEL_EXCERPT_CHARS]})
-                if len(items) >= _MODEL_MAX_ITEMS:
-                    break
-    return {
-        "query": payload.get("query"),
-        "hit_count": len(items),
-        "results": items,
-        "citations": [{"label": c.get("label"), "title": c.get("title"), "source": c.get("source_path") or c.get("document_id") or ""} for c in citations],
-        "instruction": "回答时用对应的 [N] 标注引用；没有命中的内容不要臆造。",
-    }
-
-
 class GeneralSkillFacade:
     module_id = "general_skill"
 
-    def __init__(self, deps: FacadeDeps, workspace_root: Path):
+    def __init__(self, deps: FacadeDeps, workspace_root: Path, workspace=None):
         self.d = deps
         self.workspace_root = workspace_root
+        self.workspace = workspace
 
     def consume(self, inv: ModuleInvocation, *, expected_digest: str | None = None) -> ModuleResult:
         db, ctx = self.d.db, inv.context
@@ -194,7 +146,8 @@ class GeneralSkillFacade:
         if operation not in {"read", "execute"}:
             return ModuleResult.fail("INVALID_ARGUMENTS", "通用技能 operation 只能是 read。")
         package = package_from_row(row)
-        package_root, file_paths = _materialize_general_skill_package(self.workspace_root, package)
+        package_root, file_paths = (self.workspace.materialize_package(ctx, package) if self.workspace else
+                                   _materialize_general_skill_package(self.workspace_root, package))
         entry = next((p for p in file_paths if p.removeprefix(package_root + "/") == package.entrypoint), f"{package_root}/{package.entrypoint}")
         data = {
             "kind": "general_skill",
@@ -291,6 +244,9 @@ class SandboxFacade:
     def tool_names(self) -> list[str]:
         return [spec.name for spec in self._registry.specs()]
 
+    def materialize_package(self, context, package):
+        return _materialize_general_skill_package(self.workspace_root, package)
+
     def schemas(self) -> list[dict[str, Any]]:
         return [{"name": s.name, "description": s.description, "input_schema": dict(s.input_schema)} for s in self._registry.specs()]
 
@@ -304,15 +260,23 @@ class SandboxFacade:
         result = self._executor.execute(self._context, HarnessToolCall(call_id=inv.invocation_id, name=name, arguments=args))
         if not result.success:
             err = result.error
-            return ModuleResult.fail(err.code if err else "SANDBOX_ERROR", err.message if err else "沙箱执行失败", extensions={"details": dict(err.details) if err else {}})
+            details = {"tool": name, **(dict(err.details) if err else {})}
+            if err and err.code == "INVALID_ARGUMENTS":
+                entry = self._registry.get(name)
+                if entry is not None:
+                    details["input_schema"] = entry.argument_model.model_json_schema()
+            # These validated public diagnostics must be in error, not private extensions:
+            # Bridge deliberately never exports arbitrary extension fields to the model.
+            return ModuleResult(success=False, error={"code": err.code if err else "SANDBOX_ERROR",
+                "message": err.message if err else "沙箱执行失败", "details": details})
         data = dict(result.data or {})
         if name in {"exec_command", "run_skill_script"} and data.get("ok") is not True:
             timed_out = bool(data.get("timed_out"))
-            return ModuleResult.fail(
-                "COMMAND_TIMEOUT" if timed_out else "COMMAND_EXIT_NONZERO",
-                "受控进程执行超时。" if timed_out else "受控进程执行完成，但返回了非零退出码。",
-                extensions={"data": data},
-            )
+            return ModuleResult(success=False, error={
+                "code": "COMMAND_TIMEOUT" if timed_out else "COMMAND_EXIT_NONZERO",
+                "message": "受控进程执行超时。" if timed_out else "受控进程执行完成，但返回了非零退出码。",
+                "details": {"tool": name, "result": data},
+            })
         return ModuleResult.ok(data)
 
     def discover_artifacts(self, task_frame_id: str) -> list[dict[str, Any]]:

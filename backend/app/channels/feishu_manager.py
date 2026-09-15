@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from app.channels.storage import channel_session
+from app.channels.adapters.feishu import feishu_binding_ready
+
 import logging
 import threading
 import time
@@ -45,7 +48,10 @@ class FeishuProcessManager:
     def _get_supervisor(self) -> FeishuProcessSupervisor:
         with self._lock:
             if self._supervisor is None:
-                self._supervisor = self._supervisor_factory(database_path=self._database_path)
+                from staffdeck_harness.modules.registry import peek_registry
+                from app.channels.storage import applied_fingerprint
+                options = {"assembly_fingerprint": applied_fingerprint()} if self._engine is engine and peek_registry() else {}
+                self._supervisor = self._supervisor_factory(database_path=self._database_path, **options)
             return self._supervisor
 
     def start(self) -> None:
@@ -74,19 +80,19 @@ class FeishuProcessManager:
         from app.channels.adapters.base import builtin_channel_enabled
 
         module_enabled = builtin_channel_enabled("feishu")
-        with Session(self._engine) as db:
+        with channel_session(self._engine) as db:
             rows = db.exec(
                 select(ChannelBinding).where(ChannelBinding.channel == "feishu")
             ).all()
             snapshots = {
-                row.id: (row.status, row.config_revision, row.connected) for row in rows
+                row.id: (row.status, row.config_revision, row.connected, feishu_binding_ready(row)) for row in rows
             }
         with self._lock:
             paused = set(self._paused)
             known = dict(self._known)
         supervisor = self._get_supervisor() if snapshots or known else None
-        for binding_id, (status, revision, connected) in snapshots.items():
-            should_run = module_enabled and status == "active" and binding_id not in paused
+        for binding_id, (status, revision, connected, configured) in snapshots.items():
+            should_run = module_enabled and configured and status == "active" and binding_id not in paused
             if should_run:
                 try:
                     if binding_id in known and known[binding_id] != revision:
@@ -106,7 +112,7 @@ class FeishuProcessManager:
                 and supervisor.connected(binding_id)
             )
             if actual_connected != bool(connected):
-                with Session(self._engine) as db:
+                with channel_session(self._engine) as db:
                     db.exec(
                         update(ChannelBinding)
                         .where(
@@ -125,9 +131,9 @@ class FeishuProcessManager:
                     self._known.pop(binding_id, None)
 
     def ensure_binding(self, binding_id: str) -> None:
-        with Session(self._engine) as db:
+        with channel_session(self._engine) as db:
             binding = db.get(ChannelBinding, binding_id)
-            if not binding or binding.channel != "feishu" or binding.status != "active":
+            if not binding or binding.channel != "feishu" or binding.status != "active" or not feishu_binding_ready(binding):
                 return
             revision = binding.config_revision
         with self._lock:

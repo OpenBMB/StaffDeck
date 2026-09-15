@@ -214,7 +214,7 @@ def test_team_binding_tl_reply_creates_tasks(monkeypatch) -> None:
     binding = _load_binding(engine, binding_id)
 
     started: list[str] = []
-    monkeypatch.setattr(wakeup, "start_wakeup_async", started.append)
+    monkeypatch.setattr(wakeup, "start_wakeup_async", lambda wake_id, *, db: started.append(wake_id))
     RecordingAgentLoop.reply_text = (
         "好的，马上安排。\n"
         "```json\n"

@@ -56,7 +56,7 @@ def test_replay_checks_current_permissions(db, monkeypatch):
     db.add(tool)
     db.commit()
     result, _ = host.invoke(replace(inv, invocation_id="i2"))
-    assert result.error["code"] == "PERMISSION_DENIED"
+    assert result.error["code"] == "RESOURCE_UNAVAILABLE"
     assert len(provider.calls) == 1
 
 
@@ -108,7 +108,7 @@ def test_provider_version_pin_is_enforced(db, monkeypatch):
     )
     result, receipt = host.invoke(inv)
     assert result.error["code"] == "PROVIDER_VERSION_CHANGED"
-    assert not provider.calls and receipt.side_effect_key is None
+    assert not provider.calls and receipt is None
 
 
 def test_nested_tool_id_cannot_replace_authorized_target(db, monkeypatch):
@@ -232,6 +232,8 @@ def test_extension_contract_reaches_provider_without_host_changes(db, monkeypatc
             return ModuleResult.ok({"forecast": "sunny"})
 
     reg = ModuleRegistry()
+    from staffdeck_harness.composition.local_sources import register_sources
+    register_sources(reg)
     reg.register_operation(
         OperationContract(
             "weather.lookup/v1",
@@ -293,6 +295,8 @@ def test_lifecycle_drains_admission_and_disposes_in_reverse_order():
             events.append("dispose:" + self.name)
 
     reg = ModuleRegistry()
+    from staffdeck_harness.composition.local_sources import register_sources
+    register_sources(reg)
     for name in ("a", "b"):
         reg.install(
             manifest("test." + name, name, kind=ModuleKind.CODE, slots=[SlotName.EVENT_OBSERVER]),
@@ -379,6 +383,8 @@ def test_api_pep_denies_object_access_and_filters_catalog_outside_loop(db, monke
             )
 
     reg = ModuleRegistry()
+    from staffdeck_harness.composition.local_sources import register_sources
+    register_sources(reg)
     reg.security_profile = replace(build_oss_local_profile(), name="BUSINESS_BASE", pep=Pep())
     monkeypatch.setattr(registry_mod, "_active", reg)
     app = FastAPI()
@@ -570,9 +576,11 @@ def test_final_reply_supervision_is_not_bypassed_by_response_synthesis(db, monke
     from staffdeck_harness.contracts.errors import ModuleSdkError
 
     reg = ModuleRegistry()
+    from staffdeck_harness.composition.local_sources import register_sources
+    register_sources(reg)
     from staffdeck_harness.sop.module import SopRuntimeModule
     reg.install(manifest("sop.runtime", "SOP runtime", kind=ModuleKind.TRUSTED,
-                         slots=[SlotName.RUNTIME_SOP], provides=["sop.lifecycle/v1"]),
+                         slots=[SlotName.RUNTIME_SOP], provides=["sop.lifecycle/v2"]),
                 SopRuntimeModule(), slot=SlotName.RUNTIME_SOP)
     hook = HookContribution("turn_stopping", "review")
     reg.install(

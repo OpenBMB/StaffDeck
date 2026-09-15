@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.channels.storage import channel_session
+
 import asyncio
 import base64
 import json
@@ -20,10 +22,10 @@ import certifi
 import httpx
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from sqlalchemy import text
-from sqlmodel import Session, select
+from sqlmodel import select
 
 from app.channels.adapters.base import (
+    ManagedIngressLifecycle,
     ChannelInbound,
     ChannelInboundAttachment,
     register_channel_adapter,
@@ -216,51 +218,13 @@ def _patch_runtime_config(
     binding_values: dict[str, Any] | None = None,
 ) -> bool:
     """Atomically patch connector-owned JSON keys without replacing API configuration."""
-    config_expr = "COALESCE(config_json, '{}')"
-    params: dict[str, Any] = {"binding_id": binding_id, "updated_at": utc_now()}
-    for index, (key, value) in enumerate((set_values or {}).items()):
-        params[f"set_path_{index}"] = f"$.{key}"
-        params[f"set_value_{index}"] = json.dumps(value, ensure_ascii=False)
-        config_expr = (
-            f"json_set({config_expr}, :set_path_{index}, json(:set_value_{index}))"
-        )
-    for index, key in enumerate(remove_keys):
-        params[f"remove_path_{index}"] = f"$.{key}"
-        config_expr = f"json_remove({config_expr}, :remove_path_{index})"
-
-    assignments = ["updated_at = :updated_at"]
-    if set_values or remove_keys:
-        assignments.insert(0, f"config_json = {config_expr}")
-    allowed_binding_values = {"connected", "status"}
-    for key, value in (binding_values or {}).items():
-        if key not in allowed_binding_values:
-            raise ValueError(f"unsupported binding runtime field: {key}")
-        params[f"binding_value_{key}"] = value
-        assignments.append(f"{key} = :binding_value_{key}")
-
-    predicates = ["id = :binding_id"]
-    if require_active:
-        predicates.append("status = 'active'")
-    if expected_revision is not None:
-        params["expected_revision"] = expected_revision
-        predicates.append("config_revision = :expected_revision")
-    for index, (key, value) in enumerate((expected_values or {}).items()):
-        params[f"expected_path_{index}"] = f"$.{key}"
-        params[f"expected_value_{index}"] = value
-        predicates.append(
-            f"json_extract(config_json, :expected_path_{index}) = :expected_value_{index}"
-        )
-
-    with Session(db_engine) as db:
-        result = db.exec(
-            text(
-                f"UPDATE channel_bindings SET {', '.join(assignments)} "
-                f"WHERE {' AND '.join(predicates)}"
-            ),
-            params=params,
-        )
+    from app.channels.config_store import patch_binding_config
+    with channel_session(db_engine) as db:
+        changed = patch_binding_config(db, binding_id, set_values=set_values, remove_keys=remove_keys,
+            expected_revision=expected_revision, require_active=require_active, expected_values=expected_values,
+            binding_values=binding_values)
         db.commit()
-        return result.rowcount == 1
+        return changed
 
 
 def validate_wechat_host(host: str) -> bool:
@@ -534,7 +498,7 @@ class WeChatClient:
         raise WeChatApiError(errcode or -1, str(data.get("errmsg") or "媒体下载返回 JSON"))
 
 
-class WeChatAdapter:
+class WeChatAdapter(ManagedIngressLifecycle):
     """微信适配器:出站 sendmessage + 归一化 + typing + ingress(poll manager)。"""
 
     def __init__(self, client_factory=None):
@@ -598,7 +562,7 @@ class WeChatAdapter:
             ilink_user_id = str(target.get("to_user_id") or "")
             context_token = str(target.get("context_token") or "")
             factory = client_factory or self._client_factory
-            with Session(db_engine or engine) as db:
+            with channel_session(db_engine or engine) as db:
                 row = db.get(ChannelBinding, binding.id)
                 if not row or row.status != "active":
                     return
@@ -634,15 +598,10 @@ class WeChatAdapter:
         except Exception:
             logger.debug("微信 typing 状态发送失败(忽略) binding=%s status=%s", binding.id, status, exc_info=True)
 
-    def start_ingress(self, binding_id: str) -> None:
+    def ingress_manager(self):
         from app.channels import get_wechat_poll_manager
 
-        get_wechat_poll_manager().ensure_binding(binding_id)
-
-    def stop_ingress(self, binding_id: str) -> None:
-        from app.channels import get_wechat_poll_manager
-
-        get_wechat_poll_manager().stop_binding(binding_id)
+        return get_wechat_poll_manager()
 
 
 def is_self_message(msg: dict[str, Any], ilink_bot_id: str = "") -> bool:
@@ -939,7 +898,7 @@ class WeChatPollManager:
 
     def reconcile_once(self) -> None:
         """对比 DB 中 active 绑定与运行中线程，热启停。"""
-        with Session(self._engine) as db:
+        with channel_session(self._engine) as db:
             rows = db.exec(
                 select(ChannelBinding).where(
                     ChannelBinding.channel == "wechat",
@@ -965,7 +924,7 @@ class WeChatPollManager:
             self._stopped.wait(self._reconcile_seconds)
 
     def _load_binding(self, binding_id: str) -> ChannelBinding | None:
-        with Session(self._engine) as db:
+        with channel_session(self._engine) as db:
             binding = db.get(ChannelBinding, binding_id)
             if not binding or binding.status != "active":
                 return None
@@ -1060,7 +1019,7 @@ class WeChatPollManager:
 
         返回 True=冷却结束继续重试;False=应退出(stop 打断或恢复失败达上限)。
         """
-        with Session(self._engine) as db:
+        with channel_session(self._engine) as db:
             binding = db.get(ChannelBinding, binding_id)
             if not binding:
                 return False
@@ -1094,7 +1053,7 @@ class WeChatPollManager:
 
     def _clear_session_recovery(self, binding_id: str) -> None:
         """恢复重试成功:清 session_expired/计数/下次恢复时间(非恢复中不写库)。"""
-        with Session(self._engine) as db:
+        with channel_session(self._engine) as db:
             binding = db.get(ChannelBinding, binding_id)
             if not binding:
                 return
@@ -1140,7 +1099,7 @@ class WeChatPollManager:
         # 自愈失败转真过期:主动告警绑定创建者重新扫码(helper 内部整体兜底)
         from app.channels.service_outbox import notify_binding_creator
 
-        with Session(self._engine) as db:
+        with channel_session(self._engine) as db:
             binding = db.get(ChannelBinding, binding_id)
             if binding:
                 notify_binding_creator(db, binding, "微信渠道 token 已失效，请在渠道接入页重新扫码。")

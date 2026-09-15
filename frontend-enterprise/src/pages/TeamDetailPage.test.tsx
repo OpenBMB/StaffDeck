@@ -184,10 +184,14 @@ function stubDetailFetch(overrides?: {
   taskList?: TeamTaskRead[];
   onTlSession?: () => { session_id: string };
   taskDetails?: Record<string, TeamTaskRead>;
+  publicationTargets?: { targets: { id: string; name: string }[]; can_use_default: boolean; default_id?: string };
 }) {
   let boardRows = [...(overrides?.entries ?? [])];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url.includes('/knowledge-targets')) return jsonResponse(overrides?.publicationTargets ?? {
+      targets: [{ id: 'kb-1', name: '测试知识库' }], can_use_default: true,
+    });
     if (url.includes('/blackboard')) {
       const method = (init?.method || 'GET').toUpperCase();
       if (url.includes('/archive')) {
@@ -736,6 +740,9 @@ describe('TeamDetailPage', () => {
     expect(promotedButton.disabled).toBe(true);
 
     await user.click(within(board).getByRole('button', { name: '沉淀到知识库' }));
+    const publicationDialog = await screen.findByRole('dialog', { name: '沉淀到知识库' });
+    await waitFor(() => expect((within(publicationDialog).getByRole('button', { name: '确认提交' }) as HTMLButtonElement).disabled).toBe(false));
+    await user.click(within(publicationDialog).getByRole('button', { name: '确认提交' }));
 
     await waitFor(() => {
       const promoteCall = fetchMock.mock.calls.find(([input]) =>
@@ -747,6 +754,26 @@ describe('TeamDetailPage', () => {
     });
     await waitFor(() => {
       expect(within(board).getAllByRole('button', { name: '已沉淀' }).length).toBe(2);
+    });
+  });
+
+  it('requires a module-provided publication target when there is no default', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubDetailFetch({ entries: [makeEntry({ id: 'entry-1', content: 'publish me' })],
+      publicationTargets: { targets: [{ id: '_default', name: '企业资料库' }], can_use_default: false } });
+    renderDetail();
+    const board = screen.getByLabelText('团队黑板');
+    await within(board).findByText('publish me');
+    await user.click(within(board).getByRole('button', { name: '沉淀到知识库' }));
+    const dialog = await screen.findByRole('dialog', { name: '沉淀到知识库' });
+    expect((within(dialog).getByRole('button', { name: '确认提交' }) as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect((within(dialog).getByRole('combobox', { name: '目标知识库' }) as HTMLButtonElement).disabled).toBe(false));
+    await user.click(within(dialog).getByRole('combobox', { name: '目标知识库' }));
+    await user.click(await screen.findByRole('option', { name: '企业资料库' }));
+    await user.click(within(dialog).getByRole('button', { name: '确认提交' }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([input]) => String(input).includes('/blackboard/entry-1/promote'));
+      expect(JSON.parse(String(call?.[1]?.body)).knowledge_base_id).toBe('_default');
     });
   });
 

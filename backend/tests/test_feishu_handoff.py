@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -20,6 +21,17 @@ from app.db.models import (
     User,
     utc_now,
 )
+
+
+@pytest.fixture(autouse=True)
+def standalone_channel_handoff(monkeypatch):
+    """Test the legacy outbox with an explicit local assembly and channel adapter."""
+    from app.channels.adapters import base
+    from app.channels.adapters.wecom import WeComAdapter
+    from staffdeck_harness.security.oss_local import build_oss_local_profile
+    monkeypatch.setattr("staffdeck_harness.modules.registry._active", None)
+    monkeypatch.setattr("staffdeck_harness.security.profile._active", build_oss_local_profile())
+    monkeypatch.setitem(base._adapters, "wecom", WeComAdapter())
 
 
 class FakeEvents:

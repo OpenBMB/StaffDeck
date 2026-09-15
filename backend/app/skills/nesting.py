@@ -14,7 +14,7 @@ class SopNestingError(ValueError):
 
 
 def sop_capability_scope(skill: Skill | dict[str, Any]) -> str:
-    content = skill.content_json if isinstance(skill, Skill) else skill
+    content = skill.content_json if hasattr(skill, "content_json") else skill
     return (
         "sop_specific"
         if str((content or {}).get("capability_scope") or "").replace("-", "_")
@@ -72,7 +72,7 @@ def validate_sop_nesting(
 def _available_sop_parts(
     row: Skill | dict[str, Any],
 ) -> tuple[str, str, dict[str, Any]]:
-    if isinstance(row, Skill):
+    if hasattr(row, "content_json"):
         return row.skill_id, row.status, row.content_json or {}
     content = row.get("content")
     if not isinstance(content, dict):

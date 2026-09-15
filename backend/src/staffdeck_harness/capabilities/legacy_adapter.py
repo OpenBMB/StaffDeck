@@ -6,7 +6,6 @@ enter this adapter only after that allowlist was checked, before its old executi
 
 from __future__ import annotations
 
-from dataclasses import asdict
 
 from app.db.models import User, new_id
 from staffdeck_harness.capabilities.host import ActivationSlot, CapabilityHost, LifecycleFence
@@ -81,7 +80,7 @@ def bind(coordinator, request, session, frame, run, active_skill, model_config, 
                             "success": result.success,
                             "data": result.data,
                             "error": result.error,
-                            "receipt": asdict(host.current_receipt)
+                            "receipt": host.current_receipt.to_json()
                             if host.current_receipt
                             else None,
                             "citations": list(result.citations),
@@ -146,7 +145,7 @@ def bind(coordinator, request, session, frame, run, active_skill, model_config, 
             "error": result.error,
             "citations": list(result.citations),
             "artifacts": list(result.artifacts),
-            "receipt": asdict(receipt) if receipt else None,
+            "receipt": receipt.to_json() if receipt else None,
         }
 
     return invoke

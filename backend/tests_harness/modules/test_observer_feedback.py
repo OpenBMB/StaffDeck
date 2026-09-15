@@ -154,7 +154,9 @@ def test_provider_observer_feedback_receives_relayed_events(registry, monkeypatc
     assert [ev[2] for ev in seen] == ["harness_v3_assistant_message", "harness_v3_turn_ended", "harness_tool_result"]
     assert seen[0][3] == {"interrupted": True, "execution_engine": "harness_v3"}
     assert seen[1][3] == {"turn": 2, "reason": "stop"}
-    assert seen[2][3] == {"call_id": "c1", "is_error": True, "execution_engine": "harness_v3"}
+    assert seen[2][3]['call_id'] == 'c1' and seen[2][3]['is_error'] is True
+    assert seen[2][3]['success'] is False
+    assert seen[2][3]['error']['code'] == 'ENGINE_TOOL_ERROR'
 
 
 def test_provider_observer_feedback_can_be_replaced_by_explicit_registration(registry, monkeypatch) -> None:

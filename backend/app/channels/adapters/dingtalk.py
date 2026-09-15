@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.channels.storage import channel_session
+
 import logging
 import threading
 import asyncio
@@ -17,6 +19,7 @@ from sqlmodel import Session, select
 from sqlalchemy import update
 
 from app.channels.adapters.base import (
+    ManagedIngressLifecycle,
     ChannelInbound,
     ChannelInboundAttachment,
     register_channel_adapter,
@@ -361,7 +364,7 @@ def _emotion_body(
     }
 
 
-class DingTalkAdapter:
+class DingTalkAdapter(ManagedIngressLifecycle):
     # 钉钉不提供“查询我加过的表情”接口，无法在崩溃后回查远端状态；但 emotion/reply
     # 参数固定且可重复提交，因此重试路径直接重发而不是回查。
     reaction_attach_idempotent = True
@@ -587,15 +590,10 @@ class DingTalkAdapter:
         except (httpx.HTTPError, ValueError) as exc:
             raise DingTalkTransientError("钉钉消息发送暂时失败") from exc
 
-    def start_ingress(self, binding_id: str) -> None:
+    def ingress_manager(self):
         from app.channels import get_dingtalk_stream_manager
 
-        get_dingtalk_stream_manager().ensure_binding(binding_id)
-
-    def stop_ingress(self, binding_id: str) -> None:
-        from app.channels import get_dingtalk_stream_manager
-
-        get_dingtalk_stream_manager().stop_binding(binding_id)
+        return get_dingtalk_stream_manager()
 
 
 class DingTalkStreamManager:
@@ -640,7 +638,7 @@ class DingTalkStreamManager:
         from app.channels.dingtalk_runtime import DingTalkCallbackHandler
 
         try:
-            with Session(self._engine) as db:
+            with channel_session(self._engine) as db:
                 binding = db.get(ChannelBinding, binding_id)
                 if not binding or binding.status != "active" or binding.channel != "dingtalk":
                     return
@@ -698,7 +696,7 @@ class DingTalkStreamManager:
                 await asyncio.to_thread(on_connected, False)
 
     def _set_connected(self, binding_id: str, revision: int, connected: bool) -> None:
-        with Session(self._engine) as db:
+        with channel_session(self._engine) as db:
             db.exec(
                 update(ChannelBinding)
                 .where(
@@ -750,7 +748,7 @@ class DingTalkStreamManager:
     def _reconcile_loop(self) -> None:
         while not self._reconcile_stop.wait(5.0):
             try:
-                with Session(self._engine) as db:
+                with channel_session(self._engine) as db:
                     active = {
                         row.id
                         for row in db.exec(

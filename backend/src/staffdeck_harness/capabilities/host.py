@@ -30,8 +30,7 @@ from typing import Any, Callable, Mapping
 
 from sqlmodel import Session
 
-from app.agents.branching import get_agent
-from app.db.models import GeneralSkill, KnowledgeBase, MCPServer, ModelConfig, Tool
+from app.db.models import ModelConfig
 from staffdeck_harness.capabilities.facade import FacadeDeps, SandboxFacade, workspace_for
 from staffdeck_harness.capabilities.ledger import InvocationLedger, _Replayed
 from staffdeck_harness.composition.compiler import CapabilityGrant, CompositionSnapshot
@@ -211,7 +210,8 @@ class CapabilityHost:
         self.current_receipt: Receipt | None = None
         self._invoke_lock = threading.RLock()
         self._ledger = InvocationLedger(self.db)
-        self._agent_row = get_agent(self.db, self.slot.snapshot.tenant_id, None if self.slot.snapshot.staff_id.endswith(":overall") else self.slot.snapshot.staff_id)
+        self._catalogs = {}
+        self._descriptors = {}
 
     # -- schemas the Bridge registers in the engine -----------------------------------
 
@@ -239,14 +239,13 @@ class CapabilityHost:
             if kind != "all" and g.resource_type != kind:
                 continue
             item: dict[str, Any] = {"kind": g.resource_type, "id": g.resource_id, "name": g.name, "scope": g.scope, "operation": g.operation}
-            if g.resource_type == "tool":
-                row = self.db.get(Tool, g.resource_id)
-                if row is not None:
-                    item.update({"description": row.description, "tool_type": row.tool_type, "input_schema": dict(row.input_schema or {})})
-            elif g.resource_type == "general_skill":
-                row = self.db.get(GeneralSkill, g.resource_id)
-                if row is not None:
-                    item.update({"slug": row.slug, "description": (row.metadata_json or {}).get("description")})
+            try:
+                descriptor = self._descriptor(g)
+                self._authorize_descriptor(g.operation, descriptor)
+                item.update({"description": descriptor.description, "input_schema": dict(descriptor.input_schema),
+                             **dict(descriptor.metadata)})
+            except (ModuleSdkError, PermissionDenied, AuthorizationUnavailable):
+                continue
             if self.registry and g.operation in self.registry.operations:
                 contract = self.registry.operations[g.operation]
                 item.update({"input_schema": dict(contract.parameters), "description": contract.description, "proxy": "capability_invoke"})
@@ -305,19 +304,6 @@ class CapabilityHost:
         if op == "tool.invoke/v1":
             binding_id = str(args.get("tool_id") or "")
             inner = dict(args.get("arguments") or {})
-            row = self.db.get(Tool, binding_id) if binding_id else None
-            if row is not None:
-                side_effecting = str(row.method or "").upper() in SIDE_EFFECTING_METHODS
-                cfg = row.config_json if isinstance(row.config_json, dict) else {}
-                idem = cfg.get("idempotency") if isinstance(cfg.get("idempotency"), dict) else {}
-                # Disabling idempotency turns off replay/dedupe, not side-effect tracking: a POST
-                # that fails with an ambiguous outcome must still be recorded ``outcome_unknown``.
-                if idem.get("enabled") is False:
-                    replayable = False
-                key_fields = tuple(str(k) for k in (idem.get("key_fields") or ()))
-                # A2A is a durable task; the A2A client dedupes on invocation_id itself.
-                if row.tool_type == "a2a":
-                    side_effecting = False
             args = {**inner, "tool_id": binding_id}
         elif op == "general_skill.consume/v1":
             binding_id = str(args.get("skill_id") or "")
@@ -346,9 +332,19 @@ class CapabilityHost:
                 return ModuleResult.fail(exc.code, exc.message), None
 
     def _invoke(self, inv: ModuleInvocation) -> tuple[ModuleResult, Receipt | None]:
+        if self.slot.snapshot.session_policy.get("read_only"):
+            readable = inv.operation == "general_skill.consume/v1" or (
+                inv.operation == "sandbox.execute/v1" and inv.arguments.get("tool") in
+                {"read_file", "list_directory", "glob", "grep", "file_info", "extract_document_text"}
+                and not (inv.arguments.get("arguments") or {}).get("output_path"))
+            if not readable:
+                return ModuleResult.fail("READ_ONLY_TEST", "本次为只读测试，不能执行命令、写文件或调用业务工具。"), None
         # 1. activation fence (local, monotonic)
         try:
             self.fence.check(self.slot)
+            if (inv.context.tenant_id != self.slot.snapshot.tenant_id
+                    or inv.context.agent_id != self.slot.snapshot.staff_id):
+                raise ActivationFenced("调用身份与当前装配不一致")
             self._fence_resource(inv)
         except ActivationFenced as exc:
             return ModuleResult(success=False, error={"code": exc.code, "message": exc.message,
@@ -366,7 +362,19 @@ class CapabilityHost:
 
         # Replays are reads too: authorization must precede cache access.
         try:
-            self._pep(inv)
+            descriptors = self._pep(inv)
+            from dataclasses import replace
+            if len(descriptors) == 1:
+                descriptor = descriptors[0]
+                inv = replace(inv, side_effecting=descriptor.side_effecting or inv.side_effecting,
+                              replayable=descriptor.replayable, idempotency_key_fields=descriptor.idempotency_key_fields)
+                if descriptor.input_schema and inv.operation in {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"}:
+                    from jsonschema import ValidationError, validate
+                    args = {k: value for k, value in inv.arguments.items() if k != "tool_id"}
+                    try:
+                        validate(args, dict(descriptor.input_schema))
+                    except ValidationError as exc:
+                        return _invalid_arguments(descriptor.name, exc), None
         except (PermissionDenied, AuthorizationUnavailable) as exc:
             try:
                 entry = self._ledger.start(inv)
@@ -417,27 +425,19 @@ class CapabilityHost:
     def _postprocess(self, inv: ModuleInvocation, result: ModuleResult, receipt: Receipt) -> tuple[ModuleResult, Receipt]:
         # Output denial must not release the claim of an already-sent write.
         self.current_receipt = receipt
-        if self.hooks is not None:
-            post = self._hooks("post_tool", inv, result)
-            if post.kind == "deny":
-                result = ModuleResult.fail("POST_TOOL_DENIED", post.reason or "result refused by policy")
-            elif post.replacement is not None:
-                result = post.replacement if isinstance(post.replacement, ModuleResult) else ModuleResult.fail("POST_TOOL_DENIED", "hook replacement must be a ModuleResult")
+        result = self.project_result(inv, result)
         self._ledger.cache_projection(receipt, result)
-        from dataclasses import asdict
-
         name = inv.operation
-        if inv.operation in {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"}:
-            row = self.db.get(Tool, inv.binding_id)
-            name = row.name if row else name
-        elif inv.operation == "general_skill.consume/v1":
-            row = self.db.get(GeneralSkill, inv.binding_id)
-            name = f"general_skill.{row.slug}" if row else name
+        descriptor = self._descriptors.get((inv.operation, inv.binding_id))
+        if descriptor is not None:
+            name = descriptor.name
+            if inv.operation == "general_skill.consume/v1":
+                name = f"general_skill.{descriptor.metadata.get('slug', descriptor.name)}"
         elif inv.operation == "knowledge.search/v1":
             name = "knowledge_search"
         self.results.append({"tool_name": name, "operation": inv.operation, "resource_id": inv.binding_id,
                              "success": result.success, "data": result.data, "error": result.error,
-                             "citations": list(result.citations), "receipt": asdict(receipt)})
+                             "citations": list(result.citations), "receipt": receipt.to_json()})
         if result.success:
             for c in result.citations or ():
                 if isinstance(c, Mapping):
@@ -487,76 +487,103 @@ class CapabilityHost:
             raise ActivationFenced("资源 id 为空或不在当前步骤的绑定集合中，本次未执行业务操作。请从 capability_describe 返回的 id 选择资源，不使用展示名称代替 id。",
                                    details={"reason": "RESOURCE_NOT_BOUND", "resource_type": rtype, "resource_id": inv.binding_id})
 
-    def _pep(self, inv: ModuleInvocation) -> None:
-        """Host-side policy check, run before ``_dispatch``.
+    def _source_context(self):
+        from staffdeck_harness.contracts.sources import SourceContext
+        return SourceContext(self.slot.snapshot.tenant_id, self.slot.snapshot.staff_id,
+                             self.slot.session_id, self.security_context.channel or "web",
+                             self.security_context.actor_user_id or self.security_context.principal_id,
+                             self.security_context.execution)
 
-        The PEP is a *host* obligation, not a provider courtesy: without this a remote/external
-        provider that never calls ``self.d.guard.require`` would bypass it entirely. The Guarded
-        Facade still re-checks against the live row (defence in depth, and it owns the live-ref
-        attributes), so this only closes the bypass, it never grants anything.
-        """
+    def _descriptor(self, grant):
+        from staffdeck_harness.composition.sources import resolve_source
+        from staffdeck_harness.contracts.manifest import SlotName
+        from staffdeck_harness.contracts.sources import ResourceDescriptor
 
-        from staffdeck_harness.composition.projection import live_resource_ref
+        installed = self.registry.resolve_operation_provider(grant.operation, grant.provider_module_id) if self.registry else None
+        if installed is None:
+            raise ModuleSdkError("绑定的能力模块不可用", code="PROVIDER_UNAVAILABLE")
+        if grant.provider_version and grant.provider_version != installed.manifest.version:
+            raise ModuleSdkError("模块版本与执行快照不一致", code="PROVIDER_VERSION_CHANGED")
+        catalog_id = self.registry.resolve_catalog_provider(installed).manifest.module_id
+        if catalog_id not in self._catalogs:
+            self._catalogs[catalog_id] = resolve_source(self.registry, SlotName.RESOURCE_CATALOG, self.db, module_id=catalog_id)
+        from dataclasses import replace
+        d = self._catalogs[catalog_id].resolve(replace(self._source_context(), resource_config=grant.provider_config), grant.resource_type,
+                                              grant.resource_id, grant.operation)
+        if not isinstance(d, ResourceDescriptor) or (d.ref.type, d.ref.id, d.ref.tenant_id) != (
+                grant.resource_type, grant.resource_id, self.slot.snapshot.tenant_id):
+            raise ModuleSdkError("目录返回了不匹配的资源身份", code="RESOURCE_CONTRACT_INVALID")
+        tool_ops = {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"}
+        if d.operation != grant.operation and not {d.operation, grant.operation} <= tool_ops:
+            raise ModuleSdkError("资源操作与绑定不一致", code="RESOURCE_CONTRACT_INVALID")
+        if not d.available:
+            raise ModuleSdkError("资源已停用或不可用", code="RESOURCE_UNAVAILABLE")
+        if grant.resource_digest and grant.resource_digest != d.digest:
+            raise ModuleSdkError("资源版本与当前执行快照不一致", code="CAPABILITY_SNAPSHOT_CHANGED")
+        previous = self._descriptors.get((grant.operation, grant.resource_id))
+        if previous is not None and previous.digest and previous.digest != d.digest:
+            raise ModuleSdkError("资源在本次执行中发生变化，请重新装配", code="CAPABILITY_SNAPSHOT_CHANGED")
+        self._descriptors[(grant.operation, grant.resource_id)] = d
+        return d
 
-        def _ref(row: Any, rtype: str) -> ResourceRef:
-            # live_resource_ref resolves the acting agent's binding row, so ``binding_status`` /
-            # ``private_to_agent`` reflect the real binding — the same projection the facade uses.
-            return live_resource_ref(self.db, inv.context.tenant_id, rtype, row, agent=self._agent_row)
+    def _pep(self, inv: ModuleInvocation):
+        """Unskippable authorization uses catalog descriptors, never resource ORM rows."""
+        grants = [g for g in self.slot.grants() if g.operation == inv.operation
+                  and (not inv.binding_id or g.resource_id == inv.binding_id)]
+        if inv.operation == "knowledge.search/v1":
+            requested = set(inv.arguments.get("knowledge_base_ids") or ())
+            grants = [g for g in grants if not requested or g.resource_id in requested]
+        if inv.operation == "sandbox.execute/v1":
+            self.guard.require(self.security_context, inv.operation, ResourceRef(
+                type="capability", id=f"sandbox:{inv.arguments.get('tool') or inv.operation}",
+                tenant_id=inv.context.tenant_id, attributes={"binding_status": "active", "private_to_agent": True}))
+            return []
+        if not grants:
+            raise PermissionDenied("no resource bound for this operation", details={"operation": inv.operation})
+        descriptors = []
+        for g in grants:
+            d = self._descriptor(g)
+            self._authorize_descriptor(inv.operation, d)
+            descriptors.append(d)
+        return descriptors
 
-        op = inv.operation
-        ctx = self.security_context
-        if self.registry and op in self.registry.operations:
+    def _authorize_descriptor(self, operation, descriptor):
+        guard = self.guard
+        if self.registry and operation in self.registry.operations:
             from staffdeck_harness.contracts.security import PolicyActionMapper
+            contract = self.registry.operations[operation]
+            guard = Guard(self.guard.module_id, self.guard.profile,
+                          PolicyActionMapper({operation: (contract.action, contract.resource_type)}))
+        guard.require(self._resource_security_context(operation, descriptor.ref), descriptor.operation, descriptor.ref)
+        for related in descriptor.related_resources:
+            if related.tenant_id != self.slot.snapshot.tenant_id:
+                raise PermissionDenied("related resource crossed tenant boundary")
+            guard.require(self._resource_security_context(operation, related), descriptor.operation, related)
 
-            contract = self.registry.operations[op]
-            row_type = {"tool": Tool, "knowledge_base": KnowledgeBase, "general_skill": GeneralSkill, "mcp_server": MCPServer}.get(contract.resource_type)
-            row = self.db.get(row_type, inv.binding_id) if row_type and inv.binding_id else None
-            if row is None or row.tenant_id != inv.context.tenant_id:
-                raise PermissionDenied("extension resource unavailable")
-            Guard(self.guard.module_id, self.guard.profile, PolicyActionMapper({op: (contract.action, contract.resource_type)})).require(ctx, op, _ref(row, contract.resource_type))
-            return
+    def _resource_security_context(self, operation, resource):
+        """Execution location is not authority provenance.
 
-        if op in {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"}:
-            row = self.db.get(Tool, inv.binding_id) if inv.binding_id else None
-            if row is None or row.tenant_id != inv.context.tenant_id or not row.enabled:
-                raise PermissionDenied("tool unavailable")
-            if row is not None and row.tenant_id == inv.context.tenant_id:
-                tool_op = {"http": "tool.invoke/v1", "mcp": "mcp.invoke/v1", "a2a": "a2a.invoke/v1"}.get(row.tool_type, "tool.invoke/v1")
-                self.guard.require(ctx, tool_op, _ref(row, "tool"))
-                if row.tool_type == "mcp" and row.mcp_server_id:
-                    server = self.db.get(MCPServer, row.mcp_server_id)
-                    if server is not None:
-                        self.guard.require(ctx, "mcp.invoke/v1", _ref(server, "mcp_server"))
-            return
-        if op == "general_skill.consume/v1":
-            row = self.db.get(GeneralSkill, inv.binding_id) if inv.binding_id else None
-            if row is None or row.tenant_id != inv.context.tenant_id:
-                raise PermissionDenied("skill unavailable")
-            if row is not None and row.tenant_id == inv.context.tenant_id:
-                self.guard.require(ctx, op, _ref(row, "general_skill"))
-            return
-        if op == "knowledge.search/v1":
-            allowed = self.slot.allowed().get("knowledge_base", set())
-            requested = {str(i) for i in (inv.arguments.get("knowledge_base_ids") or []) if str(i).strip()}
-            # Knowledge selects resources inside the facade by intersecting requested & allowed;
-            # here we narrow with the PEP so the selection is already policy-filtered.
-            candidates = sorted(requested & allowed) if requested else sorted(allowed)
-            if not candidates or requested - allowed:
-                raise PermissionDenied("knowledge base not activated")
-            for kb_id in candidates:
-                row = self.db.get(KnowledgeBase, kb_id)
-                if row is None or row.tenant_id != inv.context.tenant_id:
-                    raise PermissionDenied("knowledge base unavailable")
-                if row is not None and row.tenant_id == inv.context.tenant_id:
-                    self.guard.require(ctx, op, _ref(row, "knowledge_base"))
-            return
-        if op == "sandbox.execute/v1":
-            self.guard.require(ctx, op, ResourceRef(type="capability", id=f"sandbox:{inv.arguments.get('tool') or inv.operation}", tenant_id=inv.context.tenant_id, attributes={"binding_status": "active", "private_to_agent": True}))
-            return
-        # Anything else (e.g. an external ``staff.capability`` family) has no default policy
-        # action in DEFAULT_ACTION_MAP; fail closed rather than silently allowing a provider
-        # the host cannot classify.
-        raise PermissionDenied(f"no policy action mapped for operation {op!r}", details={"operation": op})
+        A SOP slot may override the provider/version of a Staff-owned capability
+        without turning its authorization into a SOP delegation. Only capabilities
+        absent from the direct Staff grant set use the active SOP's authority.
+        The snapshot, not model arguments or descriptor metadata, selects the path.
+        """
+        from dataclasses import replace
+        staff_owned = resource.tenant_id == self.slot.snapshot.tenant_id and any(g.scope == 'general' and g.sop_id is None
+            and (g.operation, g.resource_type, g.resource_id) == (operation, resource.type, resource.id)
+            for g in self.slot.snapshot.grants)
+        plan = self.slot.snapshot.sop(self.slot.active_sop_id) if self.slot.active_sop_id else None
+        ref = dict(plan.authorization_ref) if not staff_owned and plan and plan.authorization_ref else None
+        # Clear inherited SOP context for Staff-owned resources, including async
+        # resumption. Never retry a denied SOP delegation as a Staff permission.
+        return replace(self.security_context, sop_authorization_ref=ref,
+            attributes={**self.security_context.attributes,
+                        'capability_authority': 'staff' if staff_owned else 'sop' if plan else 'staff'})
+
+    def project_result(self, inv: ModuleInvocation, result: ModuleResult) -> ModuleResult:
+        """Project an already executed result; never invokes a provider or releases its claim."""
+        from staffdeck_harness.runtime.result_policy import project_result
+        return project_result(self._hooks if self.hooks is not None else None, inv, result)
 
     def _hooks(self, point: str, inv: ModuleInvocation, result: ModuleResult | None = None) -> HookDecision:
         """Invoke the wired pipeline hook for ``pre_tool``/``post_tool``.
@@ -573,13 +600,17 @@ class CapabilityHost:
             logger.exception("hook %s failed on %s", point, inv.operation)
             return HookDecision.deny(f"required {point} pipeline failed")
 
+    def _local_agent(self):
+        from staffdeck_harness.composition.local_sources import local_agent
+        return local_agent(self.db, self._source_context())
+
     def _deps(self) -> FacadeDeps:
         return FacadeDeps(
             db=self.db,
             guard=self.guard,
             security_context=self.security_context,
             model_config=self.model_config,
-            agent_row=self._agent_row,
+            agent_row=self._local_agent(),
             trace=self.trace,
             remaining_seconds=self.slot.remaining_seconds,
         )
@@ -592,6 +623,16 @@ class CapabilityHost:
 
     def sandbox(self, ctx: InvocationContext) -> SandboxFacade:
         if self._sandbox is None:
+            from staffdeck_harness.contracts.manifest import SlotName
+            from staffdeck_harness.contracts.workspace import WorkspaceActivation
+            item = self.registry.provider(SlotName.RUNTIME_WORKSPACE) if self.registry else None
+            if item is not None:
+                self._sandbox = item.provider.build(WorkspaceActivation(
+                    ctx, str(self._workspace_root(ctx)), self.slot.snapshot.session_policy,
+                    lambda op, ref: self.guard.require(self.security_context, op, ref),
+                    self._emit, self.slot.remaining_seconds))
+                self._emit("workspace_provider_selected", {"module_id": item.manifest.module_id})
+                return self._sandbox
             policy = self.slot.snapshot.session_policy
             self._sandbox = SandboxFacade(
                 self._deps(),
@@ -604,7 +645,19 @@ class CapabilityHost:
             )
         return self._sandbox
 
-    def _dispatch(self, inv: ModuleInvocation) -> ModuleResult:
+    def authorize_http_task(self, inv: ModuleInvocation):
+        """Public revalidation port for a deferred task; never executes the HTTP request."""
+        self._fence_resource(inv)
+        self._pep(inv)
+        result = self._dispatch(inv, definition_only=True)
+        from staffdeck_harness.contracts.http_task import AuthorizedHttpTask
+        if not isinstance(result, AuthorizedHttpTask):
+            error = result.error if isinstance(result, ModuleResult) else None
+            raise ModuleSdkError((error or {}).get('message') or 'HTTP 定义授权未完成',
+                code=(error or {}).get('code') or 'ASYNC_PROVIDER_UNAVAILABLE')
+        return result
+
+    def _dispatch(self, inv: ModuleInvocation, *, definition_only=False):
         """Resolve the provider for ``inv.operation`` from the Module Registry and run it.
 
         Providers are ``A``/``T`` modules installed under ``staff.capability``; the host
@@ -641,16 +694,42 @@ class CapabilityHost:
         from types import MappingProxyType
         from staffdeck_harness.capabilities.local_services import invoke_local
         from staffdeck_harness.contracts.provider import ProviderContext
+        from staffdeck_harness.runtime.authorized_transport import selected_transport
 
         grants = [g for g in self.slot.grants() if g.operation == inv.operation]
         context = ProviderContext(
             module_id=installed.manifest.module_id, module_version=installed.manifest.version,
             config=MappingProxyType({**dict(installed.config), **next((dict(g.provider_config) for g in grants if not inv.binding_id or g.resource_id == inv.binding_id), {})}),
             resource_ids=tuple(g.resource_id for g in grants),
-            resource_digests=MappingProxyType({g.resource_id: g.resource_digest for g in grants if g.resource_digest}),
+            resource_digests=MappingProxyType({g.resource_id: (self._descriptors.get((g.operation, g.resource_id)).digest
+                if self._descriptors.get((g.operation, g.resource_id)) else g.resource_digest)
+                for g in grants if g.resource_digest or self._descriptors.get((g.operation, g.resource_id))}),
             remaining_seconds=self.slot.remaining_seconds, emit=self._emit,
             call_local=lambda: invoke_local(self, inv),
+            workspace=self.sandbox(inv.context) if inv.operation == "general_skill.consume/v1" else None,
+            resource_configs=MappingProxyType({g.resource_id: MappingProxyType(dict(g.provider_config)) for g in grants}),
+            transport=selected_transport(self.db, self.registry),
+            prepared_http_definition=getattr(self._descriptors.get((inv.operation, inv.binding_id)), 'prepared_http_definition', None),
+            local_http_definition=lambda: __import__(
+                "staffdeck_harness.runtime.external_tasks", fromlist=["local_definition"]
+            ).local_definition(self.db, inv, active_sop_id=self.slot.active_sop_id),
         )
+        definition_port = getattr(provider, "http_definition", None)
+        definition = definition_port(context, inv) if callable(definition_port) and inv.operation == "tool.invoke/v1" else None
+        if definition_only:
+            if definition is None:
+                raise ModuleSdkError("该模块未提供 HTTP 任务定义", code="ASYNC_PROVIDER_UNAVAILABLE")
+        if definition is not None:
+            from staffdeck_harness.contracts.http_task import AuthorizedHttpTask
+            descriptor = self._descriptors.get((inv.operation, inv.binding_id))
+            authorized = AuthorizedHttpTask(definition, installed.manifest.module_id,
+                installed.manifest.version, descriptor.digest if descriptor else "")
+            if definition_only:
+                return authorized
+            from staffdeck_harness.runtime.external_tasks import execute_http
+            return execute_http(inv, authorized, db=self.db,
+                active_sop_id=self.slot.active_sop_id, active_node_id=self.slot.active_node_id,
+                timeout_seconds=self.slot.remaining_seconds())
         return invoke(context, inv)
 
     def _provider_pin(self, inv: ModuleInvocation) -> str | None:

@@ -268,13 +268,21 @@ def stage_webhook_deliveries(
     return delivery_ids
 
 
-def enqueue_webhook_deliveries(delivery_ids: list[str]) -> None:
+def enqueue_webhook_deliveries(delivery_ids: list[str], *, data_services=None) -> None:
     for delivery_id in delivery_ids:
-        enqueue_async_job("public_api.webhook", deliver_webhook, delivery_id)
+        from staffdeck_harness.runtime.jobs import enqueue_runtime_job
+        enqueue_runtime_job("public_api.webhook", deliver_webhook, delivery_id, data_services=data_services,
+                            registry=getattr(data_services, "registry", None))
 
 
-def deliver_webhook(delivery_id: str) -> None:
-    with Session(engine) as db:
+def deliver_webhook(delivery_id: str, *, data_services=None) -> None:
+    from app.public_api.runtime import maintenance_sessions
+    from staffdeck_harness.runtime.services import runtime_services
+    if data_services is None:
+        for seed in maintenance_sessions(engine):
+            deliver_webhook(delivery_id, data_services=runtime_services(seed))
+        return
+    with data_services.session(None, purpose="webhook-delivery") as db:
         owner = f"whlease_{secrets.token_hex(12)}"
         now = utc_now()
         claim = db.exec(
@@ -410,11 +418,13 @@ def datetime_now_timestamp() -> int:
 
 
 def enqueue_due_webhook_deliveries() -> None:
-    with Session(engine) as db:
+    from app.public_api.runtime import maintenance_sessions
+    from staffdeck_harness.runtime.services import runtime_services
+    for db in maintenance_sessions(engine):
         rows = db.exec(
             select(WebhookDelivery).where(
                 WebhookDelivery.status.in_(["queued", "retrying"]),  # type: ignore[attr-defined]
                 WebhookDelivery.next_attempt_at <= utc_now(),
             )
         ).all()
-    enqueue_webhook_deliveries([row.id for row in rows])
+        enqueue_webhook_deliveries([row.id for row in rows], data_services=runtime_services(db))

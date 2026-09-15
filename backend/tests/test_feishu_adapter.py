@@ -238,6 +238,19 @@ def test_credential_validation_classifies_provider_outage_as_transient(failure_u
         )
 
 
+@pytest.mark.parametrize('stage,code',[('tenant_token','FEISHU_CREDENTIALS_REJECTED'),('bot_info','FEISHU_BOT_INFO_REJECTED')])
+def test_credential_failure_preserves_safe_stage_and_code(stage,code):
+    from app.channels.adapters.feishu import FeishuCredentialError
+    def handler(url,kwargs):
+        if '/auth/' in url and stage=='bot_info':
+            return _response(200,{'code':0,'tenant_access_token':'hidden-token'},url)
+        return _response(200,{'code':10003,'msg':'never-echo-this-secret'},url)
+    with pytest.raises(FeishuCredentialError) as error:
+        validate_feishu_credentials('cli_test','private-secret',client_factory=lambda:FakeClient(handler))
+    assert error.value.code==code and error.value.stage==stage and error.value.provider_code==10003
+    assert 'never-echo-this-secret' not in str(error.value) and 'hidden-token' not in str(error.value)
+
+
 def test_http_200_business_error_is_permanent() -> None:
     def handler(url, _kwargs):
         if "/auth/" in url:
@@ -1226,4 +1239,3 @@ def test_update_card_429_is_transient() -> None:
     adapter = FeishuAdapter(client_factory=lambda: FakeClient(handler))
     with pytest.raises(FeishuTransientError, match="暂时不可用"):
         adapter.update_card(_binding(), "om_card", {})
-

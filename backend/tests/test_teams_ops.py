@@ -420,8 +420,9 @@ def test_blackboard_promote_creates_ingest_job_idempotent(
         db.commit()
         db.refresh(entry)
         enqueued: list[tuple[tuple, dict]] = []
+        from app.api import knowledge as knowledge_api
         monkeypatch.setattr(
-            teams_api, "enqueue_async_job",
+            knowledge_api, "enqueue_async_job",
             lambda *args, **kw: enqueued.append((args, kw)),
         )
 

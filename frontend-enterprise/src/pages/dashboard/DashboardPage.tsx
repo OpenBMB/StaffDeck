@@ -11,6 +11,7 @@ import IconProfileAlarm from '../../assets/icons/profile-alarm.svg?react';
 import IconProfileHistory from '../../assets/icons/profile-history.svg?react';
 import IconProfileCalendar from '../../assets/icons/profile-calendar.svg?react';
 import { api, TENANT_ID } from '../../api/client';
+import { loadEmployeeDirectory } from '../../api/employee-directory';
 import type { EnterpriseAuthUser } from '../../auth';
 import AppHeader from '../../components/AppHeader';
 import EmployeeAvatar from '../../components/EmployeeAvatar';
@@ -49,6 +50,10 @@ import type {
 import { isTeamScope, readEmployeeScope } from '../../lib/agent-scope-storage';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
+const PANEL_LABELS: Record<string, string> = {
+  skills: 'SOP', generalSkills: '技能', knowledge: '知识库', models: '模型',
+  tools: '工具', sessions: '对话日志', feedback: '反馈', tasks: '定时任务', work: '工作记录',
+};
 
 export default function DashboardPage({
   currentUser,
@@ -76,6 +81,11 @@ export default function DashboardPage({
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [validatedScope, setValidatedScope] = useState<string | null>(null);
+  const requestedScope = `${currentUser?.id || ''}:${agentId}`;
+  const [panelStates, setPanelStates] = useState<Record<string, 'loading' | 'ready' | 'error'>>({});
+  const [panelErrors, setPanelErrors] = useState<Record<string, string>>({});
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
@@ -90,24 +100,21 @@ export default function DashboardPage({
     let cancelled = false;
     let switchingAgent = false;
     setLoaded(false);
-    Promise.all([
-      api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`),
-      api.get<SkillRead[]>(`/api/enterprise/skills?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
-      api.get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
-      api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
-      api.get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${TENANT_ID}`),
-      api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
-      api.get<EnterpriseChatSessionRead[]>(`/api/enterprise/sessions?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
-      api.get<FeedbackSummaryRead>(`/api/enterprise/feedback/summary?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
-      api.get<ScheduledTaskRead[]>(`/api/enterprise/scheduled-tasks?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
-    ])
-      .then(([agentRows, skillRows, generalSkillRows, kbRows, modelRows, toolRows, sessionRows, feedbackRows, taskRows]) => {
+    setValidatedScope(null);
+    setPanelStates(Object.fromEntries(Object.keys(PANEL_LABELS).map((key) => [key, 'loading'])));
+    setPanelErrors({});
+    setSkills([]); setGeneralSkills([]); setKnowledgeBases([]); setModels([]);
+    setTools([]); setSessions([]); setFeedbackSummary(null); setScheduledTasks([]);
+    const controller = new AbortController();
+    // Persisted scope is only a preference: it may belong to a previous assembly.
+    // Resolve it against the current roster before making any scoped request.
+    loadEmployeeDirectory(controller.signal)
+      .then(async (agentRows) => {
         if (cancelled) return;
         const visibleAgents = agentRows.filter((item) => canSelectCurrentEmployeeAgent(item, currentUser, {
           activeOnly: true,
         }));
         setAgents(visibleAgents);
-        setModels(modelRows);
         if (!agentId || !visibleAgents.some((item) => item.id === agentId)) {
           const manageableAgents = visibleAgents.filter((item) => canManageEmployeeAgent(item, currentUser));
           const next = isAdmin
@@ -122,24 +129,57 @@ export default function DashboardPage({
             setAgentId(next);
             return;
           }
+          window.localStorage.removeItem(ENTERPRISE_AGENT_STORAGE_KEY);
+          setAgentId('');
+          setSkills([]);
+          setGeneralSkills([]);
+          setKnowledgeBases([]);
+          setModels([]);
+          setTools([]);
+          setSessions([]);
+          setFeedbackSummary(null);
+          setScheduledTasks([]);
+          return;
         }
-        setSkills(skillRows);
-        setGeneralSkills(generalSkillRows);
-        setKnowledgeBases(kbRows);
-        setTools(toolRows);
-        setSessions(sessionRows);
-        setFeedbackSummary(feedbackRows);
-        setScheduledTasks(taskRows.filter((item) => item.status !== 'archived'));
+        const scope = `tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(agentId)}`;
+        setValidatedScope(`${currentUser?.id || ''}:${agentId}`);
         setLoaded(true);
+        async function loadPanel<T>(key: string, path: string, apply: (value: T) => void) {
+          try {
+            const value = await api.get<T>(path, { signal: controller.signal });
+            if (cancelled) return;
+            apply(value);
+            setPanelStates((state) => ({ ...state, [key]: 'ready' }));
+          } catch (error) {
+            if (cancelled) return;
+            const message = error instanceof Error ? error.message : '加载失败，请重试';
+            setPanelStates((state) => ({ ...state, [key]: 'error' }));
+            setPanelErrors((state) => ({ ...state, [key]: message }));
+            notify.error(message);
+          }
+        }
+        await Promise.all([
+          loadPanel<SkillRead[]>('skills', `/api/enterprise/skills?${scope}`, setSkills),
+          loadPanel<GeneralSkillRead[]>('generalSkills', `/api/enterprise/general-skills?${scope}`, setGeneralSkills),
+          loadPanel<KnowledgeBaseRead[]>('knowledge', `/api/enterprise/knowledge-bases?${scope}`, setKnowledgeBases),
+          loadPanel<ModelConfigRead[]>('models', `/api/enterprise/model-configs?tenant_id=${TENANT_ID}`, setModels),
+          loadPanel<ToolRead[]>('tools', `/api/enterprise/tools?${scope}`, setTools),
+          loadPanel<EnterpriseChatSessionRead[]>('sessions', `/api/enterprise/sessions?${scope}`, setSessions),
+          loadPanel<FeedbackSummaryRead>('feedback', `/api/enterprise/feedback/summary?${scope}`, setFeedbackSummary),
+          loadPanel<ScheduledTaskRead[]>('tasks', `/api/enterprise/scheduled-tasks?${scope}`, (rows) => setScheduledTasks(rows.filter((item) => item.status !== 'archived'))),
+        ]);
       })
-      .catch((error) => notify.error(error instanceof Error ? error.message : '加载数字员工档案失败'))
+      .catch((error) => {
+        if (!cancelled) notify.error(error instanceof Error ? error.message : '加载数字员工档案失败');
+      })
       .finally(() => {
         if (!cancelled && !switchingAgent) setLoaded(true);
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [agentId, currentUser, isAdmin]);
+  }, [agentId, currentUser, isAdmin, reload]);
 
   const selectedAgent = agents.find((item) => item.id === agentId)
     || agents.find((item) => !item.is_overall)
@@ -151,7 +191,7 @@ export default function DashboardPage({
   useEffect(() => {
     let cancelled = false;
     async function loadWorkRecord() {
-      if (!selectedAgent || selectedAgent.is_overall) {
+      if (validatedScope !== requestedScope || !selectedAgent || selectedAgent.id !== agentId || selectedAgent.is_overall) {
         setActivityEvents([]);
         return;
       }
@@ -162,9 +202,12 @@ export default function DashboardPage({
         );
         if (cancelled) return;
         setActivityEvents(workRecord.events);
+        setPanelStates((state) => ({ ...state, work: 'ready' }));
       } catch (error) {
         if (cancelled) return;
         setActivityEvents([]);
+        setPanelStates((state) => ({ ...state, work: 'error' }));
+        setPanelErrors((state) => ({ ...state, work: error instanceof Error ? error.message : '加载员工工作记录失败' }));
         notify.error(error instanceof Error ? error.message : '加载员工工作记录失败');
       }
     }
@@ -172,7 +215,7 @@ export default function DashboardPage({
     return () => {
       cancelled = true;
     };
-  }, [selectedAgent?.id, selectedAgent?.is_overall]);
+  }, [selectedAgent?.id, selectedAgent?.is_overall, validatedScope, requestedScope, agentId, reload]);
   const defaultModel = models.find((item) => item.is_default);
   const totalCalls = skills.reduce((sum, item) => sum + (item.total_call_count || item.call_count || 0), 0);
   const positiveFeedback = skills.reduce((sum, item) => sum + (item.total_positive_feedback_count || 0), 0);
@@ -360,19 +403,27 @@ export default function DashboardPage({
               </p>
 
               <div className="flex w-full max-w-[514px] gap-3">
-                <HeroMetric value={selectedKnowledgeCount} label="资料" />
+                <HeroMetric value={panelStates.knowledge === 'ready' ? selectedKnowledgeCount : '—'} label="资料" />
                 <HeroMetric value={selectedGeneralSkillCount} label="技能" />
                 <HeroMetric value={selectedSkillCount} label="SOP" />
-                <HeroMetric value={activeScheduledTasks.length} label="定时任务" />
+                <HeroMetric value={panelStates.tasks === 'ready' ? activeScheduledTasks.length : '—'} label="定时任务" />
               </div>
             </div>
           </div>
         )}
       />
       <EmployeeProfileTabs activeKey={profileTab} />
+      {Object.keys(panelErrors).length > 0 && (
+        <div role="alert" className="my-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <p>部分数据加载失败，其他模块仍可使用</p>
+          {Object.entries(panelErrors).map(([key, message]) => <p key={key}>{PANEL_LABELS[key]}：{message}</p>)}
+          <UiButton variant="outline" onClick={() => setReload((value) => value + 1)}>重新加载</UiButton>
+        </div>
+      )}
       {profileTab === 'work' && (
         <>
           <WorkRecordTab
+            panelStates={panelStates}
             selectedAgent={selectedAgent}
             activeKnowledge={activeKnowledge}
             activeGeneralSkills={activeGeneralSkills}
@@ -487,7 +538,7 @@ function EmployeeProfileTabs({ activeKey = 'work' }: { activeKey?: ProfileTabKey
   );
 }
 
-function HeroMetric({ label, value }: { label: string; value: number }) {
+function HeroMetric({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="flex flex-1 items-end gap-1 rounded-[10px] bg-[#f6f6f6] px-5 py-2">
       <strong className="text-[14px] leading-none font-medium text-[#18181a]">{value}</strong>

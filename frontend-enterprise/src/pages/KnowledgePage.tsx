@@ -21,6 +21,7 @@ import type { HTMLAttributes, ReactNode } from 'react';
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError, TENANT_ID } from '../api/client';
+import { loadEmployeeDirectory } from '../api/employee-directory';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
 import CapabilityScopeLoading from '@/components/CapabilityScopeLoading';
@@ -178,6 +179,9 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
   const [selectedDocument, setSelectedDocument] = useState<KnowledgeDocumentRead | null>(null);
   const [buckets, setBuckets] = useState<KnowledgeBucketRead[]>([]);
   const [loading, setLoading] = useState(false);
+  const [panelState, setPanelState] = useState({ bases: 'loading', documents: 'loading' });
+  const [panelErrors, setPanelErrors] = useState<Record<string, string>>({});
+  const refreshSequence = useRef(0);
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [agentScopeLoaded, setAgentScopeLoaded] = useState(false);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
@@ -277,7 +281,9 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
 
   const pageTitle = isOverallAgent ? '知识库广场' : '知识库';
   const listLabel = isOverallAgent ? '知识库广场列表' : '知识库列表';
-  const listEmptyText = isOverallAgent ? '暂无知识库，点击「新增」创建一个吧' : '当前员工暂无知识库';
+  const listEmptyText = panelState.bases === 'error' ? '加载失败，请重试'
+    : panelState.bases === 'loading' ? '加载中'
+    : isOverallAgent ? '暂无知识库，点击「新增」创建一个吧' : '当前员工暂无知识库';
 
   const stats = useMemo(() => ({
     total: visibleKnowledgeBases.length,
@@ -305,6 +311,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       return;
     }
     void refresh(effectiveKnowledgeAgentId(agents, resolvedAgentId));
+    return () => { refreshSequence.current += 1; };
   }, [agentScopeLoaded, agentId, agents, currentUser?.id]);
 
   useEffect(() => {
@@ -367,6 +374,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
   }
 
   function clearKnowledgeViewState() {
+    refreshSequence.current += 1;
     setDocuments([]);
     setKnowledgeBases([]);
     setSelectedDocument(null);
@@ -379,7 +387,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
   async function loadAgentScope() {
     setAgentScopeLoaded(false);
     try {
-      const agentRows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
+      const agentRows = await loadEmployeeDirectory();
       setAgents(agentRows);
       const resolvedAgentId = resolveKnowledgeAgentScope(agentRows, currentUser, agentId);
       if (resolvedAgentId !== agentId) {
@@ -404,14 +412,36 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       return;
     }
     setLoading(true);
+    const sequence = ++refreshSequence.current;
+    const isCurrentRefresh = () => sequence === refreshSequence.current;
+    setPanelErrors({});
+    setPanelState({ bases: 'loading', documents: 'loading' });
+    setDocuments([]); setKnowledgeBases([]); setSelectedDocument(null); setBuckets([]);
     try {
       const suffix = scopedAgentId ? `&agent_id=${encodeURIComponent(scopedAgentId)}` : '';
-      const [docRows, kbRows] = await Promise.all([
-        api.get<KnowledgeDocumentRead[]>(`/api/enterprise/knowledge/documents?tenant_id=${TENANT_ID}${suffix}`),
-        api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${suffix}`),
+      async function loadPanel<T>(key: 'bases' | 'documents', path: string, apply: (value: T) => void) {
+        try {
+          const rows = await api.get<T>(path);
+          if (!isCurrentRefresh()) return null;
+          apply(rows);
+          setPanelState((state) => ({ ...state, [key]: 'ready' }));
+          return rows;
+        } catch (error) {
+          if (!isCurrentRefresh()) return null;
+          const message = error instanceof Error ? error.message : '加载失败，请重试';
+          setPanelErrors((errors) => ({ ...errors, [key]: message }));
+          setPanelState((state) => ({ ...state, [key]: 'error' }));
+          notify.error(message);
+          return null;
+        }
+      }
+      const [docResult, kbResult] = await Promise.all([
+        loadPanel<KnowledgeDocumentRead[]>('documents', `/api/enterprise/knowledge/documents?tenant_id=${TENANT_ID}${suffix}`, setDocuments),
+        loadPanel<KnowledgeBaseRead[]>('bases', `/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${suffix}`, setKnowledgeBases),
       ]);
-      setDocuments(docRows);
-      setKnowledgeBases(kbRows);
+      if (!isCurrentRefresh()) return;
+      const docRows = docResult || [];
+      const kbRows = kbResult || [];
       const scopedDocRows =
         knowledgeBaseFilter === '__all__'
           ? docRows
@@ -436,9 +466,9 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
         await loadOkfConcepts(fallbackKnowledgeBaseId, false);
       }
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '刷新知识库失败');
+      if (isCurrentRefresh()) notify.error(error instanceof Error ? error.message : '刷新知识库失败');
     } finally {
-      setLoading(false);
+      if (isCurrentRefresh()) setLoading(false);
     }
   }
 
@@ -535,7 +565,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
 
   async function openImportKnowledgeBases(mode: 'plaza' | 'employee' = 'plaza', selectedResourceId?: string) {
     try {
-      const agentRows = agents.length ? agents : await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
+      const agentRows = agents.length ? agents : await loadEmployeeDirectory();
       setAgents(agentRows);
       setImportMode(mode);
       const firstSource = mode === 'plaza'
@@ -1151,11 +1181,17 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       </div>
 
       <div className="flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_24px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
+        {Object.keys(panelErrors).length > 0 && (
+          <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            <p>部分数据加载失败，其他模块仍可使用</p>
+            {Object.entries(panelErrors).map(([key, message]) => <p key={key}>{key === 'bases' ? '知识库' : '文档'}：{message}</p>)}
+          </div>
+        )}
         <div className="flex flex-wrap items-stretch gap-[20px]" aria-label="知识库统计">
-          <StatCard label="知识库总数" value={stats.total} />
-          <StatCard label="已上线" value={stats.active} tone="green" />
-          <StatCard label="已下线" value={stats.archived} />
-          <StatCard label="文档总数" value={stats.documents} />
+          <StatCard label="知识库总数" value={panelState.bases === 'ready' ? stats.total : '—'} />
+          <StatCard label="已上线" value={panelState.bases === 'ready' ? stats.active : '—'} tone="green" />
+          <StatCard label="已下线" value={panelState.bases === 'ready' ? stats.archived : '—'} />
+          <StatCard label="文档总数" value={panelState.documents === 'ready' ? stats.documents : '—'} />
         </div>
 
         <div className="flex flex-col gap-[18px]">
@@ -1732,8 +1768,7 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
 
   useEffect(() => {
     let active = true;
-    api
-      .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
+    loadEmployeeDirectory()
       .then((agentRows) => {
         if (!active) return;
         const resolvedAgentId = resolveKnowledgeAgentScope(agentRows, currentUser, agentId);

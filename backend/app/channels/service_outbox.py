@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.channels.storage import channel_session
+
 import logging
 import threading
 from datetime import timedelta
@@ -776,11 +778,11 @@ def _run_delivery_lane(
 ) -> None:
     use_engine = db_engine or engine
     interval = poll_seconds if poll_seconds is not None else get_settings().channel_delivery_poll_seconds
-    with Session(use_engine) as db:
+    with channel_session(use_engine) as db:
         _reset_stuck_deliveries(db, reaction_lane=reaction_lane)
     while True:
         try:
-            with Session(use_engine) as db:
+            with channel_session(use_engine) as db:
                 _deliver_due(db, reaction_lane=reaction_lane)
         except Exception:
             logger.exception("渠道投递守护轮询失败")

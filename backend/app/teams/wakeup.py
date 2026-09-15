@@ -11,9 +11,10 @@ from sqlalchemy import update
 from sqlmodel import Session, select
 
 from app.core import AgentLoop
-from app.db import engine
+from app.teams.module_scope import team_module_enabled
+from staffdeck_harness.runtime.staff_directory import optional_staff_profile
+from staffdeck_harness.contracts.staff import StaffProfile
 from app.db.models import (
-    AgentProfile,
     ChatSession,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
@@ -135,7 +136,7 @@ def build_team_planner_context(db: Session, team: Team) -> TeamPlannerContext:
     leader = get_team_leader(db, team.id)
     members: list[TeamPlannerMember] = []
     for membership in list_team_members(db, team.id):
-        agent = db.get(AgentProfile, membership.agent_id)
+        agent = optional_staff_profile(db, team.tenant_id, membership.agent_id)
         if agent is None or agent.tenant_id != team.tenant_id or agent.status != "active":
             continue
         metadata = agent.metadata_json if isinstance(agent.metadata_json, dict) else {}
@@ -271,7 +272,7 @@ def build_tl_review_message(db: Session, team: Team, task: TeamTask) -> str:
 
 
 def build_bid_request_message(
-    db: Session, team: Team, task: TeamTask, agent: AgentProfile, *, round_: int
+    db: Session, team: Team, task: TeamTask, agent: StaffProfile, *, round_: int
 ) -> str:
     """竞标上下文注入:任务描述 + 黑板 + 竞标指令;反驳轮附各候选血条与上一轮其他存活候选的发言。"""
     lines = [f"你是团队「{team.name}」的成员,以下团队任务正在任务池中开放竞标。"]
@@ -290,7 +291,7 @@ def build_bid_request_message(
         if candidate_ids:
             lines.append("各候选当前血条(HP,初始 100,归零淘汰):")
             for candidate_id in dict.fromkeys(candidate_ids):
-                other = db.get(AgentProfile, candidate_id)
+                other = optional_staff_profile(db, team.tenant_id, candidate_id)
                 name = other.name if other else candidate_id
                 lines.append(f"- {name}(agent_id={candidate_id}):HP={hp.get(candidate_id, BID_HP_INITIAL)}")
         others = [
@@ -301,7 +302,7 @@ def build_bid_request_message(
         if others:
             lines.append(f"第 {round_ - 1} 轮其他候选的发言:")
             for bid in others:
-                other = db.get(AgentProfile, bid.agent_id)
+                other = optional_staff_profile(db, team.tenant_id, bid.agent_id)
                 name = other.name if other else bid.agent_id
                 lines.append(f"- {name}:{bid.content}")
             lines.append(BID_REBUTTAL_NOTE)
@@ -319,7 +320,7 @@ def build_bid_score_message(
         lines.append(f"任务描述:{task.description}")
     lines.append(f"第 {round_} 轮候选发言:")
     for bid in bids:
-        agent = db.get(AgentProfile, bid.agent_id)
+        agent = optional_staff_profile(db, team.tenant_id, bid.agent_id)
         name = agent.name if agent else bid.agent_id
         lines.append(f"- {name}(agent_id={bid.agent_id}):{bid.content}")
     lines.append(TL_BID_SCORE_INSTRUCTION)
@@ -342,18 +343,62 @@ def build_bid_judge_message(
     if alive_candidate_ids:
         lines.append("各候选当前血条(HP,初始 100,归零淘汰):")
         for candidate_id in alive_candidate_ids:
-            agent = db.get(AgentProfile, candidate_id)
+            agent = optional_staff_profile(db, team.tenant_id, candidate_id)
             name = agent.name if agent else candidate_id
             lines.append(f"- {name}(agent_id={candidate_id}):HP={hp.get(candidate_id, BID_HP_INITIAL)}")
     lines.append("候选竞标记录:")
     for bid in bids:
-        agent = db.get(AgentProfile, bid.agent_id)
+        agent = optional_staff_profile(db, team.tenant_id, bid.agent_id)
         name = agent.name if agent else bid.agent_id
         round_text = "陈述" if bid.kind == "statement" else "反驳"
         score_text = f"(第 {bid.round} 轮得分 {bid.score})" if bid.score is not None else ""
         lines.append(f"- {name}(agent_id={bid.agent_id})的{round_text}{score_text}:{bid.content}")
     lines.append(TL_BID_JUDGE_INSTRUCTION)
     return "\n".join(lines)
+
+
+def _team_actor_id(db, team):
+    from staffdeck_harness.runtime.actors import capture_actor
+    return capture_actor(db, legacy_owner=team.owner_user_id)["actor_id"]
+
+
+def _wake_runtime_context(db, team, payload):
+    from staffdeck_harness.runtime.actors import capture_actor
+    task_id = str(payload.get("task_id") or "")
+    run_id = str(payload.get("team_run_id") or "")
+    task = db.get(TeamTask, task_id) if task_id else None
+    if task is not None and task.team_id != team.id:
+        raise RuntimeError("Wake task belongs to another team")
+    run = db.get(TeamRun, run_id or task.team_run_id) if run_id or task and task.team_run_id else None
+    if run is not None and run.team_id != team.id:
+        raise RuntimeError("Wake run belongs to another team")
+    session_id = run.tl_session_id if run else task.session_id if task else None
+    session = db.get(ChatSession, session_id) if session_id else None
+    if session is not None:
+        if session.tenant_id != team.tenant_id or session.team_id != team.id:
+            raise RuntimeError("Wake session belongs to another team")
+        state = session.context_state_json or {}
+        return {"actor_id": session.user_id, "binding": state.get("runtime_binding"),
+                **({"channel_scope": state["channel_execution_scope"]} if state.get("channel_execution_scope") else {})}
+    return capture_actor(db, legacy_owner=team.owner_user_id)
+
+
+def _stamp_team_session(db, session):
+    from staffdeck_harness.runtime.session_binding import bind_session
+    from dataclasses import replace, asdict
+    subject = db.info.get("staffdeck_control_subject")
+    scope = subject.channel_scope if subject else None
+    if scope is not None:
+        from app.db.models import ChannelInboundEvent
+        event = db.get(ChannelInboundEvent, scope.inbound_event_id)
+        receipt = (event.payload_json or {}).get("_staffdeck_actor") if event else None
+        if not receipt or session.user_id != scope.actor_id:
+            raise RuntimeError("团队子任务缺少原渠道身份回执")
+        child_scope = replace(scope, session_id=session.id, agent_id=session.agent_id)
+        session.context_state_json = {**(session.context_state_json or {}),
+            "channel_origin_session_id": receipt["session_id"], "channel_execution_scope": asdict(child_scope)}
+        db.info["staffdeck_control_subject"] = replace(subject, channel_scope=child_scope)
+    bind_session(db, session, created=True)
 
 
 def enqueue_wake_event(
@@ -364,12 +409,15 @@ def enqueue_wake_event(
     trigger_type: str,
     payload: dict | None = None,
 ) -> TeamWakeEvent:
+    values = dict(payload or {})
+    values.pop("_runtime_context", None)
+    values["_runtime_context"] = _wake_runtime_context(db, team, values)
     event = TeamWakeEvent(
         team_id=team.id,
         tenant_id=team.tenant_id,
         target_agent_id=target_agent_id,
         trigger_type=trigger_type,
-        payload_json=dict(payload or {}),
+        payload_json=values,
         status="pending",
     )
     db.add(event)
@@ -388,14 +436,15 @@ def claim_wake_event(db: Session, wake_event_id: str) -> bool:
     return result.rowcount == 1
 
 
-def start_wakeup_async(wake_event_id: str) -> bool:
+def start_wakeup_async(wake_event_id: str, *, db: Session) -> bool:
+    if not team_module_enabled(db):
+        return False
+    from staffdeck_harness.runtime.services import runtime_services
+    from staffdeck_harness.runtime.jobs import enqueue_runtime_job
+    services = runtime_services(db)
     try:
-        threading.Thread(
-            target=_execute_wakeup_in_background,
-            args=(wake_event_id,),
-            name=f"team-wake-{wake_event_id}",
-            daemon=True,
-        ).start()
+        enqueue_runtime_job(f"team-wake-{wake_event_id}", _execute_wakeup_in_background,
+            wake_event_id, data_services=services, registry=getattr(services, "registry", None))
     except RuntimeError:
         logger.exception("团队唤醒线程启动失败: wake_event_id=%s", wake_event_id)
         return False
@@ -427,10 +476,10 @@ def _record_wake_lifecycle(
     )
 
 
-def _wake_heartbeat(wake_event_id: str, stop_event: threading.Event) -> None:
+def _wake_heartbeat(wake_event_id: str, stop_event: threading.Event, data_services) -> None:
     while not stop_event.wait(WAKE_HEARTBEAT_SECONDS):
         try:
-            with Session(engine) as heartbeat_db:
+            with data_services.session(None, purpose="team-heartbeat") as heartbeat_db:
                 heartbeat_db.exec(
                     update(TeamWakeEvent)
                     .where(
@@ -444,12 +493,22 @@ def _wake_heartbeat(wake_event_id: str, stop_event: threading.Event) -> None:
             logger.exception("团队唤醒租约续期失败: wake_event_id=%s", wake_event_id)
 
 
-def _execute_wakeup_in_background(wake_event_id: str) -> None:
-    with Session(engine) as db:
+def _execute_wakeup_in_background(wake_event_id: str, *, data_services) -> None:
+    with data_services.session(None, purpose="team-wake") as db:
+        if not team_module_enabled(db):
+            return
         if not claim_wake_event(db, wake_event_id):
             return
         event = db.get(TeamWakeEvent, wake_event_id)
         if event is None:
+            return
+        from staffdeck_harness.runtime.actors import restore_actor
+        try:
+            restore_actor(db, event.tenant_id, (event.payload_json or {}).get("_runtime_context"))
+        except Exception as exc:
+            event.status, event.error = "failed", str(exc)[:500]
+            db.add(event)
+            db.commit()
             return
         _record_wake_lifecycle(
             db,
@@ -461,7 +520,7 @@ def _execute_wakeup_in_background(wake_event_id: str) -> None:
         heartbeat_stop = threading.Event()
         heartbeat = threading.Thread(
             target=_wake_heartbeat,
-            args=(wake_event_id, heartbeat_stop),
+            args=(wake_event_id, heartbeat_stop, data_services),
             name=f"team-wake-heartbeat-{wake_event_id}",
             daemon=True,
         )
@@ -480,6 +539,8 @@ def recover_orphaned_wake_events(
     lease_timeout_seconds: float = WAKE_LEASE_TIMEOUT_SECONDS,
 ) -> list[str]:
     """回收超过租约且无心跳的 claimed 事件，供重启和协程丢失后恢复。"""
+    if not team_module_enabled(db):
+        return []
     now = now or utc_now()
     cutoff = now - timedelta(seconds=max(1.0, lease_timeout_seconds))
     rows = db.exec(
@@ -521,6 +582,8 @@ def dispatch_pending_wake_events(
     limit: int = 50,
 ) -> list[str]:
     """补派未启动的持久化事件；claim 的原子更新保证多进程下只执行一次。"""
+    if not team_module_enabled(db):
+        return []
     now = now or utc_now()
     cutoff = now - timedelta(seconds=max(0.0, grace_seconds))
     rows = db.exec(
@@ -531,13 +594,13 @@ def dispatch_pending_wake_events(
     ).all()
     dispatched: list[str] = []
     for row in rows:
-        if start_wakeup_async(row.id):
+        if start_wakeup_async(row.id, db=db):
             dispatched.append(row.id)
     return dispatched
 
 
-def _ensure_wake_target_agent(db: Session, event: TeamWakeEvent) -> AgentProfile:
-    agent = db.get(AgentProfile, event.target_agent_id)
+def _ensure_wake_target_agent(db: Session, event: TeamWakeEvent) -> StaffProfile:
+    agent = optional_staff_profile(db, event.tenant_id, event.target_agent_id)
     if agent is None or agent.tenant_id != event.tenant_id or agent.status != "active":
         raise RuntimeError("唤醒目标员工已不可用;请检查团队配置。")
     return agent
@@ -589,7 +652,7 @@ def _member_in_progress_count(
 
 
 def _record_wake_queued(
-    db: Session, event: TeamWakeEvent, team: Team, agent: AgentProfile
+    db: Session, event: TeamWakeEvent, team: Team, agent: StaffProfile
 ) -> None:
     """执行类唤醒排队审计:关联任务存在才记任务事件。"""
     task_id = str(event.payload_json.get("task_id") or "")
@@ -621,7 +684,7 @@ def _drain_member_queue(db: Session, team: Team, agent_id: str) -> None:
         .order_by(TeamWakeEvent.created_at)
     ).first()
     if wake is not None:
-        start_wakeup_async(wake.id)
+        start_wakeup_async(wake.id, db=db)
 
 
 def _team_harness_outcome(
@@ -728,7 +791,7 @@ def run_agent_turn(
     db: Session,
     *,
     team: Team,
-    agent: AgentProfile,
+    agent: StaffProfile,
     session_id: str,
     wake_event_id: str,
     message: str,
@@ -748,7 +811,7 @@ def run_agent_turn(
         session_id=session_id,
         agent_id=agent.id,
         client_turn_id=turn_id,
-        user_id=team.owner_user_id,
+        user_id=_team_actor_id(db, team),
         message=message,
         channel="team",
         interaction_mode=interaction_mode,
@@ -792,8 +855,17 @@ def execute_wake_event(db: Session, event: TeamWakeEvent) -> TeamWakeEvent:
     执行类唤醒(task_assigned/task_rework)受成员串行约束:占不到执行额度时
     事件保持 pending 直接返回(记 wake_queued 审计),由终态出队重新拉起。
     """
+    if not team_module_enabled(db):
+        # Direct/custom executors may already have claimed the event. Return it
+        # to the durable queue rather than escalating the business task.
+        if event.status == "claimed":
+            event.status = "pending"
+            event.updated_at = utc_now()
+            db.add(event)
+            db.commit()
+        return event
     team: Team | None = None
-    agent: AgentProfile | None = None
+    agent: StaffProfile | None = None
     slot_acquired = False
     try:
         team = db.get(Team, event.team_id)
@@ -912,7 +984,7 @@ def _escalate_task_on_failure(db: Session, event: TeamWakeEvent, exc: Exception)
         db.rollback()
 
 
-def _execute_member_task(db: Session, event: TeamWakeEvent, team: Team, agent: AgentProfile) -> None:
+def _execute_member_task(db: Session, event: TeamWakeEvent, team: Team, agent: StaffProfile) -> None:
     task_id = str(event.payload_json.get("task_id") or "")
     task = db.get(TeamTask, task_id)
     if task is None or task.team_id != team.id:
@@ -933,12 +1005,13 @@ def _execute_member_task(db: Session, event: TeamWakeEvent, team: Team, agent: A
         session = ChatSession(
             id=new_id("session"),
             tenant_id=team.tenant_id,
-            user_id=team.owner_user_id,
+            user_id=_team_actor_id(db, team),
             agent_id=agent.id,
             title=f"团队任务:{task.title}",
             status="active",
             team_id=team.id,
         )
+        _stamp_team_session(db, session)
         db.add(session)
         db.flush()
         task.session_id = session.id
@@ -1065,7 +1138,7 @@ def _execute_member_task(db: Session, event: TeamWakeEvent, team: Team, agent: A
         payload={"task_id": task.id},
     )
     db.commit()
-    start_wakeup_async(wake.id)
+    start_wakeup_async(wake.id, db=db)
 
 
 def _team_synthesis_evidence(
@@ -1347,7 +1420,7 @@ def maybe_enqueue_team_synthesis(db: Session, team: Team, run_id: str) -> str | 
         payload={"team_run_id": run.id},
     )
     db.commit()
-    start_wakeup_async(wake.id)
+    start_wakeup_async(wake.id, db=db)
     return wake.id
 
 
@@ -1355,7 +1428,7 @@ def _execute_team_synthesis(
     db: Session,
     event: TeamWakeEvent,
     team: Team,
-    agent: AgentProfile,
+    agent: StaffProfile,
 ) -> None:
     run_id = str(event.payload_json.get("team_run_id") or "")
     run = db.get(TeamRun, run_id)
@@ -1381,12 +1454,13 @@ def _execute_team_synthesis(
         synthesis_session = ChatSession(
             id=new_id("session"),
             tenant_id=team.tenant_id,
-            user_id=run.created_by_user_id or team.owner_user_id,
+            user_id=_team_actor_id(db, team),
             agent_id=agent.id,
             title=f"团队结果汇总:{team.name}",
             status="active",
             team_id=team.id,
         )
+        _stamp_team_session(db, synthesis_session)
         db.add(synthesis_session)
         db.flush()
         run.synthesis_session_id = synthesis_session.id
@@ -1440,7 +1514,7 @@ def _execute_team_synthesis(
     db.commit()
 
 
-def _execute_tl_review(db: Session, event: TeamWakeEvent, team: Team, agent: AgentProfile) -> None:
+def _execute_tl_review(db: Session, event: TeamWakeEvent, team: Team, agent: StaffProfile) -> None:
     task_id = str(event.payload_json.get("task_id") or "")
     task = db.get(TeamTask, task_id)
     if task is None or task.team_id != team.id:
@@ -1461,12 +1535,13 @@ def _execute_tl_review(db: Session, event: TeamWakeEvent, team: Team, agent: Age
     session = ChatSession(
         id=new_id("session"),
         tenant_id=team.tenant_id,
-        user_id=team.owner_user_id,
+        user_id=_team_actor_id(db, team),
         agent_id=agent.id,
         title=f"团队任务验收:{task.title}",
         status="active",
         team_id=team.id,
     )
+    _stamp_team_session(db, session)
     db.add(session)
     db.commit()
     message = build_tl_review_message(db, team, task)
@@ -1593,7 +1668,7 @@ def _execute_tl_review(db: Session, event: TeamWakeEvent, team: Team, agent: Age
             payload={"task_id": task.id},
         )
         db.commit()
-        start_wakeup_async(wake.id)
+        start_wakeup_async(wake.id, db=db)
 
 
 # ---------- 任务池竞标 ----------
@@ -1639,7 +1714,7 @@ def start_bidding(db: Session, team: Team, task: TeamTask) -> None:
     ]
     db.commit()
     for wake in wakes:
-        start_wakeup_async(wake.id)
+        start_wakeup_async(wake.id, db=db)
 
 
 def _bidding_candidates(db: Session, task: TeamTask) -> list[str]:
@@ -1730,7 +1805,7 @@ def _enqueue_bid_judge(
         payload=payload,
     )
     db.commit()
-    start_wakeup_async(wake.id)
+    start_wakeup_async(wake.id, db=db)
 
 
 def _alive_bid_candidates(candidates: list[str], bids: list[TeamTaskBid]) -> list[str]:
@@ -1800,7 +1875,7 @@ def _maybe_advance_bidding(db: Session, team: Team, task: TeamTask) -> None:
                     ]
                     db.commit()
                     for wake in wakes:
-                        start_wakeup_async(wake.id)
+                        start_wakeup_async(wake.id, db=db)
                 return
         if round_ == total_rounds:
             # 末轮已齐:直接裁决
@@ -1863,7 +1938,7 @@ def _handle_bid_failure(db: Session, event: TeamWakeEvent, exc: Exception) -> No
 
 
 def _execute_bid_request(
-    db: Session, event: TeamWakeEvent, team: Team, agent: AgentProfile
+    db: Session, event: TeamWakeEvent, team: Team, agent: StaffProfile
 ) -> None:
     """候选竞标执行体:独立会话输出竞标块,落 team_task_bids 并推进竞标。"""
     task_id = str(event.payload_json.get("task_id") or "")
@@ -1909,12 +1984,13 @@ def _execute_bid_request(
     session = ChatSession(
         id=new_id("session"),
         tenant_id=team.tenant_id,
-        user_id=team.owner_user_id,
+        user_id=_team_actor_id(db, team),
         agent_id=agent.id,
         title=f"团队竞标:{task.title}",
         status="active",
         team_id=team.id,
     )
+    _stamp_team_session(db, session)
     db.add(session)
     db.commit()
     message = build_bid_request_message(db, team, task, agent, round_=round_)
@@ -2017,7 +2093,7 @@ def _parse_bid_scores_with_fragments(
 
 
 def _execute_bid_judge(
-    db: Session, event: TeamWakeEvent, team: Team, agent: AgentProfile
+    db: Session, event: TeamWakeEvent, team: Team, agent: StaffProfile
 ) -> None:
     """TL 竞标裁决入口:按 payload.mode 分发——score(每轮打分)/ award(最终裁决)。"""
     task_id = str(event.payload_json.get("task_id") or "")
@@ -2045,7 +2121,7 @@ def _execute_bid_judge(
 
 
 def _execute_bid_score(
-    db: Session, event: TeamWakeEvent, team: Team, agent: AgentProfile, task: TeamTask
+    db: Session, event: TeamWakeEvent, team: Team, agent: StaffProfile, task: TeamTask
 ) -> None:
     """TL 每轮打分执行体:分数写回该轮 bid,血条归零审计淘汰,再推进竞标。
 
@@ -2081,12 +2157,13 @@ def _execute_bid_score(
     session = ChatSession(
         id=new_id("session"),
         tenant_id=team.tenant_id,
-        user_id=team.owner_user_id,
+        user_id=_team_actor_id(db, team),
         agent_id=agent.id,
         title=f"团队竞标打分:{task.title}",
         status="active",
         team_id=team.id,
     )
+    _stamp_team_session(db, session)
     db.add(session)
     db.commit()
     message = build_bid_score_message(db, team, task, round_bids, round_=round_)
@@ -2193,7 +2270,7 @@ def _execute_bid_score(
 
 
 def _execute_bid_award(
-    db: Session, event: TeamWakeEvent, team: Team, agent: AgentProfile, task: TeamTask
+    db: Session, event: TeamWakeEvent, team: Team, agent: StaffProfile, task: TeamTask
 ) -> None:
     """TL 最终裁决执行体:末轮打分写回,中标者(须在存活候选中)走 task_assigned 链路。"""
     candidates = _bidding_candidates(db, task)
@@ -2221,12 +2298,13 @@ def _execute_bid_award(
     session = ChatSession(
         id=new_id("session"),
         tenant_id=team.tenant_id,
-        user_id=team.owner_user_id,
+        user_id=_team_actor_id(db, team),
         agent_id=agent.id,
         title=f"团队竞标裁决:{task.title}",
         status="active",
         team_id=team.id,
     )
+    _stamp_team_session(db, session)
     db.add(session)
     db.commit()
     message = build_bid_judge_message(db, team, task, bids, alive)
@@ -2325,7 +2403,7 @@ def _execute_bid_award(
         payload={"task_id": task.id},
     )
     db.commit()
-    start_wakeup_async(wake.id)
+    start_wakeup_async(wake.id, db=db)
 
 
 # ---------- TL 对话轮次后处理(tl_chat 端点与主聊天端共用) ----------
@@ -2507,7 +2585,7 @@ def publish_team_planner_frames(
     db.add(run)
     db.commit()
     for wake_id in wake_ids:
-        start_wakeup_async(wake_id)
+        start_wakeup_async(wake_id, db=db)
     return TeamPlanPublishResult(run_id=run.id, task_ids=[task.id for task in created])
 
 
@@ -2530,7 +2608,7 @@ def process_tl_reply(
     leader = get_team_leader(db, team.id)
     if leader is None:
         return []
-    tl_agent = db.get(AgentProfile, leader.agent_id)
+    tl_agent = optional_staff_profile(db, team.tenant_id, leader.agent_id)
     if tl_agent is None:
         return []
     if client_turn_id:
@@ -2723,7 +2801,7 @@ def process_tl_reply(
     # 不能要求等到下一次无关唤醒才解除阻塞。
     activate_ready_tasks(db, team)
     for wake_id in wake_ids:
-        start_wakeup_async(wake_id)
+        start_wakeup_async(wake_id, db=db)
     for task in bidding_tasks:
         start_bidding(db, team, task)
     return created
@@ -2781,7 +2859,7 @@ def activate_ready_tasks(db: Session, team: Team) -> list[TeamTask]:
         db.flush()
     db.commit()
     for wake_id in wake_ids:
-        start_wakeup_async(wake_id)
+        start_wakeup_async(wake_id, db=db)
     for task in bidding_tasks:
         start_bidding(db, team, task)
     return activated

@@ -20,7 +20,7 @@ def test_unknown_login_does_not_create_account() -> None:
         db.commit()
 
         try:
-            login(LoginRequest(tenant_id="tenant_demo", username="missing", password="secret"), db)
+            login(LoginRequest(tenant_id="tenant_demo", username="missing", password="secret"), db=db)
         except HTTPException as error:
             assert error.status_code == 401
             assert error.detail == "Invalid username or password"
@@ -114,7 +114,7 @@ def test_admin_password_update_allows_login_with_unique_display_name() -> None:
 
         session = login(
             LoginRequest(tenant_id="tenant_demo", username="zongkelong", password="123456"),
-            db,
+            db=db,
         )
 
         assert session.user.id == member.id
@@ -147,7 +147,7 @@ def test_duplicate_display_name_cannot_be_used_to_login() -> None:
         try:
             login(
                 LoginRequest(tenant_id="tenant_demo", username="duplicate", password="123456"),
-                db,
+                db=db,
             )
         except HTTPException as error:
             assert error.status_code == 401

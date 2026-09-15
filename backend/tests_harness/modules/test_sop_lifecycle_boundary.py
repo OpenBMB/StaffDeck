@@ -23,7 +23,7 @@ from staffdeck_harness.sop.lifecycle import SopRuntime
 
 
 def deps(db):
-    return SopDependencies(db, SimpleNamespace(record=lambda *a: None), lambda *a: None)
+    return SopDependencies(SimpleNamespace(record=lambda *a: None), lambda *a: None)
 
 
 def workflow():
@@ -94,7 +94,7 @@ def install(reg, name, provider, *, enabled=True):
             "流程实现",
             kind=ModuleKind.TRUSTED,
             slots=[SlotName.RUNTIME_SOP],
-            provides=["sop.lifecycle/v1"],
+            provides=["sop.lifecycle/v2"],
             policy_actions=["sop.execute/v1"],
         ),
         provider,
@@ -116,7 +116,8 @@ def test_registered_replacement_is_invoked_and_not_hot_swapped(db):
 
     class Provider:
         def build(self, ports):
-            return Alternate(ports.db, ports.events, create_handoff=ports.create_handoff)
+            assert not hasattr(ports, "db")
+            return Alternate(None, ports.events, create_handoff=ports.create_handoff)
 
     reg = ModuleRegistry()
     install(reg, "sop.runtime", SopRuntimeModule(), enabled=False)

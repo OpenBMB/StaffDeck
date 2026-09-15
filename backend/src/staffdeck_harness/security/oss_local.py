@@ -174,11 +174,9 @@ class LocalPep(PepPort):
         return Decision.deny("not a participant of this handoff", source="OSS_LOCAL")
 
     def _authorize_team(self, ctx: SecurityContext, action: str, resource: ResourceRef) -> Decision:
-        if action in _MANAGE_ACTIONS:
-            if ctx.is_admin or _attr(resource, "owner_user_id") == ctx.principal_id:
-                return Decision.allow("team owner", source="OSS_LOCAL")
-            return Decision.deny("only team owner or administrator", source="OSS_LOCAL")
-        return Decision.allow("tenant member", source="OSS_LOCAL")
+        from dataclasses import replace
+        from staffdeck_harness.security.module_acl import authorize_team
+        return replace(authorize_team(ctx, action, resource), source=self.profile)
 
     def _authorize_model_config(self, ctx: SecurityContext, action: str, resource: ResourceRef) -> Decision:
         if action in _MANAGE_ACTIONS:

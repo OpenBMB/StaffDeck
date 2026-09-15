@@ -55,10 +55,19 @@ def get_current_user(
 ) -> User:
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    from staffdeck_harness.runtime.control_auth import provider, project_subject
+    control = provider()
+    if control is not None:
+        user = project_subject(db, control.current(credentials.credentials))
+        db.info["staffdeck_actor_id"] = user.id
+        from staffdeck_harness.runtime.services import bind_authenticated_session
+        bind_authenticated_session(db)
+        return user
     payload = _decode_token(credentials.credentials)
     user = db.get(User, payload.get("user_id", ""))
     if not user or user.tenant_id != payload.get("tenant_id"):
         raise HTTPException(status_code=401, detail="Invalid user token")
+    db.info["staffdeck_actor_id"] = user.id
     return user
 
 

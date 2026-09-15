@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Switch } from '@/components/ui';
 import { cn } from '@/lib/utils';
-import type { HarnessAssembly, HarnessModule, HarnessTreeBig, HarnessTreeOption, HarnessTreeSub } from '../../api/harness';
+import type { HarnessAssembly, HarnessAssemblyUpdate, HarnessModule, HarnessTreeBig, HarnessTreeOption, HarnessTreeSub } from '../../api/harness';
 import { KIND_META, engineLabel, hookLabel, operationLabel, placementSourceLabel, slotLabel } from '../../lib/harnessLabels';
 import IconChevron from '../../assets/icons/chevron-down.svg?react';
 import IconSearch from '../../assets/icons/search.svg?react';
@@ -19,6 +19,24 @@ const PEP_SLOT = 'security.pep';
 const ENGINE_BY_MODULE: Record<string, 'harness_v3' | 'harness_v2'> = { 'engine.harness_v3': 'harness_v3', 'engine.harness_v2': 'harness_v2' };
 const PROFILE_BY_MODULE: Record<string, string> = { 'security.oss_local': 'OSS_LOCAL', 'security.business_base': 'BUSINESS_BASE' };
 const ENGINE_FOLLOWERS: Record<string, 'harness_v3' | 'harness_v2'> = { 'harness_v3.core': 'harness_v3' };
+const CHOICE_SLOTS = new Set([ENGINE_SLOT, PEP_SLOT, 'source.staff', 'source.sop', 'source.identity', 'runtime.services', 'runtime.workspace', 'runtime.transport', 'runtime.execution', 'runtime.sop']);
+
+export function moduleSelectionPatch(m: HarnessModule, assembly: HarnessAssembly, enabled = true, peers: HarnessModule[] = [m]): HarnessAssemblyUpdate {
+  if (!enabled) {
+    if (!m.optional_slot) throw new Error('Required slots cannot be disabled');
+    const selections = { ...assembly.selections };
+    delete selections[m.slot];
+    const ids = new Set([m.module_id, ...peers.filter((item) => item.slot === m.slot).map((item) => item.module_id)]);
+    return { selections, disabled_modules: [...new Set([...assembly.disabled_modules, ...ids])],
+      enabled_modules: (assembly.enabled_modules || []).filter((id) => !ids.has(id)) };
+  }
+  return {
+    selections: { ...assembly.selections, [m.slot]: m.module_id },
+    disabled_modules: assembly.disabled_modules.filter((id) => id !== m.module_id),
+    ...(m.slot === ENGINE_SLOT ? { engine: ENGINE_BY_MODULE[m.module_id] } : {}),
+    ...(m.slot === PEP_SLOT ? { security_profile: PROFILE_BY_MODULE[m.module_id] } : {}),
+  };
+}
 
 export type ModuleTreeProps = {
   tree: HarnessTreeBig[];
@@ -28,8 +46,7 @@ export type ModuleTreeProps = {
   options: HarnessTreeOption[];
   busy?: boolean;
   onToggleModule: (moduleId: string, enabled: boolean) => void;
-  onChooseEngine: (engine: 'harness_v3' | 'harness_v2') => void;
-  onChooseProfile: (profile: string) => void;
+  onChooseModule: (module: HarnessModule, enabled?: boolean) => void;
   onPlaceModule: (moduleId: string, subId: string | null) => void;
 };
 
@@ -37,13 +54,12 @@ type Desired = { enabled: boolean; kind: 'switch' | 'choice' | 'fixed' | 'follow
 
 /** 保存的装配里，这个模块应该是什么状态、能用什么方式改。 */
 export function desiredState(m: HarnessModule, assembly: HarnessAssembly | null): Desired {
-  if (m.slot === ENGINE_SLOT) {
-    const engine = ENGINE_BY_MODULE[m.module_id];
-    return { enabled: assembly ? assembly.engine === engine : m.enabled, kind: 'choice', choiceLabel: '使用此引擎' };
-  }
-  if (m.slot === PEP_SLOT) {
-    const profile = PROFILE_BY_MODULE[m.module_id];
-    return { enabled: assembly ? assembly.security_profile === profile : m.enabled, kind: 'choice', choiceLabel: '使用此权限模式' };
+  if (CHOICE_SLOTS.has(m.slot)) {
+    const selected = assembly?.selections?.[m.slot];
+    const fallback = m.slot === ENGINE_SLOT ? assembly?.engine === ENGINE_BY_MODULE[m.module_id] :
+      m.slot === PEP_SLOT ? assembly?.security_profile === PROFILE_BY_MODULE[m.module_id] : Boolean(m.metadata?.default_enabled ?? m.enabled);
+    return { enabled: assembly ? !assembly.disabled_modules.includes(m.module_id) && (selected ? selected === m.module_id : fallback) : m.enabled,
+      kind: 'choice', choiceLabel: '使用此实现' };
   }
   const follows = ENGINE_FOLLOWERS[m.module_id];
   if (follows) return { enabled: assembly ? assembly.engine === follows : m.enabled, kind: 'follows', follows };
@@ -54,7 +70,17 @@ export function desiredState(m: HarnessModule, assembly: HarnessAssembly | null)
   if (m.switchable === false || m.kind === 'K') return { enabled: true, kind: 'fixed' };
   // Modules the platform ships disabled (metadata.supported === false) stay off unless the saved assembly says otherwise.
   if (m.metadata?.supported === false) return { enabled: false, kind: 'fixed' };
-  return { enabled: assembly ? !assembly.disabled_modules.includes(m.module_id) : m.enabled, kind: 'switch' };
+  return { enabled: assembly ? !assembly.disabled_modules.includes(m.module_id) &&
+    (Boolean(assembly.enabled_modules?.includes(m.module_id)) || Boolean(m.metadata?.default_enabled ?? m.enabled)) : m.enabled, kind: 'switch' };
+}
+
+export function missingModuleDependencies(m: HarnessModule, modules: HarnessModule[], assembly: HarnessAssembly | null): string[] {
+  if (!desiredState(m, assembly).enabled) return [];
+  const available = new Set(modules.filter((item) => desiredState(item, assembly).enabled).flatMap((item) => item.feature_exports || []));
+  return (m.feature_requires || []).filter((feature) => !available.has(feature)).map((feature) => {
+    const providers = modules.filter((item) => item.feature_exports?.includes(feature));
+    return providers.length ? providers.map((item) => item.name).join(' / ') : feature;
+  });
 }
 
 function KindBadge({ kind, className }: { kind: string; className?: string }) {
@@ -124,23 +150,18 @@ export function PlacementSelect({ value, options, onChange, disabled, compact }:
   );
 }
 
-function ModuleRow({ m, tech, assembly, options, busy, onToggleModule, onChooseEngine, onChooseProfile, onPlaceModule }: { m: HarnessModule } & Omit<ModuleTreeProps, 'tree' | 'loading'>) {
+function ModuleRow({ m, tech, assembly, options, busy, onToggleModule, onChooseModule, onPlaceModule }: { m: HarnessModule } & Omit<ModuleTreeProps, 'tree' | 'loading'>) {
   const [open, setOpen] = useState(false);
   const desired = desiredState(m, assembly);
   const pendingRestart = desired.enabled !== m.enabled;
   const running = m.enabled;
   const external = m.source && m.source !== 'builtin';
   const override = m.placement?.source === 'override';
-  const showPlacement = Boolean(m.movable) && (m.placement?.source === 'none' || external || override || tech);
+  const showPlacement = tech && Boolean(m.movable);
   const placementValue = override ? assembly?.placements?.[m.module_id] ?? m.placement?.sub_id ?? null : null;
 
-  function choose() {
-    if (m.slot === ENGINE_SLOT) onChooseEngine(ENGINE_BY_MODULE[m.module_id]);
-    else if (m.slot === PEP_SLOT) onChooseProfile(PROFILE_BY_MODULE[m.module_id]);
-  }
-
   return (
-    <div className={cn('rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white transition-colors', !running && !pendingRestart && 'opacity-70')}>
+    <div data-module-id={m.module_id} role="group" aria-label={m.name} className={cn('rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white transition-colors', !running && !pendingRestart && 'opacity-70')}>
       <div className="flex items-center gap-[10px] px-[12px] py-[9px]">
         <button type="button" onClick={() => setOpen((v) => !v)} className="flex min-w-0 flex-1 items-center gap-[10px] text-left">
           <span className={cn('size-[7px] shrink-0 rounded-full', running ? 'bg-[#2cb360]' : 'bg-[#c0c6d4]')} title={running ? '运行中' : '未启用'} />
@@ -148,7 +169,7 @@ function ModuleRow({ m, tech, assembly, options, busy, onToggleModule, onChooseE
             <span className="flex flex-wrap items-center gap-[8px]">
               <span className="truncate text-[13px] text-[#18181a]">{m.name}</span>
               {desired.kind !== 'choice' && <KindBadge kind={m.kind} />}
-              {desired.kind === 'choice' && <Tag tone="purple" title="同一时间只能启用一个">二选一</Tag>}
+              {desired.kind === 'choice' && <Tag tone="purple" title="同一接入点仅选择一个实现">{m.optional_slot ? '可选实现' : '单选实现'}</Tag>}
               {m.guarded && <Tag tone="green" title="调用前会检查使用者是否有权限">需授权</Tag>}
               {external && <Tag tone="blue" title={`来源：${m.source}`}>外部</Tag>}
               {override && <Tag title="管理员指定了展示位置">管理员指定</Tag>}
@@ -163,15 +184,18 @@ function ModuleRow({ m, tech, assembly, options, busy, onToggleModule, onChooseE
         {showPlacement && (
           <PlacementSelect value={placementValue} options={options} onChange={(sub) => onPlaceModule(m.module_id, sub)} disabled={busy} compact />
         )}
-        <span className="flex min-w-[128px] shrink-0 justify-end">
+        <span className="flex min-w-[128px] shrink-0 items-center justify-end gap-[8px]">
           {desired.kind === 'switch' && (
-            <Switch checked={desired.enabled} onCheckedChange={(next) => onToggleModule(m.module_id, next)} aria-label={`${desired.enabled ? '停用' : '启用'} ${m.name}`} />
+            <Switch disabled={busy || !assembly} checked={desired.enabled} onCheckedChange={(next) => onToggleModule(m.module_id, next)} aria-label={`${desired.enabled ? '停用' : '启用'} ${m.name}`} />
           )}
           {desired.kind === 'choice' && (
             desired.enabled ? (
-              <Tag tone="blue">当前选择</Tag>
+              <>
+                <Tag tone={pendingRestart ? 'amber' : 'blue'}>{pendingRestart ? '待应用选择' : '当前选择'}</Tag>
+                {m.optional_slot && <button type="button" disabled={busy || !assembly} onClick={() => onChooseModule(m, false)} aria-label={`停用 ${m.name}`} className="rounded-[8px] border border-[#e3e7f1] px-[10px] py-[4px] text-[12px] text-[#757f9c] hover:border-[#18181a] disabled:opacity-50">停用此实现</button>}
+              </>
             ) : (
-              <button type="button" disabled={busy} onClick={choose} className="h-[26px] shrink-0 whitespace-nowrap rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[10px] text-[12px] text-[#464c5e] hover:border-[#18181a] hover:text-[#18181a] disabled:opacity-50">
+              <button type="button" disabled={busy || !assembly} onClick={() => onChooseModule(m)} aria-label={`使用 ${m.name}`} className="h-[26px] shrink-0 whitespace-nowrap rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[10px] text-[12px] text-[#464c5e] hover:border-[#18181a] hover:text-[#18181a] disabled:opacity-50">
                 {desired.choiceLabel}
               </button>
             )
@@ -192,7 +216,7 @@ function ModuleRow({ m, tech, assembly, options, busy, onToggleModule, onChooseE
           <Field label="受权限控制"><Chips items={m.policy_actions.map(operationLabel)} tone="green" empty="无需单独授权" /></Field>
           {m.hooks.length > 0 && <Field label="介入时机"><Chips items={m.hooks.map(hookLabel)} /></Field>}
           {m.placement && <Field label="所在类目">{placementSourceLabel(m.placement.source)}{m.category ? <span className="ml-[6px] text-[#9aa0ad]">模块声明：{m.category}</span> : null}</Field>}
-          {m.metadata && Object.keys(m.metadata).length > 0 && <Field label="附加信息">{Object.entries(m.metadata).map(([k, v]) => `${k}: ${String(v)}`).join(' · ')}</Field>}
+          {tech && m.metadata && Object.keys(m.metadata).length > 0 && <Field label="附加信息">{Object.entries(m.metadata).map(([k, v]) => `${k}: ${String(v)}`).join(' · ')}</Field>}
           {tech && (
             <>
               <Field label="模块 ID"><code className="rounded-[6px] bg-[#f6f6f6] px-[6px] py-[2px] text-[11px]">{m.module_id}</code> <span className="text-[#9aa0ad]">v{m.version} · 接口 {m.contract_version} · 来源 {m.source}</span></Field>
@@ -280,6 +304,8 @@ export default function ModuleTree({ tree, loading, ...rest }: ModuleTreeProps) 
   const [expandAll, setExpandAll] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const byId = useMemo(() => new Map(tree.map((b) => [b.id, b])), [tree]);
+  const catalog = useMemo(() => tree.flatMap((big) => big.subs.flatMap((sub) => sub.modules)), [tree]);
+  const problems = catalog.map((m) => ({ module: m, missing: missingModuleDependencies(m, catalog, rest.assembly) })).filter((item) => item.missing.length);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -301,6 +327,11 @@ export default function ModuleTree({ tree, loading, ...rest }: ModuleTreeProps) 
 
   return (
     <div className="flex flex-col gap-[14px]">
+      {problems.length > 0 && <div role="alert" className="rounded-[10px] border border-amber-200 bg-amber-50 px-[14px] py-[12px] text-[12px] leading-6 text-amber-900">
+        <strong>待应用配置存在依赖缺失</strong>
+        {problems.map(({ module, missing }) => <p key={module.module_id}>{module.name} — 缺少：{missing.join('、')}</p>)}
+        <p>请选择配套实现，或停用不需要的可选模块；系统不会自动更换其他模块。</p>
+      </div>}
       <div className="flex flex-wrap items-center gap-[10px]">
         <label className="flex h-[34px] w-[320px] items-center gap-[8px] overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] transition-colors focus-within:border-[#18181a] max-[900px]:w-full">
           <IconSearch className="size-[14px] shrink-0 text-[#858b9c]" />

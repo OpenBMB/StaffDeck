@@ -469,8 +469,9 @@ app.mount(
 
 
 @app.get("/", include_in_schema=False)
-def root_redirect() -> RedirectResponse:
-    return RedirectResponse(url="/chat/")
+def root_redirect(request: Request) -> RedirectResponse:
+    prefix = str(request.scope.get("root_path") or "").rstrip("/")
+    return RedirectResponse(url=prefix + "/chat/")
 
 
 @app.get("/pilotdeck", include_in_schema=False)
@@ -486,7 +487,7 @@ def pilotdeck_redirect() -> RedirectResponse:
 @app.get("/staffdeck-icon.png", include_in_schema=False)
 def brand_icon(request: Request) -> FileResponse:
     # 品牌图标：从前端 dist 根目录 serve（favicon.ico/png、apple-touch-icon）
-    name = request.url.path.lstrip("/")
+    name = request.url.path.rsplit("/", 1)[-1]
     target = ENTERPRISE_DIST / name
     if not target.exists():
         target = ENTERPRISE_DIST / "favicon.ico"

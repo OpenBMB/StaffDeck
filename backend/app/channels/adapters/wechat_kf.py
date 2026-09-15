@@ -492,5 +492,15 @@ class WeChatKfAdapter:
     def stop_ingress(self, binding_id: str) -> None:
         return None
 
+    def pause_binding(self, binding_id: str) -> None:
+        return None
+
+    def resume_binding(self, binding_id: str, *, start: bool = True) -> None:
+        return None
+
+    def wait_binding_stopped(self, binding_id: str, timeout_seconds: float = 5.0) -> bool:
+        # This callback-only adapter owns no polling/streaming producer to drain.
+        return True
+
 
 register_channel_adapter("wechat_kf", WeChatKfAdapter())

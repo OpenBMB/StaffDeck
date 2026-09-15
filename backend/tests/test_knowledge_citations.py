@@ -3,7 +3,89 @@ from app.knowledge.citations import (
     compact_knowledge_citation_labels,
     knowledge_citations_from_results,
     restore_truncated_atomic_references,
+    normalize_knowledge_citations,
 )
+
+
+def test_shared_normalizer_fills_stable_ids_without_inventing_source_facts():
+    original = [{'label':'[1]','source_path':'document-42','excerpt':'first excerpt'},
+                {'label':'[2]','source_path':'document-42','excerpt':'second excerpt'}]
+    rows = normalize_knowledge_citations(original)
+    assert all(row['id'].startswith('kref_') for row in rows)
+    assert rows[0]['id'] != rows[1]['id']
+    assert normalize_knowledge_citations([{**original[0],'label':'[9]'}])[0]['id'] == rows[0]['id']
+    assert normalize_knowledge_citations(rows) == rows
+    assert 'id' not in original[0]
+    assert all('title' not in row and 'document_id' not in row and 'chunk_id' not in row for row in rows)
+
+
+def test_identity_prefers_scoped_chunk_ids_and_preserves_existing_ids():
+    first = normalize_knowledge_citations([{'chunk_id':0,'document_id':'doc','excerpt':'short'}])[0]
+    full = normalize_knowledge_citations([{'chunk_id':0,'document_id':'doc','excerpt':'full text'}])[0]
+    other = normalize_knowledge_citations([{'chunk_id':0,'document_id':'other','excerpt':'short'}])[0]
+    assert first['id'] == full['id'] and first['id'] != other['id']
+    assert normalize_knowledge_citations([{'id':0,'excerpt':'body'}])[0]['id'] == '0'
+    assert normalize_knowledge_citations([{'id':'existing','excerpt':'body'}])[0]['id'] == 'existing'
+
+
+def test_duplicate_sources_remap_reply_labels_together():
+    content, rows = compact_knowledge_citation_labels('甲[2]，乙[1]，再看[3]',[
+        {'label':'[1]','source_path':'doc','excerpt':'A'},
+        {'label':'[2]','source_path':'doc','excerpt':'B'},
+        {'label':'[3]','source_path':'doc','excerpt':'A'},
+    ])
+    assert content == '甲[1]，乙[2]，再看[2]'
+    assert [row['excerpt'] for row in rows] == ['B','A']
+    assert [row['label'] for row in rows] == ['[1]','[2]']
+
+
+def test_provider_local_id_collisions_do_not_merge_different_sources():
+    citations = [{'id':'kref_1','source_path':'a','excerpt':'A'},
+                 {'id':'kref_1','source_path':'b','excerpt':'B'}]
+    forward = normalize_knowledge_citations(citations)
+    reverse = normalize_knowledge_citations(list(reversed(citations)))
+    assert forward[0]['id'] != forward[1]['id']
+    assert forward[0]['id'] == reverse[1]['id']
+
+
+def test_invalid_citation_is_reported_without_logging_content(caplog):
+    assert normalize_knowledge_citations([None, 'secret text', {}, {'label':'[1]'}]) == []
+    assert 'CITATION_INVALID' in caplog.text and 'secret text' not in caplog.text
+
+
+def test_old_message_is_repaired_when_read_without_database_mutation():
+    from app.db.models import Message
+    from app.session.message_read import message_read
+    row = Message(tenant_id='t',session_id='s',role='assistant',content='内容[1]',
+                  metadata_json={'knowledge_citations':[{'label':'[1]','source_path':'doc','excerpt':'actual excerpt'}]})
+    response = message_read(row)
+    assert response.metadata['knowledge_citations'][0]['id'].startswith('kref_')
+    assert 'id' not in row.metadata_json['knowledge_citations'][0]
+
+
+def test_legacy_enterprise_breadcrumb_supplies_real_name_and_section_without_changing_id():
+    import hashlib,json
+    from app.knowledge.citations import knowledge_citation_identity
+    citation = {'label':'[1]','source_path':'371672283961462784',
+                'excerpt':'【飞书招聘流程 > 入职当天事项 > 职位设置】\n真实片段'}
+    expected = 'kref_' + hashlib.sha256(knowledge_citation_identity(citation).encode()).hexdigest()[:32]
+    row = normalize_knowledge_citations([citation])[0]
+    assert row['title'] == '飞书招聘流程'
+    assert row['section_path'] == '入职当天事项 > 职位设置'
+    assert row['source_path'] == citation['source_path'] and row['excerpt'] == citation['excerpt']
+    assert row['id'] == expected
+    assert normalize_knowledge_citations([row]) == [row]
+    assert 'title' not in citation
+
+
+def test_explicit_source_metadata_wins_and_arbitrary_body_is_not_used_as_title():
+    citation={'source_format':'knowledge_breadcrumb_v1','documentTitle':'实际文档名',
+              'sectionPath':'真实章节','excerpt':'【旧文档名 > 旧章节】\n原文'}
+    row=normalize_knowledge_citations([citation])[0]
+    assert row['title']=='实际文档名' and row['section_path']=='真实章节'
+    for body in ('正文【伪标题 > 伪章节】\n文本','【不完整 > 标题','普通段落'):
+        assert 'title' not in normalize_knowledge_citations([{'source_path':'42','excerpt':body}])[0]
+    assert 'title' not in normalize_knowledge_citations([{'source_path':'manual.md','excerpt':'【注意 > 内容】\n正文'}])[0]
 
 
 def test_compact_knowledge_citation_labels_renumbers_by_first_appearance() -> None:

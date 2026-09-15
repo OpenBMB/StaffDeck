@@ -71,7 +71,32 @@ def preflight_assembly(settings: Any, wanted: RuntimeOverrides, *, tenant_id: st
     snapshot_env(settings)
     view = settings_view(settings, wanted)
     report: dict[str, Any] = {"base": None, "modules": None}
-    if wanted.security_profile == "BUSINESS_BASE":
+    # Prove compatibility before sending credentials or probing any remote service.
+    from staffdeck_harness.modules.compatibility import assembly_diff, validate_compatibility
+    from staffdeck_harness.modules.registry import peek_registry
+    reg = None
+    try:
+        reg = build_registry(view)
+        build_profile(view, registry=reg)
+        from staffdeck_harness.contracts.manifest import SlotName
+        managed_connection = reg.provider(SlotName.SECURITY_PEP).manifest.metadata.get("connection_owner") == "module"
+        report.update(validate_compatibility(reg))
+        active = peek_registry()
+        report["diff"] = assembly_diff(active, reg) if active else {
+            "enable": [item.manifest.module_id for item in reg.installed() if item.enabled],
+            "disable": [], "unchanged": [],
+        }
+        report["modules"] = {"total": len(reg.describe()), "enabled": sum(1 for m in reg.describe() if m["enabled"])}
+        for item in reg.installed():
+            preflight = getattr(item.provider, "preflight_module", None)
+            if item.enabled and callable(preflight):
+                preflight(item.config)
+    except Exception as exc:
+        raise AssemblyFailed(f"装配无法启动：{type(exc).__name__}: {exc}") from exc
+    finally:
+        if reg is not None:
+            reg.dispose()
+    if wanted.security_profile == "BUSINESS_BASE" and not managed_connection:
         from staffdeck_harness.security.base_preflight import preflight_base
 
         conn = wanted.base.effective(settings)
@@ -84,16 +109,6 @@ def preflight_assembly(settings: Any, wanted: RuntimeOverrides, *, tenant_id: st
         report["base"] = pre.to_dict()
         if not pre.ok:
             raise AssemblyFailed(f"无法切换到企业版权限：{pre.first_failure() or '权限中心连接测试未通过'}")
-    reg = None
-    try:
-        reg = build_registry(view)
-        build_profile(view, registry=reg)
-    except Exception as exc:  # noqa: BLE001 — any seal/profile failure is a preflight failure
-        if reg is not None:
-            reg.dispose()
-        raise AssemblyFailed(f"装配无法启动：{type(exc).__name__}: {exc}") from exc
-    report["modules"] = {"total": len(reg.describe()), "enabled": sum(1 for m in reg.describe() if m["enabled"])}
-    reg.dispose()
     return report
 
 
@@ -133,40 +148,17 @@ def _build(settings: Any, overrides: RuntimeOverrides) -> dict[str, Any]:
 
 
 def start_harness_runtime(settings: Any) -> dict[str, Any]:
-    """Apply the saved assembly, seal the module registry, pick the security profile, and (if enabled) boot Harness v3.
-
-    A saved assembly that cannot be built (e.g. BUSINESS_BASE whose permission
-    centre is gone) must not brick the process: we fall back to the deployment
-    defaults, keep the saved file untouched (so it shows as pending) and record
-    the error for the admin page.
-    """
+    """Restore the last successfully applied assembly, never an unapproved draft."""
 
     global _applied, _started_at, _last_restart_error
     snapshot_env(settings)
-    overrides = load_overrides(settings)
-    defaults = defaults_from_settings(settings)
-    try:
-        info = _build(settings, overrides)
-        applied = overrides
-        fallback = None
-    except Exception as exc:  # noqa: BLE001
-        if overrides.security_profile == "BUSINESS_BASE":
-            raise AssemblyFailed("企业版权限装配失败，禁止自动降级到开源版权限") from exc
-        if defaults.same_assembly(overrides):
-            raise
-        fallback = f"启动时无法应用已保存的装配，已回退到部署默认值：{type(exc).__name__}: {exc}"
-        logger.exception("saved assembly failed at startup; falling back to deployment defaults")
-        reset_runtime()
-        reset_profile()
-        reset_registry()
-        info = _build(settings, defaults)
-        info["fallback"] = fallback
-        applied = defaults
+    from staffdeck_harness.modules.config import load_applied, save_applied
+    applied = load_applied(settings)
+    info = _build(settings, applied)
+    save_applied(settings, applied)
     with _state_lock:
         _applied = applied
         _started_at = datetime.now(timezone.utc).isoformat()
-        if fallback:
-            _last_restart_error = fallback
     return info
 
 
@@ -216,6 +208,11 @@ def restart_harness_runtime(settings: Any, *, tenant_id: str | None = None, prin
         from staffdeck_harness.security.profile import peek_profile
 
         old_reg, old_profile = peek_registry(), peek_profile()
+        from app.channels import channel_services_running, stop_channel_services, start_channel_services
+        channels_were_running = channel_services_running()
+        if channels_were_running and not stop_channel_services(timeout_seconds=drain_timeout_seconds):
+            reg.dispose()
+            raise AssemblyFailed("渠道后台仍在排空，未切换装配；请待连接器退出后重试")
         interrupted = _drain_live_turns(drain_timeout_seconds)
         if interrupted:
             from staffdeck_harness.bridge import engine_host
@@ -226,10 +223,16 @@ def restart_harness_runtime(settings: Any, *, tenant_id: str | None = None, prin
             if runtime is not None and runtime.pool is not None:
                 runtime.pool.end_drain()
             reg.dispose()
+            if channels_were_running:
+                start_channel_services()
             raise AssemblyFailed(f"仍有 {interrupted} 个回合执行中，本次未切换装配，请稍后重试")
         reset_runtime()
         try:
             info = _activate(settings, wanted, reg, profile)
+            from staffdeck_harness.modules.config import save_applied
+            save_applied(settings, wanted)
+            if channels_were_running:
+                start_channel_services()
         except Exception as exc:  # noqa: BLE001 — Harness v3 boot failed without fallback: restore
             reg.dispose()
             msg = f"{type(exc).__name__}: {exc}"
@@ -237,6 +240,10 @@ def restart_harness_runtime(settings: Any, *, tenant_id: str | None = None, prin
             reset_runtime()
             if previous is not None and old_reg is not None and old_profile is not None:
                 _activate(settings, previous, old_reg, old_profile)
+                from staffdeck_harness.modules.config import save_applied
+                save_applied(settings, previous)
+                if channels_were_running:
+                    start_channel_services()
             with _state_lock:
                 _last_restart_error = msg
             raise AssemblyFailed(msg) from exc
@@ -279,7 +286,7 @@ def _drain_live_turns(timeout_seconds: float) -> int:
         live = modules.live_turns if modules is not None else (runtime.registry.live_count() if runtime is not None else 0)
         if live == 0 or time.monotonic() >= deadline:
             if live:
-                logger.warning("restart drain window expired with %d live turn(s); they will lose their engine process", live)
+                logger.warning("restart drain window expired with %d live work item(s); keeping old generation", live)
             return live
         time.sleep(0.2)
 

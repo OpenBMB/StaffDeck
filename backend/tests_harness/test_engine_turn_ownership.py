@@ -105,7 +105,7 @@ def test_pool_close_all_releases_tokens():
 def test_activation_rebind_swaps_host_and_idle_placeholder_refuses_tools():
     reg = ActivationRegistry()
     act = reg.register(IdlePhaseHost(), None, token="tok")
-    assert reg.get("tok") is act and [t["name"] for t in act.host.tool_schemas()] == ["capability_invoke", "knowledge_search", "general_skill_read", "tool_invoke", "sandbox_execute", "capability_describe", "submit_step_result"]
+    assert reg.get("tok") is act and [t["name"] for t in act.host.tool_schemas()] == ["capability_invoke", "knowledge_search", "general_skill_read", "tool_invoke", "sandbox_execute", "capability_describe", "external_task_status", "submit_step_result"]
     assert act.host.invoke_proxy("finish_task", {}, None)[0].error["code"] == "ACTIVATION_FENCED"
     assert reg.live_count() == 0, "an idle placeholder is not a live turn"
 
@@ -145,7 +145,7 @@ def test_runtime_acquire_registers_idle_token_and_release_parks_it():
 
 def test_phase_host_refuses_tools_but_serves_the_gateway():
     h = PhaseHost(model_config="mc", phase="plan")
-    assert len(h.tool_schemas()) == 7, "the tool set is stable for the process; enforcement is at invoke"
+    assert len(h.tool_schemas()) == 8, "the tool set is stable for the process; enforcement is at invoke"
     res, receipt = h.invoke_proxy("knowledge_search", {"query": "x"}, None)
     assert res.success is False and res.error["code"] == "ACTIVATION_FENCED" and receipt is None
     assert h.model_config == "mc" and h.idle is False

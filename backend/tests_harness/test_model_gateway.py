@@ -95,7 +95,7 @@ def test_streaming_passes_provider_chunks_and_applies_model_config():
     assert lines[-1] == "data: [DONE]"
     payloads = [json.loads(ln[6:]) for ln in lines[:-1]]
     assert payloads[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "mcp__staffdeck__knowledge_search"
-    assert payloads[1]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] is None  # provider shape untouched
+    assert 'name' not in payloads[1]["choices"][0]["delta"]["tool_calls"][0]["function"]
     # what the provider actually received: the ModelConfig wins over the subprocess
     wire = seen[0]
     assert wire["model"] == "qwen-x" and wire["max_tokens"] == 1024 and wire["temperature"] == 0.2 and "stream" not in wire  # the driver adds stream=True itself

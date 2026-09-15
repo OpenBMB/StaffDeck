@@ -130,6 +130,34 @@ class ChannelAdapter(Protocol):
 
     def stop_ingress(self, binding_id: str) -> None: ...
 
+    def pause_binding(self, binding_id: str) -> None: ...
+
+    def resume_binding(self, binding_id: str, *, start: bool = True) -> None: ...
+
+    def wait_binding_stopped(self, binding_id: str, timeout_seconds: float = 5.0) -> bool: ...
+
+
+class ManagedIngressLifecycle:
+    """Reuse native managers behind the same lifecycle contract as third-party adapters."""
+
+    def ingress_manager(self) -> Any:
+        raise NotImplementedError
+
+    def start_ingress(self, binding_id: str) -> None:
+        self.ingress_manager().ensure_binding(binding_id)
+
+    def stop_ingress(self, binding_id: str) -> None:
+        self.ingress_manager().stop_binding(binding_id)
+
+    def pause_binding(self, binding_id: str) -> None:
+        self.ingress_manager().pause_binding(binding_id)
+
+    def resume_binding(self, binding_id: str, *, start: bool = True) -> None:
+        self.ingress_manager().resume_binding(binding_id, start=start)
+
+    def wait_binding_stopped(self, binding_id: str, timeout_seconds: float = 5.0) -> bool:
+        return self.ingress_manager().wait_binding_stopped(binding_id, timeout_seconds)
+
 
 class ChannelReactionAdapter(Protocol):
     """可选能力:给入站消息挂"处理中"标记,最终回复送达后撤回。

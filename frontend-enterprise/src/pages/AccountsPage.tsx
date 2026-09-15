@@ -41,6 +41,8 @@ import { useClientPagination } from '../hooks/useClientPagination';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 
 type EmployeeAccount = {
+  source?: string;
+  disabled?: boolean;
   id: string;
   tenant_id: string;
   username: string;
@@ -197,6 +199,7 @@ export default function AccountsPage({
   }
 
   function renderActions(row: EmployeeAccount) {
+    if (row.source === 'base_identity') return <span className="text-xs text-muted-foreground">由 Base 管理</span>;
     const isProtected = row.role === 'admin';
     return (
       <DropdownMenu>
@@ -291,6 +294,7 @@ export default function AccountsPage({
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
       <AppHeader onLogout={onLogout} userName={currentUser?.username} title="账号管理" />
+      {currentUser?.source === 'base_identity' && <p className="mt-4 text-sm text-muted-foreground">企业账号由统一权限中心管理，此处展示当前账号目录</p>}
 
       <div className="mt-[20px] mb-[16px] flex items-center justify-end gap-[12px]">
         <UIButton
@@ -304,6 +308,7 @@ export default function AccountsPage({
         </UIButton>
         <UIButton
           onClick={openCreate}
+          disabled={currentUser?.source === 'base_identity'}
           className="h-[34px] gap-[4px] rounded-[10px] bg-[#18181a] px-[20px] text-[12px] font-normal text-white hover:bg-[#303030]"
         >
           <IconAdd className="size-[14px]" />

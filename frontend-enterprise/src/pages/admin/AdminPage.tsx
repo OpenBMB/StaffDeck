@@ -7,7 +7,8 @@ import {
 import { cn } from '@/lib/utils';
 import AppHeader from '@/components/AppHeader';
 import { StatCard } from '@/components/StatCard';
-import ModuleTree from '@/components/harness/ModuleTree';
+import ModuleTree, { moduleSelectionPatch } from '@/components/harness/ModuleTree';
+import AssemblyToolbar from '@/components/harness/AssemblyToolbar';
 import SessionLog from '@/components/harness/SessionLog';
 import BaseConnectionPanel from '@/components/harness/BaseConnectionPanel';
 import ExternalModulesPanel from '@/components/harness/ExternalModulesPanel';
@@ -76,6 +77,8 @@ function describePending(state: HarnessAssemblyState | null): string[] {
   const rm = a.extra_modules.filter((m) => !s.extra_modules.includes(m));
   if (add.length) out.push(`接入 ${add.length} 个外部模块`);
   if (rm.length) out.push(`移除 ${rm.length} 个外部模块`);
+  if (JSON.stringify(a.selections || {}) !== JSON.stringify(s.selections || {})) out.push('插槽实现选择已变化');
+  if (JSON.stringify(a.module_configs || {}) !== JSON.stringify(s.module_configs || {})) out.push('模块参数已变化');
   if (out.length === 0) out.push('权限中心连接设置已变化');
   return out;
 }
@@ -87,6 +90,9 @@ function applyLocally(saved: HarnessAssembly, patch: HarnessAssemblyUpdate): Har
   if (patch.security_profile) next.security_profile = patch.security_profile;
   if (patch.disabled_modules) next.disabled_modules = [...patch.disabled_modules].sort();
   if (patch.extra_modules) next.extra_modules = [...patch.extra_modules];
+  if (patch.enabled_modules) next.enabled_modules = [...patch.enabled_modules];
+  if (patch.selections) next.selections = { ...patch.selections };
+  if (patch.module_configs) next.module_configs = { ...patch.module_configs };
   if (patch.placements) {
     const pl = { ...saved.placements };
     for (const [k, v] of Object.entries(patch.placements)) { if (v) pl[k] = v; else delete pl[k]; }
@@ -254,8 +260,10 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
     const saved = assemblyRef.current?.saved;
     if (!saved) return;
     const set = new Set(saved.disabled_modules);
+    const on = new Set(saved.enabled_modules || []);
     if (enabled) set.delete(moduleId); else set.add(moduleId);
-    void saveAssembly({ disabled_modules: [...set] });
+    if (enabled) on.add(moduleId); else on.delete(moduleId);
+    void saveAssembly({ disabled_modules: [...set], enabled_modules: [...on] });
   }
 
   async function placeModule(moduleId: string, subId: string | null) {
@@ -328,6 +336,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
       if (res.runtime_error) notify.warning(`已重启，但 Harness v3 引擎未能启动：${res.runtime_error.message}`);
       else notify.success('运行时已重启，新的装配已生效');
       await load();
+      if (!res.runtime_error) window.location.reload();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '重启失败');
       await load();
@@ -355,7 +364,9 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
   const engineRunning: 'ok' | 'warn' | 'error' = status?.harness_v3_enabled ? (status.runtime_ok ? 'ok' : 'error') : 'ok';
   const businessSelected = assembly?.saved.security_profile === 'BUSINESS_BASE';
   const restartingAny = restarting || Boolean(status?.restarting) || Boolean(assembly?.restarting);
-  const baseReady = !businessSelected || assembly?.saved.base?.last_test_ok === true;
+  const moduleManagedBase = tree.some((big) => big.subs.some((sub) => sub.modules.some((module) =>
+    module.module_id === 'security.business_base' && module.metadata?.connection_owner === 'module')));
+  const baseReady = !businessSelected || moduleManagedBase || assembly?.saved.base?.last_test_ok === true;
   const modulesTotal = status?.modules_total ?? 0;
   const modulesEnabled = status?.modules_enabled ?? 0;
   const bigCount = tree.length;
@@ -412,7 +423,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                 <IconWarning className="size-[16px] shrink-0 text-[#c2740c]" />
                 <div className="min-w-0 flex-1 text-[13px] text-[#6f4500]">
                   <span className="font-medium">有已保存但尚未生效的更改：</span>
-                  {pendingLines.join('；') || '装配已变化'}。重启运行时后生效；重启期间正在进行的对话会被中断。
+                  {pendingLines.join('；') || '装配已变化'}。应用后生效；会先等待现有任务结束，排空超时则保留原装配。
                   {!baseReady && <div className="mt-[4px] text-[12px] text-[#b00c0c]">已选择企业版权限：请先在下方「企业权限中心连接」保存并通过测试连接，才能重启。</div>}
                   {assembly.last_restart_error && <div className="mt-[4px] text-[12px] text-[#b00c0c]">{assembly.last_restart_error.startsWith('无法切换') || assembly.last_restart_error.startsWith('装配无法') ? `上次重启被拒绝，运行中的装配未受影响：${assembly.last_restart_error}` : `上次重启失败：${assembly.last_restart_error}`}</div>}
                 </div>
@@ -504,7 +515,8 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
 
             {tab === 'modules' && (
               <div className="flex flex-col gap-[16px]">
-                <div className="text-[12px] text-[#757f9c]">打开或关闭开关、选择引擎和权限模式，都会先保存下来；点「重启运行时」后才真正生效。归类（模块放在哪个类目下）只影响展示，改完立即生效。</div>
+                <section aria-label="功能模块配置" className="flex flex-col gap-[20px] rounded-[14px] border border-[#e3e7f1] bg-white p-[20px]">
+                <AssemblyToolbar tenantId={TENANT_ID} state={assembly} busy={busy} onSave={saveAssembly} />
                 <ModuleTree
                   tree={tree}
                   loading={loading}
@@ -513,17 +525,16 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
                   options={options}
                   busy={busy}
                   onToggleModule={toggleModule}
-                  onChooseEngine={(engine) => void saveAssembly({ engine })}
-                  onChooseProfile={(security_profile) => {
-                    if (security_profile === 'BUSINESS_BASE' && !assembly?.saved.base?.configured) {
-                      notify.warning('请先在下方「企业权限中心连接」填写地址和决策令牌并保存，再选择企业版');
-                      return;
-                    }
-                    void saveAssembly({ security_profile });
+                  onChooseModule={(module, enabled = true) => {
+                    const saved = assemblyRef.current?.saved;
+                    if (saved) void saveAssembly(moduleSelectionPatch(module, saved, enabled, tree.flatMap((big) => big.subs.flatMap((sub) => sub.modules))));
                   }}
                   onPlaceModule={(id, sub) => void placeModule(id, sub)}
                 />
-                <BaseConnectionPanel base={assembly?.saved.base ?? null} selected={Boolean(businessSelected)} busy={busy} onSave={saveBase} onTest={testBase} />
+                </section>
+                {moduleManagedBase
+                  ? <Panel className="p-[16px] text-[12px] text-[#757f9c]">企业服务连接由部署配置提供；应用装配时统一验证，凭证不会进入模块清单。</Panel>
+                  : <BaseConnectionPanel base={assembly?.saved.base ?? null} selected={Boolean(businessSelected)} busy={busy} onSave={saveBase} onTest={testBase} />}
                 <ExternalModulesPanel assembly={assembly} options={options} tech={tech} busy={busy} onInspect={inspectModule} onAdd={addExtraModule} onRemove={removeExtraModule} onPlace={placeModule} />
               </div>
             )}
@@ -643,7 +654,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
             <AlertDialogDescription>
               将按已保存的装配重新加载功能模块、权限模式和执行引擎：{pendingLines.join('；') || '无变化'}。
               重启前会先做预检（模块能否装配、权限中心是否可用），预检不通过则不会动到运行中的系统；
-              预检通过后正在进行的对话会被中断；如果新的装配仍然无法启动，会自动恢复原有装配。
+              预检通过后等待任务排空，超时保持原装配；新装配启动失败则恢复原装配。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

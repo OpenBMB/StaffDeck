@@ -63,6 +63,8 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+from staffdeck_harness.runtime.management import ModuleManagementMiddleware
+app.add_middleware(ModuleManagementMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,19 +81,23 @@ def on_startup() -> None:
     try:
         start_async_jobs()
         init_db()
-        with Session(engine) as db:
-            seed_demo_data(db)
-            recover_orphan_harness_runs(db, startup=True)
+        if settings.demo_seed_enabled:
+            with Session(engine) as db:
+                seed_demo_data(db)
         from staffdeck_harness.runtime import start_harness_runtime
 
         # Assemble the deployment PEP before background workers admit work.
         start_harness_runtime(settings)
+        from staffdeck_harness.runtime.services import recover_runtime_runs
+        recover_runtime_runs(startup=True)
         recover_codex_a2a_tasks()
         recover_a2a_client_tasks()
         start_background_worker()
         start_channel_services()
         start_timeout_sweeper()
         start_harness_recovery_sweeper()
+        from app.tools.external_task_worker import start_external_task_worker
+        start_external_task_worker()
         # Internal durable jobs (for example feedback analysis) use the same
         # recovery table even when the externally exposed API is disabled.
         recover_public_jobs()
@@ -107,17 +113,18 @@ def on_startup() -> None:
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     try:
-        if settings.harness_v3_enabled or settings.harness_admin_api_enabled:
-            from staffdeck_harness.runtime import stop_harness_runtime
-
-            stop_harness_runtime()
         stop_codex_a2a_tasks()
         stop_public_api_maintenance()
         stop_channel_services()
         stop_background_worker()
         stop_timeout_sweeper()
         stop_harness_recovery_sweeper()
+        from app.tools.external_task_worker import stop_external_task_worker
+        stop_external_task_worker()
         shutdown_async_jobs()
+        if settings.harness_v3_enabled or settings.harness_admin_api_enabled:
+            from staffdeck_harness.runtime import stop_harness_runtime
+            stop_harness_runtime()
     finally:
         release_runtime_instance_lock()
 
@@ -128,6 +135,9 @@ def health() -> dict[str, str]:
 
 
 app.include_router(app_updates.router)
+from app.api.external_business_tasks import enterprise_router as external_task_router, callback_router as external_callback_router
+app.include_router(external_task_router)
+app.include_router(external_callback_router)
 app.include_router(chat.router)
 app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)
@@ -148,6 +158,8 @@ app.include_router(scheduled_tasks.chat_router)
 app.include_router(scheduled_tasks.chat_draft_router)
 app.include_router(ui_config.enterprise_router)
 app.include_router(channels.router)
+from app.channels.execution_scope import router as channel_scope_router
+app.include_router(channel_scope_router)
 app.include_router(wechat_kf.router)
 app.include_router(teams.router, dependencies=[Depends(module_policy("team", use_endpoints=("tl_chat_endpoint", "create_team_task_endpoint")))])
 app.include_router(teams.threads_router)

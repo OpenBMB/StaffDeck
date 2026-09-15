@@ -47,7 +47,10 @@ logger = logging.getLogger(__name__)
 ENTRY_POINT_GROUP = "staffdeck_harness.modules"
 ENV_MODULES = "STAFFDECK_HARNESS_MODULES"
 
-SINGLE_PROVIDER_SLOTS = {SlotName.RUNTIME_ENGINE, SlotName.SECURITY_PEP, SlotName.RUNTIME_SOP}
+SINGLE_PROVIDER_SLOTS = {SlotName.RUNTIME_ENGINE, SlotName.SECURITY_PEP, SlotName.RUNTIME_SOP,
+                        SlotName.STAFF_SOURCE, SlotName.SOP_SOURCE, SlotName.IDENTITY_SOURCE,
+                        SlotName.RUNTIME_SERVICES, SlotName.RUNTIME_WORKSPACE, SlotName.RUNTIME_TRANSPORT, SlotName.RUNTIME_EXECUTION}
+OPTIONAL_SINGLE_PROVIDER_SLOTS = {SlotName.RUNTIME_WORKSPACE, SlotName.RUNTIME_TRANSPORT, SlotName.RUNTIME_EXECUTION}
 
 # "pkg.mod:register" (attr optional, defaults to ``register``)
 SPEC_RE = re.compile(r"^[A-Za-z_][\w]*(\.[A-Za-z_]\w*)*(:[A-Za-z_]\w*)?$")
@@ -133,6 +136,8 @@ class ModuleRegistry:
                 if op not in self.operations and (name not in SUPPORTED_CONTRACTS or version not in SUPPORTED_CONTRACTS[name]):
                     raise ContractIncompatible(f"module {manifest.module_id}: unsupported contract {op}", details={"operation": op})
             # The registrar currently running decides the source unless the caller is explicit.
+            from dataclasses import replace
+            manifest = replace(manifest, metadata={**manifest.metadata, "default_enabled": enabled})
             item = Installed(manifest=manifest, provider=provider, slot=slot, enabled=enabled, config=dict(config or {}), source=source or self._install_source, spec=self._install_source)
             self._by_id[manifest.module_id] = item
             self._by_slot.setdefault(slot, []).append(item)
@@ -176,24 +181,77 @@ class ModuleRegistry:
                 if missing:
                     raise UnsatisfiedRequirement(f"module {m.module_id} requires unprovided operations: {missing}", details={"missing": missing})
                 methods = {
+                    SlotName.STAFF_SOURCE: ("build",),
+                    SlotName.SOP_SOURCE: ("build",),
+                    SlotName.IDENTITY_SOURCE: ("build",),
+                    SlotName.RESOURCE_CATALOG: ("build",),
                     SlotName.STAFF_CAPABILITY: ("invoke",),
                     SlotName.RUNTIME_MEMORY: ("invoke",),
                     SlotName.RUNTIME_ENGINE: ("open",),
                     SlotName.RUNTIME_SOP: ("build",),
+                    SlotName.RUNTIME_SERVICES: ("build",),
+                    SlotName.RUNTIME_WORKSPACE: ("build",),
+                    SlotName.RUNTIME_TRANSPORT: ("build",),
+                    SlotName.RUNTIME_EXECUTION: ("begin", "end"),
+                    SlotName.MODULE_MANAGEMENT: ("handle",),
                     SlotName.SECURITY_PEP: ("build",),
                     SlotName.STAFF_INGRESS: ("accept",),
                 }.get(item.slot, ())
+                if item.slot == SlotName.RUNTIME_SERVICES and "runtime.background_sessions" in m.metadata.get("exports_features", ()):
+                    methods = (*methods, "background_services")
                 # Metadata-only manifests are valid documentation, not executable providers.
-                if m.provides_operations or item.slot == SlotName.SECURITY_PEP:
+                if m.provides_operations or item.slot in {SlotName.SECURITY_PEP, SlotName.STAFF_SOURCE, SlotName.SOP_SOURCE, SlotName.IDENTITY_SOURCE, SlotName.RESOURCE_CATALOG, SlotName.RUNTIME_SERVICES, SlotName.RUNTIME_WORKSPACE, SlotName.RUNTIME_TRANSPORT, SlotName.RUNTIME_EXECUTION, SlotName.MODULE_MANAGEMENT}:
                     missing_methods = [name for name in methods if not callable(getattr(item.provider, name, None))]
                     if missing_methods:
                         raise ContractIncompatible(f"module {m.module_id} does not implement {missing_methods}")
             for slot in SINGLE_PROVIDER_SLOTS:
                 active = [i for i in self._by_slot.get(slot, ()) if i.enabled]
-                if slot in self._by_slot and len(active) != 1:
+                if slot in self._by_slot and (len(active) > 1 or (slot not in OPTIONAL_SINGLE_PROVIDER_SLOTS and len(active) != 1)):
                     raise SlotConflict(f"slot {slot.value} accepts exactly one active module; got {[i.manifest.module_id for i in active]}")
+            if self.get("engine.harness_v3") is not None:
+                for slot in (SlotName.STAFF_SOURCE, SlotName.SOP_SOURCE, SlotName.IDENTITY_SOURCE, SlotName.RUNTIME_SERVICES, SlotName.RUNTIME_WORKSPACE):
+                    if len(self.providers(slot)) != 1:
+                        raise SlotConflict(f"Harness v3 requires exactly one {slot.value}")
+                for item in self.providers(SlotName.STAFF_CAPABILITY):
+                    if item.manifest.metadata.get("resource_free") and set(item.manifest.provides_operations) <= {"sandbox.execute/v1", "artifact.publish/v1"}:
+                        continue
+                    self.resolve_catalog_provider(item)
+            from staffdeck_harness.modules.compatibility import validate_compatibility
+            validate_compatibility(self)
             self._sealed = True
             self.generation += 1
+
+    def resolve_catalog_provider(self, consumer):
+        """Same catalog contract selection at assembly validation and execution."""
+        catalog_id = consumer.config.get('catalog_module_id') or consumer.manifest.metadata.get('catalog_module_id')
+        contract = consumer.manifest.metadata.get('catalog_contract')
+        candidates = self.providers(SlotName.RESOURCE_CATALOG)
+        if catalog_id:
+            candidates = [item for item in candidates if item.manifest.module_id == catalog_id]
+        if contract:
+            candidates = [item for item in candidates if contract in item.manifest.metadata.get('exports_features', ())]
+        if len(candidates) != 1:
+            raise ContractIncompatible(f'{consumer.manifest.module_id} 需要唯一兼容的能力目录，请检查目录契约或明确选择实现',
+                details={'module_id': consumer.manifest.module_id, 'catalog_contract': contract,
+                         'catalog_module_id': catalog_id, 'candidates': [item.manifest.module_id for item in candidates]})
+        return candidates[0]
+
+    def installed(self) -> tuple[Installed, ...]:
+        """Read-only inventory, including inactive alternatives for assembly validation."""
+        return tuple(self._by_id.values())
+
+    def replace_provider(self, module_id, provider, *, metadata=None):
+        """Deployment registrar replaces an existing implementation before sealing only."""
+        from dataclasses import replace
+        with self._lock:
+            if self._sealed:
+                raise RegistrySealed("provider replacement requires a new assembly")
+            old = self._by_id[module_id]
+            new = replace(old, provider=provider, source=self._install_source, spec=self._install_source,
+                          manifest=replace(old.manifest, metadata={**old.manifest.metadata, **(metadata or {})}))
+            self._by_id[module_id] = new
+            self._by_slot[old.slot] = [new if i.manifest.module_id == module_id else i for i in self._by_slot[old.slot]]
+            return new
 
     def start(self) -> None:
         """Only activation starts resources; registration/preflight must be declarative."""
@@ -377,6 +435,9 @@ class ModuleRegistry:
             out.append({
                 "module_id": m.module_id, "name": m.name, "summary": str(m.metadata.get("summary", "")), "version": m.version, "kind": m.kind.value, "contract_version": m.contract_version,
                 "slot": item.slot.value, "enabled": item.enabled, "source": item.source, "spec": item.spec,
+                "optional_slot": item.slot in OPTIONAL_SINGLE_PROVIDER_SLOTS,
+                "feature_requires": list(m.metadata.get("requires_features", ())),
+                "feature_exports": list(m.metadata.get("exports_features", ())),
                 "category": str(m.metadata.get("category", "") or ""),
                 "switchable": bool(m.kind is ModuleKind.CODE or m.metadata.get("switchable")),
                 "metadata": {k: v for k, v in m.metadata.items() if k not in ("summary", "category", "switchable") and isinstance(v, (str, int, float, bool))},
@@ -462,6 +523,37 @@ def discover_and_install(registry: ModuleRegistry, settings: Any, *, include_bui
             logger.warning("ignoring disabled_modules entry %s: module is not switchable", mid)
             continue
         registry.set_enabled(mid, False)
+    selections = getattr(settings, "harness_module_selections", {}) or {}
+    explicitly_enabled = {x.strip() for x in str(getattr(settings, "harness_enabled_modules", "") or "").split(",") if x.strip()}
+    if explicitly_enabled & ctx["disabled"]:
+        raise SlotConflict("a module cannot be explicitly enabled and disabled at the same time")
+    for mid in explicitly_enabled:
+        item = registry.get(mid)
+        if item is None:
+            raise ContractIncompatible(f"unknown enabled module {mid}")
+        if item.slot in SINGLE_PROVIDER_SLOTS:
+            raise SlotConflict(f"select {mid} through its single-provider slot")
+        registry.set_enabled(mid, True)
+    configurations = getattr(settings, "harness_module_configs", {}) or {}
+    for mid, config in configurations.items():
+        old = registry.get(mid)
+        if old is None:
+            raise ContractIncompatible(f"configuration for unknown module {mid}")
+        from dataclasses import replace
+        new = replace(old, config={**dict(old.config), **dict(config)})
+        registry._by_id[mid] = new
+        registry._by_slot[old.slot] = [new if item.manifest.module_id == mid else item for item in registry._by_slot[old.slot]]
+    for slot_name, module_id in selections.items():
+        slot = SlotName(slot_name)
+        if slot not in SINGLE_PROVIDER_SLOTS:
+            raise SlotConflict(f"{slot_name} is not a single-provider selection")
+        chosen = registry.get(module_id)
+        if chosen is None or chosen.slot != slot:
+            raise SlotConflict(f"{module_id} does not provide {slot_name}")
+        if module_id in ctx["disabled"]:
+            raise SlotConflict(f"{module_id} cannot be both selected and disabled")
+        for item in registry._by_slot.get(slot, ()):
+            registry.set_enabled(item.manifest.module_id, item.manifest.module_id == module_id)
     return registry
 
 

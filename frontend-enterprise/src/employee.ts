@@ -226,6 +226,11 @@ export type EmployeeVisibilityOptions = {
   includeOverall?: boolean;
 };
 
+function directoryAccess(agent: AgentProfileRead): Record<string, boolean> | null {
+  const value = agent.metadata?.directory_access;
+  return value && typeof value === 'object' ? value as Record<string, boolean> : null;
+}
+
 export function canAccessEmployeeAgent(
   agent: AgentProfileRead,
   user?: EnterpriseAuthUser | null,
@@ -235,6 +240,8 @@ export function canAccessEmployeeAgent(
   if (options.activeOnly && agent.status !== 'active') return false;
 
   const includeOverall = options.includeOverall ?? false;
+  const access = directoryAccess(agent);
+  if (access) return (!agent.is_overall || includeOverall) && access.can_view === true;
   if (isEnterpriseAdmin(user)) return includeOverall || !agent.is_overall;
   if (agent.is_overall) return false;
 
@@ -260,6 +267,9 @@ export function canSelectCurrentEmployeeAgent(
   if (options.activeOnly && agent.status !== 'active') return false;
 
   const includeOverall = options.includeOverall ?? false;
+  const access = directoryAccess(agent);
+  if (access) return (!agent.is_overall || includeOverall) && access.can_use === true
+    && (!access.public || access.owned || access.shared || isEmployeeUsedByCurrentUser(agent));
   if (isEnterpriseAdmin(user)) {
     if (agent.is_overall) return includeOverall;
     if (isGalleryEmployee(agent) && !isEmployeeOwnedBy(agent, user)) {
@@ -281,6 +291,8 @@ export function canManageEmployeeAgent(
   agent: AgentProfileRead,
   user?: EnterpriseAuthUser | null,
 ): boolean {
+  const access = directoryAccess(agent);
+  if (access) return access.can_manage === true;
   if (agent.is_overall) return isEnterpriseAdmin(user);
   return isEnterpriseAdmin(user) || isEmployeeOwnedBy(agent, user);
 }
@@ -375,7 +387,7 @@ export function employeeProfile(agent?: AgentProfileRead | null): EmployeeProfil
     || (template ? EMPLOYEE_AVATAR_PRESETS.find((item) => item.key === template.avatarPreset) : undefined)
     || EMPLOYEE_AVATAR_PRESETS[0];
   const isOverall = Boolean(agent?.is_overall);
-  const avatarKind = stringFromMeta(metadata, 'avatar_kind') === 'upload' && stringFromMeta(metadata, 'avatar_image')
+  const avatarKind = stringFromMeta(metadata, 'avatar_kind') === 'upload' && (stringFromMeta(metadata, 'avatar_image') || stringFromMeta(metadata, 'avatar_resource_url'))
     ? 'upload'
     : 'preset';
   return {
@@ -385,7 +397,7 @@ export function employeeProfile(agent?: AgentProfileRead | null): EmployeeProfil
     avatarTone: isOverall ? 'overall' : stringFromMeta(metadata, 'avatar_tone') || preset.tone || template?.avatarTone || 'teal',
     avatarKind: isOverall ? 'preset' : avatarKind,
     avatarPreset: isOverall ? 'overall' : stringFromMeta(metadata, 'avatar_preset') || preset.key,
-    avatarImage: isOverall ? '' : stringFromMeta(metadata, 'avatar_image'),
+    avatarImage: isOverall ? '' : stringFromMeta(metadata, 'avatar_image') || stringFromMeta(metadata, 'avatar_resource_url'),
     onboardedAt: stringFromMeta(metadata, 'onboarded_at') || agent?.created_at?.slice(0, 10) || '-',
     workStyles: asStringArray(metadata.work_styles),
     expertiseTags: asStringArray(metadata.expertise_tags),
@@ -435,6 +447,8 @@ export function visibleChatEmployees(
 }
 
 export function agentResourceCount(agent: AgentProfileRead, resourceType: AgentResourceType): number {
+  const counts = agent.metadata?.resource_counts as Record<string, number> | undefined;
+  if (agent.metadata?.directory_summary && counts) return counts[resourceType] || 0;
   return (agent.resources || []).filter((resource) => (
     resource.resource_type === resourceType
     && resource.status !== 'deleted'

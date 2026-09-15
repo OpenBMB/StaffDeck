@@ -36,6 +36,18 @@ def _session_payload(row: ChatSession, binding: ExternalSessionBinding | None = 
 
 def ensure_public_agent(db: Session, principal: PublicPrincipal, agent_id: str) -> None:
     enforce_agent_access(principal, agent_id)
+    from staffdeck_harness.modules.registry import peek_registry
+    if peek_registry() is not None:
+        from staffdeck_harness.composition.sources import resolve_staff
+        from staffdeck_harness.contracts.sources import SourceContext
+        from staffdeck_harness.security.profile import get_profile
+        from app.config import get_settings
+        from staffdeck_harness.contracts.errors import ModuleSdkError
+        try:
+            resolve_staff(peek_registry(), db, SourceContext(principal.tenant_id, agent_id, user_id=principal.actor_user.id), get_profile(get_settings()))
+        except ModuleSdkError as exc:
+            raise PublicAPIError(403, exc.code, exc.message) from exc
+        return
     row = db.get(AgentProfile, agent_id)
     if row and row.tenant_id == principal.tenant_id and row.status != "archived":
         return
@@ -105,6 +117,8 @@ def create_public_session_row(
         title=(body.title or "新会话").strip()[:200],
         channel="public_api",
     )
+    from staffdeck_harness.runtime.session_binding import bind_session
+    bind_session(db, row, created=True)
     db.add(row)
     db.flush()
     binding = None

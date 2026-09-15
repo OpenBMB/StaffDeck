@@ -1464,6 +1464,7 @@ export function harnessEventTraceLine(
     ? String(data.iteration)
     : '';
   const toolName = typeof data.tool_name === 'string' ? data.tool_name.trim() : '';
+  const toolCallId = typeof data.call_id === 'string' ? data.call_id : '';
 
   if (eventName === 'task_frame_started') {
     const kind = typeof data.kind === 'string' ? data.kind : 'conversation';
@@ -1565,7 +1566,7 @@ export function harnessEventTraceLine(
     }
     if (action === 'tool') {
       return {
-        id: `harness_action_${frameId}_${iteration || 'current'}`,
+        id: `harness_action_${frameId}_${toolCallId || iteration || 'current'}`,
         kind: 'tool',
         text: toolName ? `调用能力 ${toolName}` : '调用能力',
         detail: iteration ? `第 ${iteration} 个动作` : undefined,
@@ -1657,8 +1658,8 @@ export function harnessEventTraceLine(
       icon: 'tool',
     };
   }
-  if (eventName === 'harness_tool_completed') {
-    const success = data.success === true;
+  if (eventName === 'harness_tool_completed' || eventName === 'harness_tool_result') {
+    const success = typeof data.success === 'boolean' ? data.success : data.is_error === false;
     const result = isPlainRecord(data.result) ? data.result : {};
     const mcpApp = isPlainRecord(result.mcp_app)
       ? result.mcp_app as TraceLine['mcpApp']
@@ -1667,16 +1668,19 @@ export function harnessEventTraceLine(
     const detail = [
       typeof error.code === 'string' ? error.code : '',
       typeof error.message === 'string' ? error.message : '',
+      typeof data.duration_ms === 'number' ? `${(data.duration_ms / 1000).toFixed(2)} s` : '',
     ].filter(Boolean).join(' · ') || undefined;
     const output = formatTracePayload(data.result);
     return {
-      id: `harness_action_${frameId}_${iteration || 'current'}`,
+      id: `harness_action_${frameId}_${toolCallId || iteration || 'current'}`,
       kind: 'tool',
       text: toolName
         ? `${success ? '能力调用完成' : '能力调用失败'} ${toolName}`
         : success ? '能力调用完成' : '能力调用失败',
       detail,
       output: output || undefined,
+      code: data.arguments ? (typeof data.arguments === 'string' ? data.arguments : JSON.stringify(data.arguments, null, 2)) : undefined,
+      language: 'json',
       outputLanguage: output ? tracePayloadLanguage(output) : undefined,
       outputTitle: output ? '查看能力结果' : undefined,
       collapsible: Boolean(output),
@@ -1863,7 +1867,9 @@ export function knowledgeCitations(item: ChatMessage, content: string): Knowledg
       ? `chunk:${citation.chunk_id}`
       : citation.concept_id
         ? `concept:${citation.concept_id}`
-        : (citation.title || citation.section_path || citation.summary || citation.excerpt || citation.source_path || citation.id);
+        : (citation.excerpt || citation.content || citation.summary)
+          ? [citation.source_path, citation.section_path, citation.excerpt || citation.content || citation.summary].filter(Boolean).join('|')
+          : (citation.title || citation.section_path || citation.source_path || citation.id);
     const key = normalizeMessageText(identity).toLowerCase();
     if (!key || seen.has(key)) return;
     seen.add(key);
@@ -1902,11 +1908,11 @@ export function citationKindLabel(citation: KnowledgeCitation): string {
 
 export function citationDisplayTitle(citation: KnowledgeCitation): string {
   const raw = citation.title || citation.section_path || citation.source_path || citation.concept_id || '知识引用';
-  return raw.trim() || '知识引用';
+  return !citation.title && !citation.section_path && /^\d+$/.test(raw.trim()) ? '知识引用' : raw.trim() || '知识引用';
 }
 
 export function citationSourceLabel(citation: KnowledgeCitation): string {
-  const raw = citation.source_path || '';
+  const raw = citation.title || citation.source_path || '';
   if (!raw) return '';
   return raw.trim();
 }

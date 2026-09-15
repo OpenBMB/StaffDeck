@@ -1,17 +1,18 @@
 """Host-owned SOP lifecycle SPI; replaced at worker startup, never mid-execution.
 
-Implementations mutate existing session rows inside the caller's transaction. They
-must not commit, run models, dispatch tools, or weaken permission/lease checks.
+Implementations mutate an isolated SopState value. The Host validates and applies
+the transition in the existing transaction. No ORM or database is supplied.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, runtime_checkable
-from sqlmodel import Session
-from app.db.models import ChatSession, HarnessTaskFrameRecord, Skill
-from app.core.task_request_compiler import TaskExecutionResult, TaskRequirement
-from app.session.session_schema import RouterDecision, StepAgentResult
+from typing import Any, Callable, Protocol, runtime_checkable, TYPE_CHECKING
+from staffdeck_harness.contracts.sop import SopState as ChatSession, SopDefinition as Skill
+if TYPE_CHECKING:
+    from app.core.task_request_compiler import TaskExecutionResult, TaskRequirement
+    from app.session.session_schema import RouterDecision, StepAgentResult
+    from types import SimpleNamespace as HarnessTaskFrameRecord
 
 
 class SopEventSink(Protocol):
@@ -22,7 +23,6 @@ class SopEventSink(Protocol):
 
 @dataclass(frozen=True)
 class SopDependencies:
-    db: Session
     events: SopEventSink
     create_handoff: Callable[[str, ChatSession, Skill | None, StepAgentResult], Any]
 

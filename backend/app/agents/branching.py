@@ -313,6 +313,7 @@ def is_bound_resource_visible_for_agent(
     resource_type: str,
     resource: object,
     binding: AgentResourceBinding,
+    *, gallery_visibility: bool | None = None,
 ) -> bool:
     if binding.status == "deleted":
         return False
@@ -320,6 +321,8 @@ def is_bound_resource_visible_for_agent(
         return False
     if _binding_is_private(binding) or _metadata_is_private(_resource_metadata(resource)):
         return True
+    if gallery_visibility is not None:
+        return gallery_visibility
     return is_open_gallery_resource(db, tenant_id, resource_type, resource)
 
 

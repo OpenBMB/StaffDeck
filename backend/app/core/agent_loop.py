@@ -195,10 +195,13 @@ class AgentLoop:
         return EngineHost(settings).open(self, request, agent_id)
 
     def handle_turn(self, request: ChatTurnRequest) -> ChatTurnResponse:
+        request._control_subject = getattr(self.db, "info", {}).get("staffdeck_control_subject")
+        request._runtime_namespace = getattr(self.db, "info", {}).get("staffdeck_namespace", "oss-local")
         engine = self._open_engine(request)
         chat_session: ChatSession | None = None
         user_message_id: str | None = None
         step_result = StepAgentResult(action="reply")
+        runtime_error_code: str | None = None
         try:
             return engine.run(request)
         except (HarnessTurnConflict, HarnessSessionBusy) as exc:
@@ -261,6 +264,7 @@ class AgentLoop:
             chat_session = chat_session or self._get_or_create_session(request)
             return self._finish_with_error(chat_session, exc.code, exc.message)
         except LLMError as exc:
+            runtime_error_code = "LLM_ERROR"
             chat_session = engine.session
             user_message_id = engine.user_message_id
             engine.mark_interrupted("LLM_ERROR", str(exc))
@@ -271,10 +275,12 @@ class AgentLoop:
                 "error_occurred",
                 {"code": "LLM_ERROR", "message": str(exc)},
             )
+            self.db.commit()  # close() rolls back its caller transaction before releasing the lease
             reply = format_runtime_failure_reply(
                 "模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc)
             )
         except Exception as exc:
+            runtime_error_code = "HARNESS_V3_ERROR"
             chat_session = engine.session
             user_message_id = engine.user_message_id
             engine.mark_interrupted("HARNESS_V3_ERROR", str(exc))
@@ -285,6 +291,7 @@ class AgentLoop:
                 "error_occurred",
                 {"code": "HARNESS_V3_ERROR", "message": str(exc)},
             )
+            self.db.commit()
             reply = format_runtime_failure_reply(
                 "Harness v3 执行出错",
                 exc,
@@ -312,9 +319,9 @@ class AgentLoop:
             request.message,
             user_message_id=user_message_id,
             assistant_metadata_override=(
-                {"message_visibility": request.message_visibility}
-                if request.message_visibility != "visible"
-                else None
+                {"runtime_error_code": runtime_error_code, "execution_engine": "harness_v3",
+                 **({"message_visibility": request.message_visibility}
+                    if request.message_visibility != "visible" else {})}
             ),
         )
         self.db.commit()
@@ -322,11 +329,14 @@ class AgentLoop:
         return ChatTurnResponse(
             reply=reply,
             session_id=chat_session.id,
+            runtime_error_code=runtime_error_code,
             step_result=step_result,
             session_state=public_session(chat_session),
         )
 
     def handle_turn_stream(self, request: ChatTurnRequest) -> Iterator[dict[str, object]]:
+        request._control_subject = getattr(self.db, "info", {}).get("staffdeck_control_subject")
+        request._runtime_namespace = getattr(self.db, "info", {}).get("staffdeck_namespace", "oss-local")
         yield from self._handle_turn_stream_v2(request)
 
     def _handle_turn_stream_v2(self, request: ChatTurnRequest) -> Iterator[dict[str, object]]:
@@ -874,6 +884,7 @@ class AgentLoop:
     def _get_or_create_session(self, request: ChatTurnRequest) -> ChatSession:
         session_id = request.session_id or new_id("session")
         chat_session = self.db.get(ChatSession, session_id)
+        created = chat_session is None
         if not chat_session:
             chat_session = ChatSession(
                 id=session_id,
@@ -890,6 +901,8 @@ class AgentLoop:
             self.db.flush()
         elif not chat_session.agent_id and request.agent_id:
             chat_session.agent_id = request.agent_id
+        from staffdeck_harness.runtime.session_binding import bind_session
+        bind_session(self.db, chat_session, created=created)
         return chat_session
 
     def _current_skill_step(
@@ -1044,6 +1057,9 @@ class AgentLoop:
             summary_builder=self._context_summary_builder(model_config) if model_config else None,
         )
         next_state = context.get("context_state")
+        if isinstance(next_state, dict):
+            # Conversation compaction owns its summary keys, not SOP/module state stored beside them.
+            next_state = {**(chat_session.context_state_json or {}), **next_state}
         if isinstance(next_state, dict) and next_state != (chat_session.context_state_json or {}):
             chat_session.context_state_json = next_state
             self.db.add(chat_session)
@@ -1201,12 +1217,16 @@ class AgentLoop:
         model_config: ModelConfig,
     ) -> list[dict[str, object]]:
         try:
+            from staffdeck_harness.runtime.services import runtime_services
             job = enqueue_memory_capture(
                 request,
                 chat_session.id,
                 step_result,
                 tool_result,
                 model_config.id,
+                data_services=runtime_services(self.db),
+                model_config=model_config,
+                registry=getattr(self, "registry", None) or self.db.info.get("staffdeck_registry"),
             )
         except Exception as exc:
             self.events.record(

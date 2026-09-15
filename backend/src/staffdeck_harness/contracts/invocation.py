@@ -18,6 +18,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal, Mapping
+from .runtime_services import ExecutionIdentity
 
 JsonObject = Mapping[str, Any]
 
@@ -41,6 +42,7 @@ class InvocationContext:
     trace_id: str | None = None
     deadline_at: datetime | None = None
     attempt: int = 1
+    execution: ExecutionIdentity | None = None
 
     def __post_init__(self) -> None:
         for name in ("tenant_id", "agent_id", "user_id", "session_id", "turn_id", "channel"):
@@ -115,6 +117,14 @@ class Receipt:
     started_at: datetime | None = None
     finished_at: datetime | None = None
     error: JsonObject | None = None
+
+    def to_json(self) -> dict[str, Any]:
+        """The durable/model-facing form must not retain Python datetime objects."""
+        from dataclasses import asdict
+        value = asdict(self)
+        value["started_at"] = self.started_at.isoformat() if self.started_at else None
+        value["finished_at"] = self.finished_at.isoformat() if self.finished_at else None
+        return value
 
 
 @dataclass(frozen=True)

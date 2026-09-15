@@ -84,6 +84,7 @@ class TaskExecutionResult(BaseModel):
     task_frame_id: str
     status: Literal[
         "completed",
+        "waiting_external_task",
         "awaiting_user",
         "handoff",
         "failed",

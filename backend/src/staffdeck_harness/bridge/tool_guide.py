@@ -37,4 +37,6 @@ def system_tool_guide(kind: str, names: set[str] | None = None) -> str:
         lines.append("SOP 运行控制：用 mcp__staffdeck__submit_step_result 提交当前步骤结果；它不是业务能力。必填槽位齐全且强制能力真实成功后才能提交 completed。")
     else:
         lines.append("普通对话直接返回用户可见正文，不调用任何结束工具或 SOP 步骤提交接口。")
+    if names is None or "external_task_status" in enabled:
+        lines.append("异步任务：工具返回 accepted/detached 仅表示已受理，不是业务完成。用 mcp__staffdeck__external_task_status 和回执中的 StaffDeck task_id 查询；不要重复提交原工具。")
     return "\n".join(lines)

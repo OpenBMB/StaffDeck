@@ -32,6 +32,21 @@ function message(patch: Partial<ChatMessage> = {}): ChatMessage {
 }
 
 describe('chat history consumer contract', () => {
+  it('pairs engine results by call ID and preserves failures and timing', () => {
+    const started = harnessEventTraceLine('harness_action_created', {
+      task_frame_id: 'f', iteration: 1, call_id: 'call-one', action: 'tool', tool_name: '',
+    });
+    const result = harnessEventTraceLine('harness_tool_result', {
+      task_frame_id: 'f', call_id: 'call-one', is_error: true, success: false, duration_ms: 25,
+      arguments: { kind: 'all' }, result: 'Error: unknown tool ""',
+      error: { code: 'UNKNOWN_TOOL', message: 'Error: unknown tool ""' },
+    });
+    expect(result?.id).toBe(started?.id);
+    expect(result?.state).toBe('failed');
+    expect(result?.detail).toContain('UNKNOWN_TOOL');
+    expect(result?.detail).toContain('0.03 s');
+    expect(result?.output).toContain('unknown tool');
+  });
   it('replaces a pending capability attempt with its actual rejection reason', () => {
     const started = harnessEventTraceLine('harness_action_created', {
       task_frame_id: 'quota', iteration: 2, action: 'tool', tool_name: 'compute_quota',
@@ -254,6 +269,14 @@ describe('chat history consumer contract', () => {
       expect.objectContaining({ id: 'citation-1', label: '[1]' }),
       expect.objectContaining({ id: 'citation-2', label: '[2]' }),
     ]);
+  });
+
+  it('keeps different legacy excerpts after their document titles are filled', () => {
+    const item = message({metadata:{knowledge_citations:[
+      {id:'one',label:'[1]',title:'招聘流程',source_path:'42',section_path:'职位设置',excerpt:'片段一'},
+      {id:'two',label:'[2]',title:'招聘流程',source_path:'42',section_path:'Offer',excerpt:'片段二'},
+    ]}});
+    expect(knowledgeCitations(item,item.content)).toHaveLength(2);
   });
 
   it('restores scheduled drafts and attachments from persisted metadata', () => {

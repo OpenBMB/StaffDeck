@@ -77,6 +77,31 @@ afterEach(() => {
 });
 
 describe('EmployeeGalleryPage teams tab', () => {
+  it('requests explicit server scopes and keeps my public employee in the gallery', async () => {
+    const user = userEvent.setup();
+    const urls: string[] = [];
+    const row = (id: string, name: string, owned: boolean) => ({ id, name, tenant_id: 'tenant_demo',
+      is_overall: false, status: 'active', created_at: '2026-01-01', updated_at: '2026-01-01', resources: [],
+      metadata: { owner_user_id: owned ? 'user-1' : 'other', published_to_gallery: true,
+        directory_access: { owned, public: true, shared: false, can_view: true, can_use: true, can_manage: owned } } });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input); urls.push(url);
+      if (url.includes('/api/enterprise/teams')) return jsonResponse([]);
+      if (url.includes('scope=gallery')) return jsonResponse([row('own', '我的公开员工', true), row('other', '其他公开员工', false)]);
+      if (url.includes('scope=mine')) return jsonResponse([row('own', '我的公开员工', true)]);
+      if (url.includes('scope=shared')) return jsonResponse([]);
+      return jsonResponse([row('own', '我的公开员工', true)]);
+    }));
+    renderGallery({ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' });
+    await waitFor(() => expect(urls.some((url) => url.includes('scope=available'))).toBe(true));
+    await user.click(screen.getByRole('tab', { name: '数字员工广场' }));
+    expect(await screen.findByText(/其他公开员工/)).toBeTruthy();
+    expect(screen.getByText(/我的公开员工/)).toBeTruthy();
+    await user.click(screen.getByRole('tab', { name: '我的数字员工' }));
+    await waitFor(() => expect(urls.some((url) => url.includes('scope=mine'))).toBe(true));
+    await user.click(screen.getByRole('tab', { name: '共享给我' }));
+    await waitFor(() => expect(urls.some((url) => url.includes('scope=shared'))).toBe(true));
+  });
   it('renders team chat cards with member count, project leader and avatar stack', async () => {
     const user = userEvent.setup();
     stubGalleryFetch([team]);

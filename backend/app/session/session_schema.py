@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from app.tools.tool_schema import ToolCall, ToolResult
 
@@ -23,6 +23,8 @@ TaskFrameExecutionTarget = Literal["self", "team_member"]
 TaskFrameRunStatus = Literal[
     "queued",
     "running",
+    "waiting_external_task",
+    "ready_to_resume",
     "awaiting_user",
     "blocked",
     "completed",
@@ -211,6 +213,10 @@ class SessionPublic(BaseModel):
 
 
 class ChatTurnRequest(BaseModel):
+    _control_subject: Any = PrivateAttr(default=None)
+    _trusted_execution: Any = PrivateAttr(default=None)
+    _runtime_namespace: str = PrivateAttr(default="oss-local")
+    _read_only: bool = PrivateAttr(default=False)
     tenant_id: str
     session_id: Optional[str] = None
     agent_id: Optional[str] = None

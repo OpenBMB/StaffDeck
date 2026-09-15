@@ -7,11 +7,9 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app.db.models import (
-    AgentProfile,
     ChatSession,
     HumanHandoffRequest,
     Message,
-    User,
     utc_now,
 )
 from app.session.session_schema import StepAgentResult
@@ -38,16 +36,16 @@ class HumanHandoffService:
         binding_default_notify_channel: str | None = None,
     ) -> HumanHandoffRequest:
         current_step = current_step_resolver()
-        from staffdeck_harness.modules.registry import peek_registry
+        from staffdeck_harness.runtime.staff_ownership import selected_registry
 
         core = None
-        if peek_registry() is not None:
+        if selected_registry(self.db) is not None:
             from staffdeck_harness.handoff.core import for_session
             from staffdeck_harness.contracts.security import ResourceRef
+            from staffdeck_harness.runtime.staff_ownership import handoff_context
 
             core = for_session(self.db, chat_session)
-            user = self.db.get(User, chat_session.user_id) if chat_session.user_id else None
-            ctx = core.guard.profile.identity.from_user(user) if user else core.guard.profile.identity.from_service("staffdeck.runtime", tenant_id)
+            ctx = handoff_context(self.db, chat_session, core.guard.profile)
             core.guard.require(ctx, "handoff.request/v1", ResourceRef(type="handoff", id="new", tenant_id=tenant_id, attributes={"requester_user_id": chat_session.user_id}))
         pending_question_text = pending_question(current_step, step_result)
         existing = self.db.exec(
@@ -94,9 +92,11 @@ class HumanHandoffService:
         else:
             configured_assignee = None
             assignee_notify_channel = None
-        assignee_user_id = configured_assignee or assignee_resolver(
-            tenant_id, chat_session.agent_id, chat_session.user_id
-        )
+        # An installed assignment module owns this decision. Calling the legacy
+        # resolver first would turn its local-ORM admin fallback into an override.
+        assignee_user_id = configured_assignee
+        if core is None and assignee_user_id is None:
+            assignee_user_id = assignee_resolver(tenant_id, chat_session.agent_id, chat_session.user_id)
         handoff = HumanHandoffRequest(
             tenant_id=tenant_id,
             session_id=chat_session.id,
@@ -130,10 +130,8 @@ class HumanHandoffService:
             handoff.metadata_json = {**handoff.metadata_json,
                                     "module_binding_refs": list(core.binding_refs),
                                     "step_assignee_user_id": step_assignee_user_id,
-                                    "binding_default_assignee_user_id": binding_default_assignee_user_id,
-                                    "legacy_assignee_user_id": assignee_user_id}
-            agent = self.db.get(AgentProfile, chat_session.agent_id) if chat_session.agent_id else None
-            selected = core.propose(handoff, agent)
+                                    "binding_default_assignee_user_id": binding_default_assignee_user_id}
+            selected = core.propose(handoff)
             if selected and not self._is_internal_assignee(tenant_id, selected):
                 raise ValueError("assignment module proposed an invalid tenant user")
             handoff.assignee_user_id = selected
@@ -163,8 +161,8 @@ class HumanHandoffService:
     def _is_internal_assignee(self, tenant_id: str, user_id: str | None) -> bool:
         if not user_id:
             return False
-        user = self.db.get(User, user_id)
-        return bool(user and user.tenant_id == tenant_id and user.source == "web")
+        from staffdeck_harness.runtime.staff_ownership import internal_user
+        return internal_user(self.db, tenant_id, user_id) is not None
 
     def assignee_user_id(
         self,
@@ -174,25 +172,11 @@ class HumanHandoffService:
         *,
         tenant_admin_resolver: Callable[[str], str | None],
     ) -> str | None:
-        if agent_id:
-            agent = self.db.exec(
-                select(AgentProfile).where(
-                    AgentProfile.tenant_id == tenant_id, AgentProfile.id == agent_id
-                )
-            ).first()
-            metadata = agent.metadata_json if agent else {}
-            if isinstance(metadata, dict):
-                for key in (
-                    "owner_user_id",
-                    "created_by_user_id",
-                    "creator_user_id",
-                    "created_by",
-                    "owner_id",
-                ):
-                    value = metadata.get(key)
-                    candidate = str(value or "").strip() or None
-                    if self._is_internal_assignee(tenant_id, candidate):
-                        return candidate
+        from staffdeck_harness.runtime.staff_ownership import handoff_staff, staff_owner_id
+        staff = handoff_staff(self.db, tenant_id, agent_id)
+        owner = staff_owner_id(self.db, tenant_id, staff)
+        if owner:
+            return owner
         admin_user_id = tenant_admin_resolver(tenant_id)
         if self._is_internal_assignee(tenant_id, admin_user_id):
             return admin_user_id
@@ -201,12 +185,8 @@ class HumanHandoffService:
         return None
 
     def tenant_admin_user_id(self, tenant_id: str) -> str | None:
-        row = self.db.exec(
-            select(User)
-            .where(User.tenant_id == tenant_id, User.role == "admin")
-            .order_by(User.created_at)
-        ).first()
-        return row.id if row else None
+        from staffdeck_harness.runtime.staff_ownership import tenant_admin_id
+        return tenant_admin_id(self.db, tenant_id)
 
     def context_summary(self, chat_session: ChatSession) -> str:
         rows = self.db.exec(

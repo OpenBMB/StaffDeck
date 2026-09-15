@@ -110,6 +110,7 @@ class ConnectorChildSpec:
     binding_lock_path: str
     database_path: str = ""
     watchdog_seconds: float = 2.5
+    assembly_fingerprint: str = ""
 
 
 class ChildControl:

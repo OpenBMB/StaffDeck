@@ -258,7 +258,7 @@ def test_streaming_run_endpoint_emits_reply_deltas(monkeypatch) -> None:
     monkeypatch.setattr("app.public_api.runs.AgentLoop", FakeStreamingLoop)
     monkeypatch.setattr(
         "app.public_api.jobs.enqueue_async_job",
-        lambda _name, func, job_id: func(job_id),
+        lambda _name, func, *args, **kwargs: func(*args),
     )
     response = client.post(
         "/agents/agent_api/runs:stream",

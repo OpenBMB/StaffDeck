@@ -153,17 +153,21 @@ def resolve_memory_provider(*, registry: ModuleRegistry | None = None, snapshot:
 def for_staff(db: Any, tenant_id: str, agent_id: str | None, *, sop_id: str | None = None) -> ProviderMemoryFacade:
     from staffdeck_harness.modules.registry import peek_registry
     from staffdeck_harness.composition.compiler import CompositionCompiler
-    from staffdeck_harness.composition.staff import project_staff
+    from staffdeck_harness.composition.sources import load_composition
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.contracts.errors import PermissionDenied
 
     registry = peek_registry()
     if registry is None:
         return ProviderMemoryFacade(db, MemoryDefaultModule())
-    from app.db.models import AgentProfile
-
     # Own historical memory must remain deletable after a Staff was removed. In that case
     # there is no Staff-specific binding; the deployment provider still receives agent_id.
-    agent = db.get(AgentProfile, agent_id) if agent_id else None
-    snapshot = CompositionCompiler().compile(project_staff(db, tenant_id, agent_id)) if agent and agent.tenant_id == tenant_id else None
+    snapshot = None
+    if agent_id:
+        try:
+            snapshot = CompositionCompiler().compile(load_composition(registry, db, SourceContext(tenant_id, agent_id)), strict=False)
+        except PermissionDenied:
+            pass  # a deleted Staff must not make historical own memory undeletable
     return ProviderMemoryFacade(db, resolve_memory_provider(registry=registry, snapshot=snapshot, sop_id=sop_id), config=memory_config(registry, snapshot, sop_id), registry=registry)
 
 

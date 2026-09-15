@@ -26,6 +26,8 @@ class FakeSupervisor:
         if not was_running:
             self.connections[binding_id] = True
 
+
+
     def stop_binding(self, binding_id, timeout=5.0):
         self.stopped.append((binding_id, timeout))
         if not self.allow_stop:
@@ -62,6 +64,8 @@ def test_manager_reconciles_pause_resume_revision_and_shutdown(tmp_path) -> None
                 channel="feishu",
                 status="active",
                 config_revision=4,
+                credentials_enc='test-encrypted',
+                config_json={'app_id':'cli_test','bot_open_id':'ou_test'},
             )
         )
         db.commit()
@@ -99,6 +103,26 @@ def test_manager_reconciles_pause_resume_revision_and_shutdown(tmp_path) -> None
     assert supervisor.closed is True
 
 
+def test_unconfigured_active_binding_never_starts_a_connector(tmp_path) -> None:
+    engine=create_engine(f"sqlite:///{tmp_path / 'unconfigured.db'}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id='tenant_a',name='A'))
+        for identifier,secret,config in [('empty',None,{}),('no-secret',None,{'app_id':'cli','bot_open_id':'ou'}),
+                                          ('no-bot','cipher',{'app_id':'cli'})]:
+            db.add(ChannelBinding(id=identifier,tenant_id='tenant_a',agent_id='agent_a',channel='feishu',status='active',
+                credentials_enc=secret,config_json=config))
+        db.commit()
+    created=[]
+    def factory(**kwargs):
+        supervisor=FakeSupervisor(**kwargs);created.append(supervisor);return supervisor
+    manager=FeishuProcessManager(db_engine=engine,supervisor_factory=factory)
+    manager.reconcile_once()
+    for identifier in ('empty','no-secret','no-bot'):manager.ensure_binding(identifier)
+    assert all(not supervisor.started for supervisor in created)
+    manager.stop(timeout_seconds=1)
+
+
 def test_manager_keeps_tracking_binding_when_stop_times_out(tmp_path) -> None:
     db_path = tmp_path / "manager-stop-timeout.db"
     engine = create_engine(f"sqlite:///{db_path}")
@@ -113,6 +137,8 @@ def test_manager_keeps_tracking_binding_when_stop_times_out(tmp_path) -> None:
                 channel="feishu",
                 status="active",
                 config_revision=1,
+                credentials_enc='test-encrypted',
+                config_json={'app_id':'cli_test','bot_open_id':'ou_test'},
             )
         )
         db.commit()
@@ -154,6 +180,8 @@ def test_manager_writes_disconnected_truth_and_accepts_backoff_as_stopped(tmp_pa
                 channel="feishu",
                 status="active",
                 config_revision=1,
+                credentials_enc='test-encrypted',
+                config_json={'app_id':'cli_test','bot_open_id':'ou_test'},
             )
         )
         db.commit()
@@ -193,6 +221,8 @@ def test_pause_starts_stop_without_consuming_wait_deadline(tmp_path) -> None:
                 channel="feishu",
                 status="active",
                 config_revision=1,
+                credentials_enc='test-encrypted',
+                config_json={'app_id':'cli_test','bot_open_id':'ou_test'},
             )
         )
         db.commit()
@@ -229,6 +259,8 @@ def test_connected_writeback_is_revision_fenced_in_single_update(tmp_path) -> No
                 status="active",
                 connected=False,
                 config_revision=1,
+                credentials_enc='test-encrypted',
+                config_json={'app_id':'cli_test','bot_open_id':'ou_test'},
             )
         )
         db.commit()

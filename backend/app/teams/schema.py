@@ -235,6 +235,7 @@ class TeamThreadRead(BaseModel):
 
 class TeamBlackboardPromoteRequest(BaseModel):
     tenant_id: str
+    knowledge_base_id: str | None = None
 
 
 class TeamBlackboardPromoteResponse(BaseModel):

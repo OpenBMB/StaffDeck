@@ -174,7 +174,8 @@ def resolve_slots(
                 raise RequiredSlotMissing(f"required slot {decl.name!r} ({decl.operation}) is not bound", details={"slot": decl.name, "node_id": decl.node_id})
             continue
         rtype = decl.resource_type
-        if visible_resources is not None and rtype in visible_resources and resource_id not in visible_resources[rtype]:
+        if (visible_resources is not None and rtype in {"tool", "general_skill", "knowledge_base", "mcp_server"}
+                and resource_id not in visible_resources.get(rtype, set())):
             if decl.required:
                 raise SlotNotBound(f"slot {decl.name!r} is bound to {rtype} {resource_id!r} which this staff cannot use", details={"slot": decl.name, "resource": resource_id})
             continue

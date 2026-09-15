@@ -63,6 +63,7 @@ class UserRead(BaseModel):
     display_name: Optional[str] = None
     role: Literal["admin", "member"]
     source: str = "web"
+    disabled: bool = False
     # 仅 /me 与 /login 带出:头像资源指针(存在性标识),不内联二进制——
     # 完整 data_url 可达 2.67MB,内联会把登录/会话刷新响应与前端 localStorage 撑爆
     avatar_url: Optional[str] = None
@@ -107,8 +108,23 @@ class AccountAPICredentialCreated(AccountAPICredentialRead):
 ACCOUNT_API_CLIENT_PREFIX = "StaffDeck 账号全量 API"
 
 
+def _require_local_account_management():
+    from staffdeck_harness.runtime.control_auth import provider
+    if provider() is not None:
+        raise HTTPException(409, {'code': 'EXTERNAL_IDENTITY_MANAGED',
+                                 'message': '企业账号由统一权限中心管理，请在权限中心修改'})
+
+
 @router.post("/login", response_model=LoginResponse)
-def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginResponse:
+def login(request: LoginRequest, response: Response = None, http_request: Request = None, db: Session = Depends(get_session)) -> LoginResponse:
+    from staffdeck_harness.runtime.control_auth import provider, project_subject
+    control = provider()
+    if control is not None:
+        result = control.login(request.tenant_id, request.username, request.password)
+        user = project_subject(db, result.subject)
+        if response is not None and http_request is not None:
+            _set_control_refresh(response, http_request, result.refresh_token)
+        return LoginResponse(token=result.token, user=_user_read(user))
     ensure_tenant(db, request.tenant_id)
     username = request.username.strip()
     if not username or not request.password:
@@ -137,6 +153,51 @@ def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
 @router.get("/me", response_model=UserRead)
 def me(user: User = Depends(get_current_user), db: Session = Depends(get_session)) -> UserRead:
     return _user_read(user, _avatar_pointer_for(db, user.id))
+
+
+CONTROL_REFRESH_COOKIE = "staffdeck_control_refresh"
+
+
+def _set_control_refresh(response, request, token):
+    path = str(request.scope.get("root_path") or "").rstrip("/") + "/api/auth"
+    if token:
+        response.set_cookie(CONTROL_REFRESH_COOKIE, token, httponly=True, samesite="strict",
+                            secure=request.url.scheme == "https", path=path)
+    else:
+        response.delete_cookie(CONTROL_REFRESH_COOKIE, path=path)
+
+
+def _control_origin(request):
+    from urllib.parse import urlsplit
+    origin = request.headers.get("origin")
+    if origin and urlsplit(origin).netloc != request.headers.get("host"):
+        raise HTTPException(403, "Cross-origin control authentication request denied")
+
+
+@router.post("/refresh", response_model=LoginResponse)
+def refresh_control_session(request: Request, response: Response, db: Session = Depends(get_session)):
+    from staffdeck_harness.runtime.control_auth import provider, project_subject
+    _control_origin(request)
+    control = provider()
+    token = request.cookies.get(CONTROL_REFRESH_COOKIE)
+    if not token or control is None or not callable(getattr(control, "refresh", None)):
+        raise HTTPException(401, "Control session expired")
+    result = control.refresh(token)
+    user = project_subject(db, result.subject)
+    _set_control_refresh(response, request, result.refresh_token)
+    return LoginResponse(token=result.token, user=_user_read(user))
+
+
+@router.post("/logout")
+def logout_control_session(request: Request, response: Response):
+    from staffdeck_harness.runtime.control_auth import provider
+    _control_origin(request)
+    control = provider()
+    token = request.cookies.get(CONTROL_REFRESH_COOKIE)
+    if token and control is not None and callable(getattr(control, "logout", None)):
+        control.logout(token)
+    _set_control_refresh(response, request, None)
+    return {"logged_out": True}
 
 
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
@@ -240,6 +301,7 @@ def create_user(
         raise HTTPException(status_code=403, detail="Only administrator can create accounts")
     if request.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Cannot create accounts for another tenant")
+    _require_local_account_management()
     username = request.username.strip()
     if not username or not request.password:
         raise HTTPException(status_code=400, detail="Username and password are required")
@@ -267,14 +329,27 @@ def list_users(
     include_channel: bool = Query(False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
+    request: Request = None,
 ) -> list[UserRead]:
     ensure_current_user_tenant(tenant_id, current_user)
-    statement = select(User).where(User.tenant_id == tenant_id)
-    # 非管理员只需要为处理人选择器读取内部成员。不能依赖前端过滤，否则
-    # include_channel=true 会把渠道客户及群聊虚拟账号暴露给任意租户成员。
-    if not is_admin_user(current_user) or not include_channel:
-        statement = statement.where(User.source == "web")
-    rows = db.exec(statement.order_by(User.created_at.desc())).all()
+    from staffdeck_harness.runtime.control_auth import provider
+    control = provider()
+    if control is not None:
+        reader = getattr(control, 'list_users', None)
+        if not callable(reader):
+            raise HTTPException(503, '当前身份来源未提供用户目录')
+        if not is_admin_user(current_user):
+            return [_user_read(current_user)]
+        authorization = request.headers.get('authorization', '') if request else ''
+        if not authorization.startswith('Bearer '):
+            raise HTTPException(401, 'Not authenticated')
+        rows = [UserRead.model_validate(row) for row in reader(db.info['staffdeck_control_subject'], authorization[7:])]
+    else:
+        statement = select(User).where(User.tenant_id == tenant_id)
+        # Internal directory excludes guest and group identities for ordinary users.
+        if not is_admin_user(current_user) or not include_channel:
+            statement = statement.where(User.source == "web")
+        rows = [_user_read(row) for row in db.exec(statement.order_by(User.created_at.desc())).all()]
     if include_channel:
         # 附带内部成员已绑定的渠道身份，供处理人选择器判断当前 binding 是否可达。
         from app.db.models import ChannelIdentity
@@ -310,9 +385,9 @@ def list_users(
                 if cis
                 else None
             )
-            result.append(_user_read(row, channel_identities=identities))
+            result.append(row.model_copy(update={'channel_identities': identities}))
         return result
-    return [_user_read(row) for row in rows]
+    return rows
 
 
 @router.get(
@@ -425,6 +500,7 @@ def update_user(
     db: Session = Depends(get_session),
 ) -> UserRead:
     _require_admin(current_user, request.tenant_id)
+    _require_local_account_management()
     user = db.get(User, user_id)
     if not user or user.tenant_id != request.tenant_id:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -454,6 +530,7 @@ def delete_user(
     db: Session = Depends(get_session),
 ) -> dict[str, bool]:
     _require_admin(current_user, tenant_id)
+    _require_local_account_management()
     user = db.get(User, user_id)
     if not user or user.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -521,15 +598,17 @@ def _find_account_api_client(
     tenant_id: str,
     user_id: str,
 ) -> APIClient | None:
+    from app.public_api.runtime import realm_client_name
     return db.exec(
         select(APIClient).where(
             APIClient.tenant_id == tenant_id,
-            APIClient.name == _account_api_client_name(user_id),
+            APIClient.name == realm_client_name(db, _account_api_client_name(user_id)),
         )
     ).first()
 
 
 def _ensure_account_api_client(db: Session, tenant_id: str, user: User) -> APIClient:
+    from app.public_api.runtime import realm_client_name, stamp_client
     row = _find_account_api_client(db, tenant_id, user.id)
     required_scopes = sorted(USER_FULL_ACCESS_SCOPES)
     if row:
@@ -559,7 +638,7 @@ def _ensure_account_api_client(db: Session, tenant_id: str, user: User) -> APICl
         return row
     row = APIClient(
         tenant_id=tenant_id,
-        name=_account_api_client_name(user.id),
+        name=realm_client_name(db, _account_api_client_name(user.id)),
         description=f"账号 {user.username} 的全量 API 密钥，权限随账号可见员工动态变化。",
         scopes_json=required_scopes,
         status="active",
@@ -570,6 +649,7 @@ def _ensure_account_api_client(db: Session, tenant_id: str, user: User) -> APICl
             "subject_user_id": user.id,
         },
     )
+    stamp_client(db, row)
     db.add(row)
     db.flush()
     return row

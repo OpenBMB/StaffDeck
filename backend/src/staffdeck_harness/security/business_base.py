@@ -185,6 +185,8 @@ class BasePep(PepPort):
     # -- PepPort ---------------------------------------------------------------
 
     def authorize(self, ctx: SecurityContext, module: str, action: str, resource: ResourceRef) -> Decision:
+        if ctx.principal_type != "user" and resource.type in BASE_GOVERNED_TYPES:
+            return Decision.deny("authorization unavailable: delegated authorization adapter is not configured", source="BUSINESS_BASE")
         if ctx.tenant_id != resource.tenant_id:
             return Decision.deny("tenant boundary", source="BUSINESS_BASE")
         if resource.type in LOCAL_TYPES:
@@ -216,6 +218,8 @@ class BasePep(PepPort):
     def filter(
         self, ctx: SecurityContext, module: str, action: str, resources: Sequence[ResourceRef]
     ) -> list[ResourceRef]:
+        if ctx.principal_type != "user":
+            return [r for r in resources if self.authorize(ctx, module, action, r).allowed]
         allowed: list[ResourceRef] = []
         same_tenant = [r for r in resources if r.tenant_id == ctx.tenant_id]
         local_items = [r for r in same_tenant if r.type in LOCAL_TYPES]

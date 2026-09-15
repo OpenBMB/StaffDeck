@@ -311,7 +311,7 @@ export default function ChannelsPage({
     tenantUsers
       .filter(
         (user) =>
-          (!user.source || user.source === 'web') &&
+          (!user.source || ['web', 'base_identity'].includes(user.source)) &&
           user.channel_identities?.some(
             (identity) =>
               identity.channel === binding?.channel &&
@@ -325,7 +325,7 @@ export default function ChannelsPage({
   );
   const identityUnboundUsers = tenantUsers.filter(
     (user) =>
-      (!user.source || user.source === 'web') &&
+      (!user.source || ['web', 'base_identity'].includes(user.source)) &&
       user.id !== currentUser?.id &&
       !identityBoundInternalUserIds.has(user.id),
   );
@@ -1157,7 +1157,7 @@ export default function ChannelsPage({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__none__">未配置</SelectItem>
-                {tenantUsers.filter((user) => !user.source || user.source === 'web').flatMap((user) => {
+                {tenantUsers.filter((user) => !user.source || ['web', 'base_identity'].includes(user.source)).flatMap((user) => {
                   const name = user.display_name || user.username || user.id;
                   // 渠道转接通知运行时已支持飞书/企微私聊,渠道标注选项对支持
                   // 私聊通知的绑定渠道生成(后端同样拒绝其他渠道)。

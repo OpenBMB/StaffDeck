@@ -88,6 +88,11 @@ class SopRuntime:
 
         if tenant_id != session.tenant_id:
             raise ValueError("SOP result scope mismatch")
+        if result.status == "waiting_external_task":
+            # Acceptance is not completion. Keep the current node and its slots;
+            # resume with the durable tool receipt before normal SOP supervision.
+            result.next_step_id = None
+            return SopAdvance(step_result(result), False)
         enforce_required_slots(result, requirement, session)
         if result.status == "completed" and not result.next_step_id and skill is not None:
             next_node = self.default_next_step(skill, session.active_step_id)

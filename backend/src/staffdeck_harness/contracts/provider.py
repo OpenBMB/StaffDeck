@@ -20,6 +20,11 @@ class ProviderContext:
     # Optional platform service for the SAME authorized invocation. The built-in SD
     # adapters use this; a standalone remote provider only needs inv/context/config.
     call_local: Callable[[], ModuleResult] = field(repr=False)
+    workspace: Any = field(default=None, repr=False)
+    resource_configs: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    transport: Any = field(default=None, repr=False)
+    local_http_definition: Callable[[], Any] | None = field(default=None, repr=False)
+    prepared_http_definition: Any = field(default=None, repr=False)
 
 
 class CapabilityProvider(Protocol):

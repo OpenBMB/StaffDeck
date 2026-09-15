@@ -52,7 +52,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["desktop_launcher", "feishu_connector_worker", "single_port_app"]
+py-modules = ["desktop_launcher", "feishu_connector_worker", "single_port_app", "channel_scope_service"]
 
 # ``app``/``mock_servers`` live at the backend root; the Harness v3 pluggable
 # runtime is a separate top-level package under ``src/`` (kept out of ``app``

@@ -955,6 +955,10 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
     def fake_run(db, slug, request):
         model_config = sys.modules[run_general_skill.__module__]._get_request_model(db, request.tenant_id, request.model_config_id)
         captured_model_ids.append(model_config.id)
+        if request._read_only:
+            query = request.message.split(' ', 2)[2].split('\n', 1)[0]
+            read_queries.append(query)
+            return GeneralSkillRunResponse(skill_slug=slug, operation='read', reply=f'{query} read')
         return {
             "skill_slug": slug,
             "execution_trace": [],
@@ -1021,8 +1025,8 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
                 _admin_user(),
             )
         except HTTPException as error:
-            assert error.status_code == 400
-            assert "not published" in str(error.detail)
+            assert error.status_code == 404
+            assert "未发布" in str(error.detail)
         else:
             raise AssertionError("archived general skill should not run")
 
@@ -1179,7 +1183,7 @@ async def test_general_skill_test_modes_share_the_harness_execution(monkeypatch,
         ).one()
 
     assert captured_requests
-    assert captured_requests[0].message == "/skill weather-harness 北京天气"
+    assert captured_requests[0].message == f"/skill {imported.id} 北京天气"
     assert captured_requests[0].message_visibility == "internal"
     assert debug_session.id == captured_requests[0].session_id
     if streaming:
@@ -1683,6 +1687,7 @@ def test_general_skill_runner_stops_on_non_retryable_failure(monkeypatch) -> Non
 
 def _seed_minimal_tenant(db: Session) -> None:
     db.add(Tenant(id="tenant_demo", name="Demo"))
+    db.add(_admin_user())
     db.add(
         User(
             id="user_demo",

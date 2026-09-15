@@ -58,6 +58,8 @@ def build_profile(settings: Any = None, *, registry: Any = None) -> SecurityProf
             profile = build(settings)
             if profile.name not in {"OSS_LOCAL", "BUSINESS_BASE"}:
                 raise ValueError("only OSS_LOCAL and BUSINESS_BASE security profiles are supported")
+            if profile.name != str(_read(settings, "security_profile", "OSS_LOCAL")).upper():
+                raise ValueError("selected security module does not match the declared security profile")
             return profile
     name = str(_read(settings, "security_profile", "OSS_LOCAL") or "OSS_LOCAL").upper()
     if name == "OSS_LOCAL":

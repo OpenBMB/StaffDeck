@@ -116,7 +116,9 @@ def relay_event(ev: Mapping[str, Any]) -> list[RuntimeEvent]:
         message = data.get("message") if isinstance(data.get("message"), dict) else {}
         for block in message.get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool-result":
-                out.append(("harness_tool_result", {"call_id": block.get("toolCallId"), "is_error": bool(block.get("isError")), "execution_engine": "harness_v3"}))
+                from .tool_results import tool_outcome
+                out.append(("harness_tool_result", {"call_id": block.get("toolCallId"), "is_error": bool(block.get("isError")),
+                    "execution_engine": "harness_v3", **tool_outcome(block, data.get('error'))}))
     elif kind == "assistant/message":
         out.append(("harness_v3_assistant_message", {"interrupted": bool(data.get("interrupted")), "execution_engine": "harness_v3"}))
     elif kind == "turn/end":
@@ -137,6 +139,8 @@ class SessionEventRelay:
         self.trace = trace
         self.count = 0
         self.control_calls: set[str] = set()
+        self.tool_calls = {}
+        self.completed_calls = set()
         self.action_count = 0
 
     def __call__(self, ev: Mapping[str, Any]) -> None:
@@ -145,6 +149,10 @@ class SessionEventRelay:
         data = ev.get("data") or {}
         if ev.get("type") == "tool/call":
             self.action_count += 1
+            self.tool_calls[str(data.get('callId') or '')] = {
+                'tool_name': str(data.get('name') or ''), 'arguments': data.get('arguments'),
+                'iteration': self.action_count, 'started_at_ms': ev.get('time'),
+            }
         if ev.get("type") == "tool/call" and is_control_tool(str(data.get("name") or "")):
             self.control_calls.add(str(data.get("callId") or ""))
         for event_type, payload in relay_event(ev):
@@ -152,6 +160,16 @@ class SessionEventRelay:
                 payload["iteration"] = self.action_count
             if event_type == "harness_tool_result" and str(payload.get("call_id") or "") in self.control_calls:
                 event_type = "harness_control_result"
+            if event_type == 'harness_tool_result':
+                call_id = str(payload.get('call_id') or '')
+                if call_id in self.completed_calls:
+                    continue
+                self.completed_calls.add(call_id)
+                call = self.tool_calls.get(call_id, {})
+                payload.update({k: v for k, v in call.items() if k != 'started_at_ms'})
+                started, ended = call.get('started_at_ms'), ev.get('time')
+                if isinstance(started, (int, float)) and isinstance(ended, (int, float)):
+                    payload['duration_ms'] = max(0, ended - started)
             self.count += 1
             if self.trace:
                 try:

@@ -21,6 +21,14 @@ from app.session.session_schema import ChatTurnRequest, RouterDecision, StepAgen
 from app.session.slot_policy import strip_router_generated_message_slots
 
 
+@pytest.fixture(autouse=True)
+def standalone_handoff_policy(monkeypatch):
+    """Legacy policy fixtures are not a deployed modular Runtime or Base identity realm."""
+    from staffdeck_harness.security.oss_local import build_oss_local_profile
+    monkeypatch.setattr("staffdeck_harness.modules.registry._active", None)
+    monkeypatch.setattr("staffdeck_harness.security.profile._active", build_oss_local_profile())
+
+
 class FakeEvents:
     def __init__(self) -> None:
         self.records: list[tuple[str, str, str, dict]] = []

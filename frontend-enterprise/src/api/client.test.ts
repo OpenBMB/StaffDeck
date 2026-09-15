@@ -1,8 +1,44 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { ApiError } from './client';
+import { ApiError, api } from './client';
+import { ReadBackoff } from './read-backoff';
 
 describe('ApiError', () => {
+  it('never renders a gateway HTML page as the error message', () => {
+    const html = '<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>';
+    for (const body of [html, JSON.stringify({ detail: html })]) {
+      const error = new ApiError(502, body, 'Bad Gateway');
+      expect(error.message).toContain('HTTP 502');
+      expect(error.message).not.toContain('<html>');
+      expect(error.code).toBe('UPSTREAM_INVALID_RESPONSE');
+    }
+  });
+
+  it('backs off one failing read endpoint without blocking other endpoints', () => {
+    const backoff = new ReadBackoff();
+    const error = new Error('down');
+    backoff.failed('/sessions', error, 0);
+    expect(backoff.blocked('/sessions', 999)).toBe(error);
+    expect(backoff.blocked('/models', 999)).toBeNull();
+    expect(backoff.blocked('/sessions', 1000)).toBeNull();
+    backoff.failed('/sessions', error, 1000);
+    expect(backoff.blocked('/sessions', 2999)).toBe(error);
+    backoff.succeeded('/sessions');
+    expect(backoff.blocked('/sessions', 1001)).toBeNull();
+  });
+
+  it('does not replay or block a write when the read endpoint is unavailable', async () => {
+    const fetcher = vi.fn(async () => new Response('<html>502 Bad Gateway</html>', { status: 502 }));
+    vi.stubGlobal('fetch', fetcher);
+    vi.stubGlobal('window', { localStorage: { getItem: () => null } });
+    try {
+      await expect(api.get('/api/chat/sessions?tenant_id=backoff-test')).rejects.toMatchObject({ status: 502 });
+      await expect(api.get('/api/chat/sessions?tenant_id=backoff-test')).rejects.toMatchObject({ status: 502 });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await expect(api.post('/api/chat/sessions?tenant_id=backoff-test', {})).rejects.toMatchObject({ status: 502 });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    } finally { vi.unstubAllGlobals(); }
+  });
   it('preserves a structured backend error code and human-readable message', () => {
     const error = new ApiError(404, JSON.stringify({
       detail: {

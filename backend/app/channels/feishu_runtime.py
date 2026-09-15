@@ -290,7 +290,11 @@ def run_feishu_runtime(spec, control, watchdog) -> None:
         connect_args={"check_same_thread": False, "timeout": 0.5},
         poolclass=NullPool,
     )
-    with Session(stage_engine) as db:
+    from app.channels.storage import channel_session, install_connector_assembly
+    registry = install_connector_assembly(spec.assembly_fingerprint) if spec.assembly_fingerprint else None
+    # The file path is also the connector lock domain; it is NOT the selected runtime DB.
+    selected_engine = None if registry is not None else stage_engine
+    with channel_session(selected_engine) as db:
         binding = db.get(ChannelBinding, spec.binding_id)
         if (
             not binding
@@ -317,7 +321,7 @@ def run_feishu_runtime(spec, control, watchdog) -> None:
             return
         inbound, target = normalized
         result = stage_feishu_inbound(
-            db_engine=stage_engine,
+            db_engine=selected_engine,
             binding_id=spec.binding_id,
             expected_revision=spec.config_revision,
             event_app_id=str(event.header.app_id or ""),
@@ -383,3 +387,5 @@ def run_feishu_runtime(spec, control, watchdog) -> None:
             loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
         loop.close()
         stage_engine.dispose()
+        if registry is not None:
+            registry.dispose()

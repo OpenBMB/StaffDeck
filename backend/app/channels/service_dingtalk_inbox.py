@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.channels.storage import channel_session
+
 import json
 from dataclasses import asdict
 from typing import Any
@@ -71,7 +73,7 @@ def stage_dingtalk_inbound(
     try:
         if len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()) > MAX_ENVELOPE_BYTES:
             return StageResult(StageDisposition.SECURITY_DROP, error_code="event_payload_too_large")
-        with Session(db_engine) as db:
+        with channel_session(db_engine) as db:
             binding = db.get(ChannelBinding, binding_id)
             expected_account = dingtalk_account_key(client_id)
             expected_scope = dingtalk_identity_scope(client_id, tenant_key)

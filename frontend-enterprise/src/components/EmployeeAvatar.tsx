@@ -7,6 +7,7 @@ import {
   type EmployeeProfile,
 } from '../employee';
 import type { AgentProfileRead } from '../types';
+import { useEmployeeAvatar } from '../hooks/useEmployeeAvatar';
 
 type AvatarProfile = Pick<EmployeeProfile, 'avatarKind' | 'avatarImage' | 'avatarPreset' | 'avatarText' | 'avatarTone'>;
 
@@ -43,6 +44,7 @@ export default function EmployeeAvatar({
   style,
 }: EmployeeAvatarProps) {
   const profile = profileOverride || employeeProfile(agent);
+  const source = useEmployeeAvatar(employeeAvatarImage(profile));
 
   const className_ = [
     'employee-avatar',
@@ -75,7 +77,7 @@ export default function EmployeeAvatar({
       style={boxStyle}
       aria-label={`${profile.avatarText || '员'}员工头像`}
     >
-      <img src={employeeAvatarImage(profile)} alt="" style={imageStyle} />
+      <img src={source || employeeAvatarImage({ ...profile, avatarKind: 'preset' })} alt="" style={imageStyle} />
     </span>
   );
 }

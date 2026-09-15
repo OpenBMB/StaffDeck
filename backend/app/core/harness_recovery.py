@@ -312,10 +312,8 @@ _sweeper_thread: threading.Thread | None = None
 def _sweep_loop(interval_seconds: float) -> None:
     while not _stop_event.wait(max(1.0, interval_seconds)):
         try:
-            with Session(engine) as db:
-                result = recover_orphan_harness_runs(db)
-                if result.turn_count:
-                    logger.warning("Recovered orphan Harness executions: %s", result)
+            from staffdeck_harness.runtime.services import recover_runtime_runs
+            recover_runtime_runs()
         except Exception:
             logger.exception("Harness orphan recovery sweep failed")
 

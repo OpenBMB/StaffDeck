@@ -99,6 +99,8 @@ class _RecordingProvider:
 
 def _install_registry(monkeypatch, provider, *, module_id="tool.fake", ops=("tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"), extra=()):
     reg = ModuleRegistry()
+    from staffdeck_harness.composition.local_sources import register_sources
+    register_sources(reg)
     reg.install(ModuleManifest(module_id=module_id, name="fake", version="1.0.0", kind=ModuleKind.CODE, contract_version="v1", attaches_to=(SlotName.STAFF_CAPABILITY,), provides_operations=tuple(ops), policy_actions=tuple(ops)), provider, slot=SlotName.STAFF_CAPABILITY)
     for mid, prov, pops in extra:
         reg.install(ModuleManifest(module_id=mid, name=mid, version="2.0.0", kind=ModuleKind.CODE, contract_version="v1", attaches_to=(SlotName.STAFF_CAPABILITY,), provides_operations=tuple(pops), policy_actions=tuple(pops)), prov, slot=SlotName.STAFF_CAPABILITY)
@@ -121,6 +123,162 @@ def _host(db, snapshot, *, tenant_role="member", hooks=None, active_sop_id=None)
 
 
 # --------------------------------------------------------------------------- 1. host-enforced PEP
+
+def test_async_definition_preserves_local_sop_restrictions(db):
+    from staffdeck_harness.runtime.external_tasks import local_definition
+    from staffdeck_harness.contracts.errors import ModuleSdkError
+    tool = _tool(db, "restricted-async")
+    tool.allowed_skills_json = ["allowed-sop"]
+    ensure_private_resource_binding(db, "t1", "a1", "tool", tool.id)
+    db.add(tool)
+    db.commit()
+    inv = ModuleInvocation("restricted", "tool", "tool.invoke/v1", {}, _ctx(), binding_id=tool.id)
+    with pytest.raises(ModuleSdkError) as error:
+        local_definition(db, inv, active_sop_id="other-sop")
+    assert error.value.code == "NOT_ALLOWED"
+    assert local_definition(db, inv, active_sop_id="allowed-sop").name == tool.name
+
+
+def test_shared_http_definition_retains_default_timeout_for_existing_tools():
+    from app.config import get_settings
+    from staffdeck_harness.contracts.http_task import HttpTaskDefinition
+    from staffdeck_harness.runtime.external_tasks import transient_tool
+    tool = transient_tool(HttpTaskDefinition('existing', 'http://unused.invalid', 'GET'), 't', 'tool')
+    assert tool.config_json['execution']['timeout_seconds'] == get_settings().tool_timeout_seconds
+
+@pytest.mark.parametrize("disable_before_worker", [False, True])
+def test_detached_host_uses_shared_tracker_and_revalidates_binding(db, monkeypatch, disable_before_worker):
+    from app.db.models import ChatSession, ExternalBusinessTask
+    from app.tools.external_tasks import poll_due_external_tasks
+    from app.tools.tool_schema import ToolResult
+    from staffdeck_harness.modules.builtin import LocalCapabilityProvider
+    tool = _tool(db, "async_tool")
+    tool.config_json = {"execution": {"execution_mode": "detached", "timeout_seconds": 10}}
+    ensure_private_resource_binding(db, "t1", "a1", "tool", tool.id)
+    db.add(tool)
+    db.add(ChatSession(id="s1", tenant_id="t1", agent_id="a1", user_id="u1"))
+    db.commit()
+    _install_registry(monkeypatch, LocalCapabilityProvider())
+    snap = CompositionCompiler(hooks=()).compile(_staff([_cap("tool", tool.id)]))
+    host = _host(db, snap)
+    monkeypatch.setattr("staffdeck_harness.security.profile.get_profile", lambda: host.guard.profile)
+    sends = []
+    monkeypatch.setattr("app.tools.tool_executor.ToolExecutor.execute_sync_http",
+        lambda self, row, args: sends.append(dict(args)) or ToolResult(tool_name=row.name, success=True, data={"done": True}))
+    result, _ = host.invoke(ModuleInvocation("async-1", "tool", "tool.invoke/v1",
+        {"tool_id": tool.id, "order_id": "B1"}, _ctx(), binding_id=tool.id))
+    assert result.success, result.error
+    assert result.data["detached"] and sends == []
+    task = db.get(ExternalBusinessTask, result.data["task_id"])
+    assert task.status_config_json["_runtime"]["module_id"] == "tool.fake"
+    assert "headers" not in task.status_config_json["_runtime"]
+    if disable_before_worker:
+        tool.enabled = False
+        db.add(tool)
+        db.commit()
+    poll_due_external_tasks(db)
+    db.refresh(task)
+    if disable_before_worker:
+        assert task.status == "tracking_blocked" and sends == []
+        assert task.error_json['code'] != 'POLL_ERROR'
+    else:
+        assert task.status == "completed", task.error_json
+        assert sends == [{"order_id": "B1"}]
+        poll_due_external_tasks(db)
+        assert len(sends) == 1
+
+@pytest.mark.parametrize('mode', ['sync', 'detached'])
+def test_http_provider_never_implements_a_second_transport(db, monkeypatch, mode):
+    from app.db.models import ChatSession
+    from app.tools.external_tasks import poll_due_external_tasks
+    from app.tools.tool_schema import ToolResult
+    from staffdeck_harness.modules.builtin import LocalCapabilityProvider
+    from staffdeck_harness.contracts.http_task import ResolvedHttpTool
+    class Provider(LocalCapabilityProvider):
+        def invoke(self, *args):
+            pytest.fail('HTTP transport must be owned by the common executor')
+    tool = _tool(db, 'common-http')
+    tool.config_json = {'execution': {'execution_mode': mode, 'timeout_seconds': 10}}
+    ensure_private_resource_binding(db, 't1', 'a1', 'tool', tool.id)
+    db.add_all([tool, ChatSession(id='s1', tenant_id='t1', agent_id='a1', user_id='u1')])
+    db.commit()
+    _install_registry(monkeypatch, Provider())
+    host = _host(db, CompositionCompiler(hooks=()).compile(_staff([_cap('tool', tool.id)])))
+    monkeypatch.setattr('staffdeck_harness.security.profile.get_profile', lambda: host.guard.profile)
+    calls = []
+    def execute(self, definition, arguments, **kwargs):
+        assert isinstance(definition, ResolvedHttpTool)
+        calls.append(arguments)
+        return ToolResult(tool_name=definition.name, success=True, data={'ok': True})
+    monkeypatch.setattr('app.tools.tool_executor.ToolExecutor.execute_sync_http', execute)
+    result, _ = host.invoke(ModuleInvocation('common-http-call', 'tool', 'tool.invoke/v1',
+        {'order_id': 'once'}, _ctx(), binding_id=tool.id))
+    assert result.success, result.error
+    if mode == 'detached':
+        assert calls == []
+        poll_due_external_tasks(db)
+    assert calls == [{'order_id': 'once'}]
+
+
+@pytest.mark.parametrize('deny', [False, True])
+@pytest.mark.parametrize('delivery', ['worker', 'callback'])
+def test_async_final_result_is_projected_before_api_events_and_sop(db, monkeypatch, deny, delivery):
+    import json
+    from app.db.models import ChatSession, ExternalBusinessTask, ExternalBusinessTaskEvent, HarnessTaskFrameRecord
+    from sqlmodel import select
+    from app.api.external_business_tasks import task_read
+    from app.tools.external_tasks import apply_task_event, poll_due_external_tasks
+    from app.tools.tool_schema import ToolResult
+    from staffdeck_harness.modules.builtin import LocalCapabilityProvider
+    from staffdeck_harness.contracts.manifest import HookContribution
+    tool = _tool(db, 'reviewed-async')
+    tool.config_json = {'execution': {'execution_mode': 'detached', 'timeout_seconds': 10}}
+    ensure_private_resource_binding(db, 't1', 'a1', 'tool', tool.id)
+    db.add_all([tool, ChatSession(id='s1', tenant_id='t1', agent_id='a1', user_id='u1')])
+    db.commit()
+    reg = _install_registry(monkeypatch, LocalCapabilityProvider())
+    observed = []
+    def policy(ctx, state):
+        assert ctx.payload['name'] == 'tool_invoke'
+        observed.append(ctx.payload['data'])
+        if isinstance(ctx.payload['data'], dict) and ctx.payload['data'].get('detached'):
+            return HookDecision.passthrough()
+        return HookDecision.deny('sensitive output') if deny else HookDecision(kind='modify', replacement=ModuleResult.ok({'safe': True}))
+    monkeypatch.setattr(reg, 'hooks', lambda *args, **kw: (HookContribution(point='post_tool',handler='test.redact',critical=True),))
+    monkeypatch.setattr(reg, 'hook_handlers', lambda *args, **kw: {'test.redact':policy})
+    host = _host(db, CompositionCompiler(hooks=()).compile(_staff([_cap('tool', tool.id)])))
+    monkeypatch.setattr('staffdeck_harness.security.profile.get_profile', lambda: host.guard.profile)
+    result, _ = host.invoke(ModuleInvocation('reviewed-call', 'tool', 'tool.invoke/v1', {}, _ctx(),
+        binding_id=tool.id, metadata={'proxy_name':'tool_invoke'}))
+    assert result.success
+    task = db.get(ExternalBusinessTask, result.data['task_id'])
+    frame = HarnessTaskFrameRecord(tenant_id='t1', session_id='s1', source_turn_id='turn1', task_id='tf1',
+        kind='sop', status='waiting_external_task', result_json={'structured_result': {'task_id':task.id}})
+    db.add(frame)
+    db.commit()
+    secret = 'AUDIT_SYNTHETIC_SECRET'
+    if delivery == 'worker':
+        monkeypatch.setattr('app.tools.tool_executor.ToolExecutor.execute_sync_http', lambda self, tool, args:
+            ToolResult(tool_name=tool.name,success=True,data={'private':secret}))
+        poll_due_external_tasks(db)
+    else:
+        apply_task_event(db, task,event_id='callback-final',event_type='result',status='completed',data={'result':{'private':secret},'raw_copy':secret})
+    db.refresh(task)
+    db.refresh(frame)
+    assert observed == [{'private':secret}]
+    assert secret not in json.dumps(task_read(task,db))
+    assert secret not in json.dumps(frame.result_json)
+    assert secret not in json.dumps([event.data_json for event in db.exec(select(ExternalBusinessTaskEvent)).all()])
+    if deny:
+        assert task.status == 'tracking_blocked'
+        assert task.error_json['code'] == 'POST_TOOL_DENIED'
+        assert frame.status == 'waiting_external_task'
+    else:
+        assert task.status == 'completed' and task.result_json == {'safe':True}
+        assert frame.status == 'ready_to_resume' and frame.slots_json == {'safe':True}
+    apply_task_event(db,task,event_id='late-event',event_type='result',status='completed',data={'result':{'private':secret},'raw_copy':secret})
+    assert secret not in json.dumps(task_read(task,db))
+
 
 def test_host_pep_denies_unbound_tool_even_when_provider_skips_guard(db, monkeypatch):
     """A tool that is in the snapshot (fence passes) but not bound to the staff must be refused by the host's

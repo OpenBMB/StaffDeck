@@ -49,3 +49,6 @@ SUPPORTED_CONTRACTS = {
         "notification.send",
     )
 }
+
+# v2 removes persistence objects from the SOP lifecycle SPI. v1 plugins must migrate.
+SUPPORTED_CONTRACTS["sop.lifecycle"] = {"v2"}

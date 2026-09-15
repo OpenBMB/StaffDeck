@@ -86,6 +86,49 @@ afterEach(() => {
 });
 
 describe('useChatSession team scope', () => {
+  it('loads its model catalog on a direct chat entry without visiting management', async () => {
+    const fetchMock = stubChatFetch([]);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/model-configs')) return jsonResponse([
+        { id: 'cold-model', tenant_id: 'tenant_demo', enabled: true, is_default: true, model: 'test' },
+      ]);
+      return jsonResponse([]);
+    });
+    const { result } = renderChatSession('/workspace/chat');
+    await waitFor(() => expect(result.current.modelConfigsLoading).toBe(false));
+    expect(result.current.selectedModelConfig?.id).toBe('cold-model');
+  });
+
+  it('does not let an older catalog response overwrite a newer same-tenant update', async () => {
+    const fetchMock = stubChatFetch([]);
+    let complete!: (response: Response) => void;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/model-configs')) return new Promise<Response>((resolve) => { complete = resolve; });
+      return jsonResponse([]);
+    });
+    const { result } = renderChatSession('/workspace/chat');
+    await waitFor(() => expect(complete).toBeDefined());
+    act(() => window.dispatchEvent(new CustomEvent('ultrarag-enterprise-model-configs-updated', { detail: {
+      models: [{ id: 'new-model', tenant_id: 'tenant_demo', enabled: true, is_default: true }],
+    } })));
+    expect(result.current.modelConfigsLoading).toBe(false);
+    await act(async () => complete(jsonResponse([{ id: 'old-model', tenant_id: 'tenant_demo', enabled: true }])));
+    expect(result.current.selectedModelConfig?.id).toBe('new-model');
+  });
+
+  it('leaves loading after catalog failure and does not treat it as an empty setup', async () => {
+    const fetchMock = stubChatFetch([]);
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/model-configs')) throw new TypeError('offline');
+      return jsonResponse([]);
+    });
+    const { result } = renderChatSession('/workspace/chat');
+    await waitFor(() => expect(result.current.modelConfigsLoading).toBe(false));
+    expect(result.current.showModelSetupNotice).toBe(false);
+    expect(result.current.selectedModelConfig).toBeNull();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/model-configs'))).toHaveLength(2);
+  });
+
   it('syncs the shared scope for an active team group', async () => {
     window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, 'agent-1');
     stubChatFetch([teamSession, employeeSession]);

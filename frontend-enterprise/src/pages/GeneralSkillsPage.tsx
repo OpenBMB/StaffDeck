@@ -16,6 +16,7 @@ import { Ban, ChevronRight, CircleCheck, Copy, Eye, EyeOff, FilePlus2, FolderPlu
 import { ContextMenu } from 'radix-ui';
 
 import { api, streamPost, TENANT_ID } from '../api/client';
+import { loadEmployeeDirectory } from '../api/employee-directory';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
 import CapabilityScopeLoading from '@/components/CapabilityScopeLoading';
@@ -386,8 +387,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
   }, [agentId]);
 
   useEffect(() => {
-    api
-      .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
+    loadEmployeeDirectory()
       .then((items) => {
         setAgents(items);
         setIsOverallAgent(Boolean(items.find((item) => item.id === agentId)?.is_overall ?? true));
@@ -509,7 +509,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
 
   async function requestAgentImport(mode: GeneralSkillImportMode, selectedResourceId?: string) {
     try {
-      const agents = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
+      const agents = await loadEmployeeDirectory();
       const firstSource = mode === 'plaza'
         ? openGalleryAgentId(agents)
         : visibleEmployeeAgents(agents, currentUser, { activeOnly: true, excludeAgentId: agentId })[0]?.id || '';
@@ -1539,8 +1539,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   }, [agentId, mode, routeSlug, forceGalleryScope, agentScopeLoaded]);
 
   useEffect(() => {
-    api
-      .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
+    loadEmployeeDirectory()
       .then((items) => {
         setAgents(items);
         const scopedAgent = forceGalleryScope
@@ -1867,7 +1866,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   function requestAgentImport(mode: GeneralSkillImportMode) {
     void withImportPreparation(async () => {
       try {
-        const agents = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
+        const agents = await loadEmployeeDirectory();
         const firstSource = mode === 'plaza'
           ? openGalleryAgentId(agents)
           : visibleEmployeeAgents(agents, currentUser, { activeOnly: true, excludeAgentId: agentId })[0]?.id || '';

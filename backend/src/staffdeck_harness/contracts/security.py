@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
+from .runtime_services import ExecutionIdentity
 
 JsonObject = Mapping[str, Any]
 
@@ -43,6 +44,13 @@ class SecurityContext:
     channel: str | None = None
     workload: JsonObject | None = None   # WorkloadContextPort output when acting as a service
     attributes: JsonObject = field(default_factory=dict)
+    # Trusted execution correlation, not credentials and not a durable permission grant.
+    actor_user_id: str | None = None
+    agent_id: str | None = None
+    run_id: str | None = None
+    run_attempt: int = 1
+    sop_authorization_ref: JsonObject | None = None
+    execution: ExecutionIdentity | None = None
 
     @property
     def is_admin(self) -> bool:

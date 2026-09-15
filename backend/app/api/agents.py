@@ -5,7 +5,8 @@ from datetime import UTC, datetime
 from time import sleep
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from staffdeck_harness.contracts.directory import DirectoryScope
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
 
@@ -101,10 +102,11 @@ def get_agent_scope(
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    request: Request = None,
 ) -> AgentScopeRead:
     ensure_tenant(db, tenant_id)
     _ensure_request_tenant(tenant_id, current_user)
-    return AgentScopeRead(tenant_id=tenant_id, agents=list_agents(tenant_id, db, current_user))
+    return AgentScopeRead(tenant_id=tenant_id, agents=list_agents(tenant_id, db, current_user, request))
 
 
 @enterprise_router.get("", response_model=list[AgentProfileRead])
@@ -112,24 +114,52 @@ def list_agents(
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    request: Request = None,
+    scope: DirectoryScope = 'visible',
 ) -> list[AgentProfileRead]:
-    ensure_tenant(db, tenant_id)
-    user = current_user
-    _ensure_request_tenant(tenant_id, user)
-    rows = db.exec(
-        select(AgentProfile)
-        .where(AgentProfile.tenant_id == tenant_id)
-        .order_by(AgentProfile.is_overall.desc(), AgentProfile.updated_at.desc())
-    ).all()
-    rows = [row for row in rows if not _agent_hidden_from_staffdeck(row)]
-    if not _is_admin_user(user):
-        # Non-admin users still need the overall agent as a read-only open-gallery
-        # source for copy/use flows. Mutations remain guarded by manage/update
-        # endpoints, so this only exposes the source scope.
-        rows = [row for row in rows if row.is_overall or _agent_visible_to_user(row, user)]
-    bindings = _bindings_by_agent(db, tenant_id)
-    used_agent_ids = _used_agent_ids_for_user(db, tenant_id, user)
-    return [agent_read(row, bindings.get(row.id, []), row.id in used_agent_ids) for row in rows]
+    from staffdeck_harness.runtime.directory import employee_directory
+    return employee_directory(db, tenant_id, current_user, scope=scope,
+        authorization=request.headers.get('authorization', '') if request else '',
+        summary=bool(request and request.query_params.get('view') == 'summary'))
+
+
+@chat_router.get('/{agent_id}/avatar/{digest}')
+def get_employee_avatar(agent_id: str, digest: str, tenant_id: str, request: Request,
+                        db: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
+    from fastapi.responses import Response
+    from staffdeck_harness.runtime.avatar_assets import read, realm
+    from staffdeck_harness.runtime.staff_directory import staff_profile
+    from app.security.module_policy import require_resource
+    _ensure_request_tenant(tenant_id, current_user)
+    profile = staff_profile(db, tenant_id, agent_id, user=current_user)
+    require_resource(current_user, profile.ref, 'view', module='staff.avatar')
+    value = read(tenant_id, agent_id, digest, namespace=realm(db))
+    if value is None:
+        # A worker restart/eviction must not break an already-open directory.
+        # Refill through the selected source, never through a local shadow table.
+        from staffdeck_harness.runtime.directory import employee_directory
+        employee_directory(db, tenant_id, current_user, summary=True,
+            authorization=request.headers.get('authorization', ''))
+        value = read(tenant_id, agent_id, digest, namespace=realm(db))
+    if value is None:
+        raise HTTPException(404, 'Avatar not found in current employee directory')
+    headers = {'ETag':'"'+digest+'"', 'Cache-Control':'private, max-age=60', 'X-Content-Type-Options':'nosniff', 'Vary':'Authorization'}
+    if request.headers.get('if-none-match') == headers['ETag']:
+        return Response(status_code=304, headers=headers)
+    return Response(value[0], media_type=value[1], headers=headers)
+
+
+def _directory_alias(scope):
+    def endpoint(tenant_id: str = Query(...), request: Request = None,
+                 db: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
+        return list_agents(tenant_id, db, current_user, request, scope)
+    return endpoint
+
+
+from staffdeck_harness.contracts.directory import DIRECTORY_ALIASES
+for _path, _scope in DIRECTORY_ALIASES.items():
+    enterprise_router.add_api_route(_path.removeprefix('/api/enterprise/agents'), _directory_alias(_scope),
+        methods=['GET'], response_model=list[AgentProfileRead], name='employee_directory_' + _scope)
 
 
 @enterprise_router.post("", response_model=AgentProfileRead)
@@ -209,8 +239,7 @@ def list_agent_api_credentials(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[AgentAPICredentialRead]:
-    agent = _get_agent(db, tenant_id, agent_id)
-    _ensure_can_manage_agent(agent, current_user)
+    agent = _credential_agent(db, tenant_id, agent_id, current_user)
     rows = db.exec(
         select(APICredential)
         .where(
@@ -232,8 +261,7 @@ def create_agent_api_credential(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> AgentAPICredentialCreated:
-    agent = _get_agent(db, request.tenant_id, agent_id)
-    _ensure_can_manage_agent(agent, current_user)
+    agent = _credential_agent(db, request.tenant_id, agent_id, current_user)
     if agent.is_overall:
         raise HTTPException(status_code=400, detail="Open gallery cannot own an employee API key")
     client = _ensure_staffdeck_agent_api_client(db, request.tenant_id, current_user)
@@ -268,8 +296,7 @@ def rotate_agent_api_credential(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> AgentAPICredentialCreated:
-    agent = _get_agent(db, tenant_id, agent_id)
-    _ensure_can_manage_agent(agent, current_user)
+    agent = _credential_agent(db, tenant_id, agent_id, current_user)
     row = _get_agent_api_credential(db, tenant_id, agent_id, credential_id)
     token, prefix, digest = generate_api_key()
     row.key_prefix = prefix
@@ -297,8 +324,7 @@ def revoke_agent_api_credential(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> AgentAPICredentialRead:
-    agent = _get_agent(db, tenant_id, agent_id)
-    _ensure_can_manage_agent(agent, current_user)
+    agent = _credential_agent(db, tenant_id, agent_id, current_user)
     row = _get_agent_api_credential(db, tenant_id, agent_id, credential_id)
     row.status = "revoked"
     row.revoked_at = utc_now()
@@ -316,9 +342,21 @@ def get_agent_work_record(
     timezone: str = Query("Asia/Shanghai"),
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    request: Request = None,
 ) -> AgentWorkRecordRead:
-    agent = _get_agent(db, tenant_id, agent_id)
-    _ensure_can_access_agent(agent, current_user)
+    from staffdeck_harness.modules.registry import peek_registry
+    from staffdeck_harness.runtime.staff_directory import staff_profile, directory_context
+    from staffdeck_harness.composition.sources import resolve_source
+    from staffdeck_harness.contracts.manifest import SlotName
+    from staffdeck_harness.composition.local_sources import LocalStaffSource
+    from staffdeck_harness.contracts.staff import StaffResourceAssignment
+    _ensure_request_tenant(tenant_id, current_user)
+    registry = db.info.get("staffdeck_registry") or peek_registry()
+    if registry is None:
+        agent = _get_agent(db, tenant_id, agent_id)
+        _ensure_can_access_agent(agent, current_user)
+    else:
+        staff_profile(db, tenant_id, agent_id, user=current_user, action="view")
     try:
         local_timezone = ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, ValueError) as exc:
@@ -352,7 +390,24 @@ def get_agent_work_record(
         day = _as_utc(message.created_at).astimezone(local_timezone).date().isoformat()
         by_day[day] = by_day.get(day, 0) + 1
 
-    events.extend(_agent_resource_timeline_events(db, tenant_id, agent_id))
+    source = resolve_source(registry, SlotName.STAFF_SOURCE, db) if registry else LocalStaffSource(db)
+    timeline = getattr(source, "resource_timeline", None)
+    if not callable(timeline):
+        raise HTTPException(503, "当前员工来源尚不支持资源工作记录")
+    from staffdeck_harness.contracts.errors import ModuleSdkError, PermissionDenied
+    try:
+        rows = timeline(directory_context(db, tenant_id, agent_id, user=current_user),
+                        authorization=request.headers.get("authorization", "") if request else "")
+        for row in rows:
+            if (not isinstance(row, StaffResourceAssignment)
+                    or (row.tenant_id, row.staff_id) != (tenant_id, agent_id)
+                    or not isinstance(row.timestamp, datetime)
+                    or row.kind not in {"sop", "skill", "knowledge", "tool"}):
+                raise HTTPException(503, "员工工作记录来源返回了不匹配的数据")
+            events.append(AgentWorkRecordEventRead(id=row.id, kind=row.kind, phase="assigned",
+                timestamp=_iso_utc(row.timestamp), label=row.label))
+    except ModuleSdkError as exc:
+        raise HTTPException(403 if isinstance(exc, PermissionDenied) else 503, exc.message) from exc
     events.extend(_agent_scheduled_task_timeline_events(db, tenant_id, agent_id, current_user))
     events.sort(key=lambda item: (item.timestamp, item.id))
     today = _as_utc(now).astimezone(local_timezone).date().isoformat()
@@ -402,8 +457,12 @@ def update_agent(
     if request.harness_max_actions is not None:
         row.harness_max_actions = request.harness_max_actions
     if request.metadata is not None:
+        from staffdeck_harness.contracts.directory import without_directory_projection
+        incoming = dict(request.metadata)
+        if incoming.get('directory_summary') and 'avatar_image' not in incoming and (row.metadata_json or {}).get('avatar_image'):
+            incoming['avatar_image'] = row.metadata_json['avatar_image']
         row.metadata_json = _metadata_preserving_creator(
-            row.metadata_json or {}, request.metadata, user
+            row.metadata_json or {}, without_directory_projection(incoming), user
         )
     row.updated_at = utc_now()
     db.add(row)
@@ -747,6 +806,8 @@ def promote_agent_skill_to_overall(
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
     skill = promote_branch_to_overall(db, tenant_id, branch)
+    from app.api.skills import validate_published_sop
+    validate_published_sop(db, tenant_id, None, skill_id)
     db.commit()
     return {"status": "promoted", "skill_id": skill_id, "version": skill.version}
 
@@ -839,26 +900,13 @@ def list_chat_agents(
     tenant_id: str = Query(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
+    request: Request = None,
 ) -> list[AgentProfileRead]:
-    if tenant_id != current_user.tenant_id:
-        raise HTTPException(status_code=403, detail="Tenant mismatch")
-    ensure_tenant(db, tenant_id)
-    rows = db.exec(
-        select(AgentProfile)
-        .where(
-            AgentProfile.tenant_id == tenant_id,
-            AgentProfile.status == "active",
-            AgentProfile.is_overall == False,  # noqa: E712
-        )
-        .order_by(AgentProfile.updated_at.desc())
-    ).all()
-    rows = [row for row in rows if not _agent_hidden_from_staffdeck(row)]
-    used_agent_ids = _used_agent_ids_for_user(db, tenant_id, current_user)
-    rows = [
-        row for row in rows if _chat_agent_selectable_to_user(row, current_user, used_agent_ids)
-    ]
-    bindings = _bindings_by_agent(db, tenant_id)
-    return [agent_read(row, bindings.get(row.id, []), row.id in used_agent_ids) for row in rows]
+    rows = list_agents(tenant_id, db, current_user, request, scope='available')
+    # The chat selector is the user's added roster, not the public discovery view.
+    return [row for row in rows if not row.metadata['directory_access']['public']
+            or row.metadata['directory_access']['owned'] or row.metadata['directory_access']['shared']
+            or row.metadata.get('used_by_current_user') is True]
 
 
 @chat_router.post("/{agent_id}/use", response_model=AgentProfileRead)
@@ -883,7 +931,7 @@ def use_chat_agent(
     return agent_read(row, bindings.get(row.id, []), True)
 
 
-def _agent_resource_timeline_events(
+def _local_agent_resource_timeline_events(
     db: Session,
     tenant_id: str,
     agent_id: str,
@@ -1073,15 +1121,35 @@ def _ensure_request_tenant(tenant_id: str, user: User) -> None:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
 
 
+def _credential_agent(db, tenant_id, agent_id, user):
+    from staffdeck_harness.modules.registry import peek_registry
+    registry = peek_registry()
+    if registry is None:
+        agent = _get_agent(db, tenant_id, agent_id)
+        _ensure_can_manage_agent(agent, user)
+        return agent
+    from staffdeck_harness.composition.sources import resolve_staff
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.security.profile import get_profile, Guard
+    from app.config import get_settings
+    from types import SimpleNamespace
+    profile = get_profile(get_settings())
+    staff, identity = resolve_staff(registry, db, SourceContext(tenant_id, agent_id, user_id=user.id), profile)
+    Guard("staff", profile).require(identity, "staff.manage/v1", staff.ref)
+    return SimpleNamespace(id=staff.staff_id, tenant_id=staff.tenant_id, is_overall=staff.is_overall)
+
+
 def _ensure_staffdeck_agent_api_client(
     db: Session,
     tenant_id: str,
     current_user: User,
 ) -> APIClient:
+    from app.public_api.runtime import realm_client_name, stamp_client
+    name = realm_client_name(db, f"{STAFFDECK_AGENT_API_CLIENT_NAME}:{current_user.id}")
     row = db.exec(
         select(APIClient).where(
             APIClient.tenant_id == tenant_id,
-            APIClient.name == STAFFDECK_AGENT_API_CLIENT_NAME,
+            APIClient.name == name,
         )
     ).first()
     required_scopes = sorted({"credentials:write", *AGENT_KEY_ALLOWED_SCOPES})
@@ -1095,12 +1163,13 @@ def _ensure_staffdeck_agent_api_client(
         return row
     row = APIClient(
         tenant_id=tenant_id,
-        name=STAFFDECK_AGENT_API_CLIENT_NAME,
+        name=name,
         description="由数字员工设置页管理的单员工运行密钥。",
         scopes_json=required_scopes,
         created_by_user_id=current_user.id,
         metadata_json={"managed_by": "agent_settings"},
     )
+    stamp_client(db, row)
     db.add(row)
     db.flush()
     return row
@@ -1212,13 +1281,15 @@ def _chat_agent_selectable_to_user(row: AgentProfile, user: User, used_agent_ids
 
 
 def _validate_module_composition(db: Session, tenant_id: str, agent_id: str) -> None:
-    from staffdeck_harness.composition.staff import project_staff
-    from staffdeck_harness.composition.compiler import CompositionCompiler
+    from staffdeck_harness.composition.sources import validate_configuration
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.modules.registry import get_registry
+    from app.config import get_settings
     from staffdeck_harness.contracts.errors import ModuleSdkError
 
     db.flush()
     try:
-        CompositionCompiler().compile(project_staff(db, tenant_id, agent_id))
+        validate_configuration(get_registry(get_settings()), db, SourceContext(tenant_id, agent_id))
     except (ModuleSdkError, ValueError, LookupError) as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"模块装配无效：{exc}") from exc
@@ -1895,9 +1966,11 @@ def _bindings_by_agent(db: Session, tenant_id: str) -> dict[str, list[AgentResou
         ).all()
     }
     grouped: dict[str, list[AgentResourceBinding]] = {}
+    from app.agents.summary import summary_facts
+    facts = summary_facts(db, tenant_id, rows)
     for row in rows:
         if not _resource_binding_visible_in_agent_summary(
-            db, tenant_id, agents_by_id.get(row.agent_id), row
+            db, tenant_id, agents_by_id.get(row.agent_id), row, facts=facts
         ):
             continue
         grouped.setdefault(row.agent_id, []).append(row)
@@ -1909,6 +1982,7 @@ def _resource_binding_visible_in_agent_summary(
     tenant_id: str,
     agent: AgentProfile | None,
     binding: AgentResourceBinding,
+    *, facts=None,
 ) -> bool:
     if not agent or binding.status == "deleted":
         return False
@@ -1922,24 +1996,28 @@ def _resource_binding_visible_in_agent_summary(
     model = model_by_type.get(binding.resource_type)
     if model is None:
         return False
-    resource = db.get(model, binding.resource_id)
+    resource = facts['resources'].get((binding.resource_type, binding.resource_id)) if facts is not None else db.get(model, binding.resource_id)
     if not resource or resource.tenant_id != tenant_id:
         return False
-    if isinstance(resource, KnowledgeBase) and _is_empty_default_knowledge_base(
-        db, tenant_id, resource
-    ):
-        return False
+    if isinstance(resource, KnowledgeBase):
+        meta = resource.metadata_json or {}
+        empty = (resource.id not in facts['populated'] and (
+            meta.get('created_from_document_upload') and not meta.get('source_document_id') or resource.name == '默认知识库')
+        ) if facts is not None else _is_empty_default_knowledge_base(db, tenant_id, resource)
+        if empty:
+            return False
 
     if agent.is_overall:
-        if not is_open_gallery_resource(db, tenant_id, binding.resource_type, resource):
+        if not ((binding.resource_type, resource.id) in facts['public'] if facts is not None else is_open_gallery_resource(db, tenant_id, binding.resource_type, resource)):
             return False
     elif not is_bound_resource_visible_for_agent(
-        db, tenant_id, binding.resource_type, resource, binding
+        db, tenant_id, binding.resource_type, resource, binding,
+        gallery_visibility=(binding.resource_type, resource.id) in facts['public'] if facts is not None else None,
     ):
         return False
 
     if isinstance(resource, Skill) and not agent.is_overall:
-        branch = db.exec(
+        branch = facts['skill_branches'].get((agent.id, resource.skill_id)) if facts is not None else db.exec(
             select(AgentSkillBranch).where(
                 AgentSkillBranch.tenant_id == tenant_id,
                 AgentSkillBranch.agent_id == agent.id,
@@ -1953,7 +2031,7 @@ def _resource_binding_visible_in_agent_summary(
             return False
 
     if isinstance(resource, KnowledgeBase) and not agent.is_overall:
-        branch = db.exec(
+        branch = facts['kb_branches'].get((agent.id, resource.id)) if facts is not None else db.exec(
             select(AgentKnowledgeBranch).where(
                 AgentKnowledgeBranch.tenant_id == tenant_id,
                 AgentKnowledgeBranch.agent_id == agent.id,

@@ -2,34 +2,13 @@
 
 from __future__ import annotations
 import json
-import re
 from typing import Any
 from staffdeck_harness.contracts.engine_phase import (
     EnginePhaseError,
     PhaseRunner as EnginePhaseRunner,
 )
 
-_JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
-
-
-def parse_json_object(text: str) -> dict[str, Any]:
-    """Tolerant JSON extraction: fenced block, or the outermost ``{...}`` in the text."""
-
-    text = (text or "").strip()
-    if not text:
-        raise ValueError("empty model output")
-    m = _JSON_FENCE.search(text)
-    candidate = m.group(1) if m else text
-    try:
-        obj = json.loads(candidate)
-    except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end <= start:
-            raise
-        obj = json.loads(text[start : end + 1])
-    if not isinstance(obj, dict):
-        raise ValueError("model output is not a JSON object")
-    return obj
+from staffdeck_harness.runtime.structured_output import parse_json_object, generate_structured, StructuredOutputError
 
 
 class EngineTurnPlanner:
@@ -59,11 +38,7 @@ class EngineTurnPlanner:
         interaction_mode: str = "normal",
         team_context: Any = None,
     ) -> Any:
-        from copy import deepcopy
-
-        from pydantic import ValidationError
-
-        from app.core.turn_planner import SCHEMA_REPAIR_ATTEMPTS, compact_validation_errors
+        from app.core.turn_planner import SCHEMA_REPAIR_ATTEMPTS
         from app.llm import LLMError
         from app.llm.stage_protocol import unified_system_prompt
         from app.session.session_schema import TurnPlan
@@ -78,53 +53,21 @@ class EngineTurnPlanner:
             interaction_mode,
             team_context,
         )
-        base_payload = deepcopy(payload)
-        next_payload = payload
-        plan = None
-        for attempt in range(SCHEMA_REPAIR_ATTEMPTS + 1):
-            user_text = stage_prompt_text(next_payload)
+        def call(current, attempt):
             try:
-                raw_text = self.runner.prompt(
-                    phase="plan",
-                    model_config=model_config,
-                    system_text=unified_system_prompt()
-                    + "\n\n只输出一个 JSON object，不要调用任何工具，不要输出解释。",
-                    user_text=user_text,
+                return self.runner.prompt(
+                    phase="plan", model_config=model_config,
+                    system_text=unified_system_prompt() + "\n\n只输出一个 JSON object，不要调用任何工具，不要输出解释。",
+                    user_text=stage_prompt_text(current),
                     engine_session=f"{self.engine_session}-plan{attempt}",
                 )
             except EnginePhaseError as exc:
-                raise LLMError(
-                    f"LLM provider request failed (MODEL_UPSTREAM_UNAVAILABLE); message={exc.detail}"
-                ) from exc
-            try:
-                raw = parse_json_object(raw_text)
-            except (ValueError, json.JSONDecodeError) as exc:
-                if attempt >= SCHEMA_REPAIR_ATTEMPTS:
-                    raise LLMError(f"Turn Planner returned invalid JSON: {exc}") from exc
-                next_payload = deepcopy(base_payload)
-                next_payload["_schema_repair"] = {
-                    "attempt": attempt + 1,
-                    "max_attempts": SCHEMA_REPAIR_ATTEMPTS,
-                    "previous_output": raw_text[:2000],
-                    "validation_errors": [str(exc)],
-                    "instruction": "上一轮输出不是合法 JSON object。请只输出一个符合 output_contract 的 JSON object。",
-                }
-                continue
-            try:
-                plan = TurnPlan.model_validate(raw)
-                break
-            except ValidationError as exc:
-                if attempt >= SCHEMA_REPAIR_ATTEMPTS:
-                    raise LLMError(f"Turn Planner returned invalid JSON schema: {exc}") from exc
-                next_payload = deepcopy(base_payload)
-                next_payload["_schema_repair"] = {
-                    "attempt": attempt + 1,
-                    "max_attempts": SCHEMA_REPAIR_ATTEMPTS,
-                    "previous_output": raw,
-                    "validation_errors": compact_validation_errors(exc),
-                    "instruction": "上一轮输出是合法 JSON，但不符合输出字段类型。请保留原任务语义，修正列出的字段后重新输出完整 JSON object。空 object 使用 {}，空 array 使用 []，不要为容器字段输出 null。",
-                }
-        assert plan is not None
+                raise LLMError(f"LLM provider request failed (MODEL_UPSTREAM_UNAVAILABLE); message={exc.detail}") from exc
+        try:
+            plan = generate_structured(call, payload, TurnPlan.model_validate,
+                phase="plan", max_repairs=SCHEMA_REPAIR_ATTEMPTS, trace=getattr(self.runner, 'trace', None))
+        except StructuredOutputError as exc:
+            raise LLMError(f"Turn Planner returned invalid JSON/schema: {exc}") from exc
         return self._v2.normalize_plan(
             plan,
             message,

@@ -29,9 +29,13 @@ from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 from sqlmodel import Session, select
 
-from app.db.models import AgentEvent, AgentProfile, ChatSession, HumanHandoffRequest, User, utc_now
+from app.db.models import AgentEvent, ChatSession, HumanHandoffRequest, User, utc_now
 from staffdeck_harness.composition import projection
 from staffdeck_harness.contracts.security import SecurityContext
+from staffdeck_harness.contracts.staff import StaffProfile
+from staffdeck_harness.runtime.staff_ownership import (
+    handoff_staff, internal_user, owner_candidates, selected_registry, staff_owner_id, tenant_admin_id,
+)
 from staffdeck_harness.security.profile import Guard
 
 TERMINAL = {"closed", "cancelled"}
@@ -53,7 +57,7 @@ class HandoffTransitionError(ValueError):
 class AssignmentStrategy(Protocol):
     slot = "handoff.assignment"
 
-    def propose(self, db: Session, handoff: HumanHandoffRequest, *, agent: AgentProfile | None) -> str | None: ...
+    def propose(self, db: Session, handoff: HumanHandoffRequest, *, agent: StaffProfile | None) -> str | None: ...
 
 
 @runtime_checkable
@@ -77,22 +81,21 @@ class ReplyResolver(Protocol):
 class DefaultAssignment(AssignmentStrategy):
     """SOP step assignee → channel default → agent owner → tenant admin (legacy order)."""
 
-    def propose(self, db: Session, handoff: HumanHandoffRequest, *, agent: AgentProfile | None) -> str | None:
+    def propose(self, db: Session, handoff: HumanHandoffRequest, *, agent: StaffProfile | None) -> str | None:
         meta = dict(handoff.metadata_json or {})
-        for key in ("step_assignee_user_id", "binding_default_assignee_user_id", "legacy_assignee_user_id"):
+        keys = ("step_assignee_user_id", "binding_default_assignee_user_id")
+        if selected_registry(db) is None:
+            keys += ("legacy_assignee_user_id",)
+        for key in keys:
             uid = meta.get(key)
             if uid and self._internal(db, handoff.tenant_id, str(uid)):
                 return str(uid)
-        owner = (agent.metadata_json or {}).get("owner_user_id") if agent is not None else None
-        if owner and self._internal(db, handoff.tenant_id, str(owner)):
-            return str(owner)
-        admin = db.exec(select(User).where(User.tenant_id == handoff.tenant_id, User.role == "admin").order_by(User.created_at)).first()
-        return admin.id if admin else None
+        staff = handoff_staff(db, handoff.tenant_id, handoff.agent_id, legacy_profile=agent)
+        return staff_owner_id(db, handoff.tenant_id, staff) or tenant_admin_id(db, handoff.tenant_id)
 
     @staticmethod
     def _internal(db: Session, tenant_id: str, user_id: str) -> bool:
-        row = db.get(User, user_id)
-        return bool(row and row.tenant_id == tenant_id and getattr(row, "source", "web") == "web")
+        return internal_user(db, tenant_id, user_id) is not None
 
 
 class WebInboxNotifier(Notifier):
@@ -183,7 +186,7 @@ class HandoffCore:
                 return invoke(InteractionContext(MappingProxyType(dict(self.module_configs.get(id(provider), {}))), local), InteractionCall(operation, tenant_id, MappingProxyType(dict(payload))))
             return local()  # compatibility adapter for built-in legacy service objects
 
-    def propose(self, row: HumanHandoffRequest, agent: AgentProfile | None) -> str | None:
+    def propose(self, row: HumanHandoffRequest, agent: StaffProfile | None = None) -> str | None:
         if self.assignment is None:
             return None
         return self.call_module(self.assignment, "handoff.assign/v1", row.tenant_id,
@@ -202,8 +205,8 @@ class HandoffCore:
         self.db.add(row)
 
     def _ref(self, row: HumanHandoffRequest):
-        agent = self.db.get(AgentProfile, row.agent_id) if row.agent_id else None
-        owner = (agent.metadata_json or {}).get("owner_user_id") if agent is not None else None
+        staff = handoff_staff(self.db, row.tenant_id, row.agent_id)
+        owner = next(iter(owner_candidates(staff, require_complete=False)), None)
         return projection.handoff_ref(row, agent_owner_user_id=owner)
 
     # -- create --------------------------------------------------------------------
@@ -231,7 +234,7 @@ class HandoffCore:
         self.db.add(AgentEvent(tenant_id=row.tenant_id, session_id=row.session_id, event_type="human_handoff_created", payload_json={"handoff_id": row.id, "trigger_skill_id": trigger_skill_id, "trigger_step_id": trigger_step_id, "engine": "harness_v3"}))
         self.db.commit()
         self.assign(ctx, row, actor_is_system=True)
-        self.notify(row, pending_question=pending_question, context_summary=context_summary)
+        self.notify(row, pending_question=pending_question, context_summary=context_summary, ctx=ctx)
         return row
 
     # -- assign --------------------------------------------------------------------
@@ -239,11 +242,10 @@ class HandoffCore:
     def assign(self, ctx: SecurityContext, row: HumanHandoffRequest, *, assignee_user_id: str | None = None, actor_is_system: bool = False) -> HumanHandoffRequest:
         if not actor_is_system:
             self.guard.require(ctx, "handoff.assign/v1", self._ref(row))
-        agent = self.db.get(AgentProfile, row.agent_id) if row.agent_id else None
-        candidate = assignee_user_id or self.propose(row, agent)
+        candidate = assignee_user_id or self.propose(row)
         if candidate:
-            user = self.db.get(User, candidate)
-            if user is None or user.tenant_id != row.tenant_id:
+            user = internal_user(self.db, row.tenant_id, candidate, profile=self.guard.profile)
+            if user is None:
                 raise HandoffTransitionError(f"assignee {candidate} is not a member of tenant {row.tenant_id}")
             row.assignee_user_id = candidate
             if row.status == "pending":
@@ -254,8 +256,13 @@ class HandoffCore:
 
     # -- notify --------------------------------------------------------------------
 
-    def notify(self, row: HumanHandoffRequest, *, pending_question: str, context_summary: str) -> None:
-        self.guard.require(self.guard.profile.identity.from_service("notifications", row.tenant_id), "handoff.notify/v1", self._ref(row))
+    def notify(self, row: HumanHandoffRequest, *, pending_question: str, context_summary: str,
+               ctx: SecurityContext | None = None) -> None:
+        # Request-local notifications reuse their admitted actor, not a fabricated
+        # service identity. A background caller must supply a freshly validated
+        # context; no credential or SecurityContext is persisted on the handoff.
+        identity = ctx or self.guard.profile.identity.from_service("notifications", row.tenant_id)
+        self.guard.require(identity, "handoff.notify/v1", self._ref(row))
         preferred = str((row.metadata_json or {}).get("assignee_notify_channel") or "").strip()
         if not preferred:
             session = self.db.get(ChatSession, row.session_id)
@@ -332,9 +339,8 @@ def build_handoff_core(db: Session, guard: Guard, *, channels: tuple[str, ...] =
     if use_registry:
         try:
             from staffdeck_harness.contracts.manifest import SlotName
-            from staffdeck_harness.modules.registry import peek_registry
 
-            reg = peek_registry()
+            reg = selected_registry(db)
             if reg is not None:
                 # The slot also hosts kernel entries (handoff.core, runtime.cancellation); pick a real strategy.
                 assignment = next((i.provider for i in reg.selected(SlotName.HANDOFF_ASSIGNMENT, snapshot, sop_id=sop_id) if callable(getattr(i.provider, "invoke", None)) or callable(getattr(i.provider, "propose", None))), None)
@@ -370,12 +376,17 @@ def build_handoff_core(db: Session, guard: Guard, *, channels: tuple[str, ...] =
 
 def for_session(db: Session, session: ChatSession) -> HandoffCore:
     from staffdeck_harness.composition.compiler import CompositionCompiler
-    from staffdeck_harness.composition.staff import project_staff
+    from staffdeck_harness.composition.sources import load_composition
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.modules.registry import get_registry
     from staffdeck_harness.security.profile import get_profile
     from app.config import get_settings
 
-    snapshot = CompositionCompiler().compile(project_staff(db, session.tenant_id, session.agent_id))
-    return build_handoff_core(db, Guard("notifications", get_profile(get_settings())), snapshot=snapshot, sop_id=session.active_skill_id)
+    registry = selected_registry(db) or get_registry(get_settings())
+    snapshot = CompositionCompiler().compile(load_composition(registry, db,
+        SourceContext(session.tenant_id, session.agent_id, session.id, user_id=session.user_id)), strict=False)
+    profile = getattr(registry, "security_profile", None) or get_profile(get_settings())
+    return build_handoff_core(db, Guard("notifications", profile), snapshot=snapshot, sop_id=session.active_skill_id)
 
 
 def authorize_reply(db: Session, row: HumanHandoffRequest, text: str, *, answered_by_user_id: str | None, source: str) -> str:

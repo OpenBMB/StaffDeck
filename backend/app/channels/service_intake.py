@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from app.channels.storage import channel_session
+from staffdeck_harness.runtime.identity_directory import is_internal_actor
+
 import logging
 import os
 import threading
@@ -189,7 +192,7 @@ def _claim_stale_event(db: Session, event_id: str) -> bool:
 def claim_staged_inbound(event_id: str, *, db_engine=None) -> bool:
     """Atomically claim one durable received event for this processor generation."""
     use_engine = db_engine or engine
-    with Session(use_engine) as db:
+    with channel_session(use_engine) as db:
         result = db.exec(
             update(ChannelInboundEvent)
             .where(
@@ -280,7 +283,7 @@ def _leave_binding_intake(binding_id: str) -> None:
 def _release_stale_event_claim(db_engine, event_id: str) -> None:
     """Release only this process's claim after recovery infrastructure fails."""
     run_id = current_processor_run_id()
-    with Session(db_engine) as db:
+    with channel_session(db_engine) as db:
         db.exec(
             update(ChannelInboundEvent)
             .where(
@@ -304,7 +307,7 @@ def _release_stale_event_claim_by_key(
 ) -> None:
     """Release the currently surviving row after delete-and-recreate recovery fails."""
     run_id = current_processor_run_id()
-    with Session(db_engine) as db:
+    with channel_session(db_engine) as db:
         db.exec(
             update(ChannelInboundEvent)
             .where(
@@ -727,7 +730,7 @@ def _bind_external_identity(
     old_user_id = identity.staffdeck_user_id if identity else None
     if old_user_id and old_user_id != owner.id:
         current = db.get(User, old_user_id)
-        if current and current.source == "web":
+        if is_internal_actor(current):
             display = current.display_name or current.username
             label = channel_label(binding.channel)
             return f"该{label}账号已绑定到 StaffDeck 账号「{display}」，请先发送 /解绑 解除后再绑定。"
@@ -1211,7 +1214,7 @@ def process_inbound(
             "text": inbound.text,
         }
 
-    with Session(use_engine) as db:
+    with channel_session(use_engine) as db:
         event = db.get(ChannelInboundEvent, staged_event_pk) if staged_event_pk else None
         if staged_event_pk:
             if (
@@ -1471,6 +1474,21 @@ def process_inbound(
         else:
             current_agent_id, pointer_reset = resolve_current_agent(db, binding, inbound.external_conv_id)
             pre_route_agent_id = current_agent_id
+            # Routing is tool-less inference under the current mounted employee's
+            # verified identity. A switch receives its own scope again below.
+            from app.channels.service_autoroute import auto_route_enabled
+            from app.channels.service_routing import mounted_agents
+            if auto_route_enabled(binding) and len(mounted_agents(db, binding)) > 1:
+                from staffdeck_harness.security.profile import get_profile
+                db.info['staffdeck_actor_id'] = user.id
+                if callable(getattr(get_profile(get_settings()).identity, 'channel_subject', None)):
+                    from app.channels.execution_scope import prepare_channel_execution
+                    from app.channels.service_session import find_channel_session
+                    routing_session = find_channel_session(db, binding, current_agent_id, inbound.external_conv_id)
+                    if routing_session is None:
+                        routing_session = find_or_create_channel_session(
+                            db, binding, user, current_agent_id, inbound.external_conv_id, inbound.text)
+                    prepare_channel_execution(db, binding, event, routing_session, user, inbound)
             # 智能前台:LLM 意图分类自动分发(开关/挂载数/粘性保护由 maybe_auto_route 把关,异常全部回退当前)
             route_decision = maybe_auto_route(db, binding, current_agent_id, inbound.external_conv_id, inbound.text)
             if route_decision and route_decision.switched:
@@ -1519,11 +1537,17 @@ def process_inbound(
         turn_team_id = team.id if team is not None else None
 
     with _session_lock(session_id):
-        with Session(use_engine) as db:
+        with channel_session(use_engine) as db:
             event = db.get(ChannelInboundEvent, event_id)
             chat_session = db.get(ChatSession, session_id)
             if not event or not chat_session:
                 return False
+            from app.channels.execution_scope import prepare_channel_execution
+            live_binding = db.get(ChannelBinding, event.binding_id)
+            actor = db.get(User, user_id)
+            if live_binding is None or actor is None:
+                return False
+            prepare_channel_execution(db, live_binding, event, chat_session, actor, inbound)
             from app.core.agent_loop import AgentLoop
 
             attachments: list = []
@@ -1644,9 +1668,6 @@ def process_inbound(
                     _stage_error_notice(db, binding, chat_session)
                     db.commit()
                 return False
-            else:
-                if trace_streamer:
-                    trace_streamer.finish()
             finally:
                 _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 2, db_engine=use_engine)
             runtime_error_code = getattr(response, "runtime_error_code", None)
@@ -1662,6 +1683,13 @@ def process_inbound(
                     # the exact conflict code in ``reply`` instead of the
                     # typed ``runtime_error_code`` field.
                     runtime_error_code = response_reply
+            if trace_streamer:
+                # Display the Runtime outcome; channels do not infer SOP/model
+                # success or implement their own recovery policy.
+                if runtime_error_code:
+                    trace_streamer.abort(str(runtime_error_code))
+                else:
+                    trace_streamer.finish()
             if runtime_error_code in {
                 "HARNESS_TURN_CONFLICT",
                 "HARNESS_SESSION_BUSY",
@@ -1721,7 +1749,7 @@ def process_inbound(
 def process_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
     """Claim and process a durable inbox row without re-registering the event."""
     use_engine = db_engine or engine
-    with Session(use_engine) as db:
+    with channel_session(use_engine) as db:
         staged = db.get(ChannelInboundEvent, event_pk)
         binding_id = staged.binding_id if staged else None
     if not binding_id or not _enter_binding_intake(binding_id):
@@ -1731,7 +1759,7 @@ def process_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
             return False
         return _process_claimed_staged_inbound(event_pk, db_engine=use_engine)
     except Exception:
-        with Session(use_engine) as db:
+        with channel_session(use_engine) as db:
             db.exec(
                 update(ChannelInboundEvent)
                 .where(
@@ -1755,7 +1783,7 @@ def process_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
 
 def _process_claimed_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
     use_engine = db_engine or engine
-    with Session(use_engine) as db:
+    with channel_session(use_engine) as db:
         event = db.get(ChannelInboundEvent, event_pk)
         binding = db.get(ChannelBinding, event.binding_id) if event else None
         if not event or not binding:
@@ -1787,7 +1815,7 @@ def _process_claimed_staged_inbound(event_pk: str, *, db_engine=None) -> bool:
             staged_event_pk=event_pk,
         )
     except Exception:
-        with Session(use_engine) as db:
+        with channel_session(use_engine) as db:
             event = db.get(ChannelInboundEvent, event_pk)
             if event and event.status == "processing":
                 turn_message = _find_turn_user_message_in_conv(
@@ -1829,7 +1857,7 @@ def run_staged_inbound_daemon(
     use_engine = db_engine or engine
     while True:
         try:
-            with Session(use_engine) as db:
+            with channel_session(use_engine) as db:
                 event_ids = db.exec(
                     select(ChannelInboundEvent.id)
                     .where(
@@ -1951,7 +1979,7 @@ def _decode_and_validate_staged_event(
 
 def _recover_stale_durable_event(event_pk: str, *, db_engine=None) -> bool:
     use_engine = db_engine or engine
-    with Session(use_engine) as db:
+    with channel_session(use_engine) as db:
         event = db.get(ChannelInboundEvent, event_pk)
         binding = db.get(ChannelBinding, event.binding_id) if event else None
         if not event or not binding or event.status != "processing":
@@ -2009,7 +2037,7 @@ def sweep_stale_inbound_events(*, db_engine=None) -> int:
     use_engine = db_engine or engine
     run_id = current_processor_run_id()
     taken = 0
-    with Session(use_engine) as db:
+    with channel_session(use_engine) as db:
         stale_rows = db.exec(
             select(ChannelInboundEvent).where(
                 ChannelInboundEvent.status == "processing",
@@ -2029,7 +2057,7 @@ def sweep_stale_inbound_events(*, db_engine=None) -> int:
             for row in stale_rows
         ]
     for event_pk, binding_id, channel, event_id, payload in candidates:
-        with Session(use_engine) as db:
+        with channel_session(use_engine) as db:
             binding = db.get(ChannelBinding, binding_id)
             if not binding:
                 continue
@@ -2049,7 +2077,7 @@ def sweep_stale_inbound_events(*, db_engine=None) -> int:
                 taken += 1
         except Exception:
             logger.exception("陈旧入站事件接管失败 binding=%s event=%s", binding_id, event_id)
-            with Session(use_engine) as db:
+            with channel_session(use_engine) as db:
                 claimed = db.exec(
                     select(ChannelInboundEvent).where(
                         ChannelInboundEvent.binding_id == binding_id,

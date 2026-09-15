@@ -43,6 +43,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 
 from staffdeck_harness.bridge.capability_mcp import ActivationRegistry
 from app.llm.tool_protocols import adapter_for
+from app.llm.connection_diagnostics import provider_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ class ModelGateway:
         if act is None:
             return _error(404, "ACTIVATION_FENCED", "no live activation for this token (turn finished or cancelled)")
         model_config = getattr(act.host, "model_config", None)
+        act.host.model_error = None
         if model_config is None:
             return _error(409, "MODEL_NOT_CONFIGURED", "该员工没有可用的默认模型，请先在「模型配置」中设置")
         try:
@@ -158,7 +160,7 @@ class ModelGateway:
             "endpoint": getattr(client, "base_url", ""),
             "request_kind": getattr(driver, "request_kind", None) or getattr(adapter, "request_kind", "chat.completions"),
             "stream": stream, "thinking_mode": getattr(client, "thinking_mode", "") or "provider_default",
-            "request_message_count": len(body.get("messages") or []), "tool_count": len(body.get("tools") or []),
+            "request_message_count": len(body.get("messages") or []), "tool_count": len(wire.get("tools") or []),
             "engine": "harness_v3",
         }
         if trace:
@@ -169,9 +171,10 @@ class ModelGateway:
             try:
                 completion = await loop_run(None, adapter.complete, wire)
             except Exception as exc:  # noqa: BLE001
+                act.host.model_error = provider_error_message(exc)
                 if trace:
-                    trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": str(exc)[:500]})
-                return _error(502, "PROVIDER_ERROR", str(exc)[:500])
+                    trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": provider_error_message(exc)})
+                return _error(502, "PROVIDER_ERROR", provider_error_message(exc))
             data = _dump(completion)
             if trace:
                 trace("llm_call_finished", {**span, "duration_ms": _ms(started), "status": "success", **_usage(data.get("usage"))})
@@ -181,9 +184,10 @@ class ModelGateway:
         try:
             chunks: Iterator[Any] = await loop_run(None, adapter.stream, wire)
         except Exception as exc:  # noqa: BLE001
+            act.host.model_error = provider_error_message(exc)
             if trace:
-                trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": str(exc)[:500]})
-            return _error(502, "PROVIDER_ERROR", str(exc)[:500])
+                trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": provider_error_message(exc)})
+            return _error(502, "PROVIDER_ERROR", provider_error_message(exc))
 
         async def body_iter() -> AsyncIterator[bytes]:
             usage: dict[str, Any] = {}
@@ -195,7 +199,8 @@ class ModelGateway:
                     chunk = await loop.run_in_executor(None, next, it, None)
                     if chunk is None:
                         break
-                    data = _dump(chunk)
+                    from staffdeck_harness.bridge.tool_stream import normalize_tool_stream_chunk
+                    data = normalize_tool_stream_chunk(_dump(chunk))
                     if isinstance(data.get("usage"), dict):
                         usage = data["usage"]
                     for choice in data.get("choices") or []:
@@ -207,10 +212,11 @@ class ModelGateway:
                     trace("llm_call_finished", {**span, "duration_ms": _ms(started), "status": "success", "finish_reason": finish_reason, **_usage(usage)})
             except Exception as exc:  # noqa: BLE001
                 logger.exception("model gateway stream failed")
+                act.host.model_error = provider_error_message(exc)
                 if trace:
-                    trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": str(exc)[:500]})
+                    trace("llm_call_failed", {**span, "duration_ms": _ms(started), "error": provider_error_message(exc)})
                 # Mid-stream: the only thing the engine can act on is an error payload before [DONE]
-                yield f"data: {json.dumps({'error': {'code': 'PROVIDER_ERROR', 'message': str(exc)[:500]}})}\n\n".encode()
+                yield f"data: {json.dumps({'error': {'code': 'PROVIDER_ERROR', 'message': provider_error_message(exc)}})}\n\n".encode()
 
         return StreamingResponse(body_iter(), media_type="text/event-stream", headers={"cache-control": "no-cache", "x-accel-buffering": "no"})
 

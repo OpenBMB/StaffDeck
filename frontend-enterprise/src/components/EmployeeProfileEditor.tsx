@@ -22,6 +22,7 @@ import type { EnterpriseAuthUser } from '../auth';
 import { employeeDisplayName, employeeProfile } from '../employee';
 import type { AgentProfileRead } from '../types';
 import EmployeeAvatar from './EmployeeAvatar';
+import { useEmployeeDetails } from '../hooks/useEmployeeDetails';
 
 type EmployeeProfileFormValues = {
   name: string;
@@ -58,7 +59,7 @@ const BLANK_FORM: EmployeeProfileFormValues = {
 };
 
 export default function EmployeeProfileEditor({
-  agent,
+  agent: inputAgent,
   open,
   onClose,
   onSaved,
@@ -70,6 +71,7 @@ export default function EmployeeProfileEditor({
   onSaved?: (agent: AgentProfileRead) => void;
   currentUser?: EnterpriseAuthUser;
 }) {
+  const agent = useEmployeeDetails(inputAgent, open);
   const [form, setForm] = useState<EmployeeProfileFormValues>(BLANK_FORM);
   const [saving, setSaving] = useState(false);
   const profile = useMemo(() => employeeProfile(agent), [agent]);

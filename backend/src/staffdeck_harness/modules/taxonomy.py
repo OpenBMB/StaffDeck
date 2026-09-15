@@ -53,7 +53,7 @@ TAXONOMY: tuple[BigModule, ...] = (
         description="定义每位数字员工：岗位与人设、使用的模型、绑定的能力、流程、渠道和团队，以及发布上线。",
         subs=(
             SubModule("staff.profile", "岗位、人设与模型", "员工是谁、怎么说话、用哪个模型。", "C", slots=(SlotName.STAFF_MODEL_ROUTE,), module_ids=("staff.persona", "staff.model_route"), legacy=("app.agents", "app.api.agents", "app.api.model_configs")),
-            SubModule("staff.binding", "能力、流程、渠道与团队绑定", "员工能用什么、按什么流程做事、在哪些渠道工作、属于哪个团队；修改后下一轮对话生效。", "C", slots=(SlotName.STAFF_SOP,), module_ids=("composition.projection",), legacy=("agent_resource_bindings", "agent_model_bindings", "channel_bindings")),
+            SubModule("staff.binding", "能力、流程、渠道与团队绑定", "员工能用什么、按什么流程做事、在哪些渠道工作、属于哪个团队；修改后下一轮对话生效。", "C", slots=(SlotName.STAFF_SOP,), module_ids=("composition.projection", "source.staff.local", "source.sop.local", "source.identity.local", "resource.catalog.local"), legacy=("agent_resource_bindings", "agent_model_bindings", "channel_bindings")),
             SubModule("staff.publish", "发布与版本", "发布前校验配置是否完整，生成对话时实际使用的版本，支持上下线。", "K", module_ids=("composition.compiler",), legacy=("staffdeck_harness.composition.compiler",)),
         ),
         edges=(("sop", "装配流程"), ("interaction", "装配交互能力"), ("runtime", "提交执行")),
@@ -105,7 +105,8 @@ TAXONOMY: tuple[BigModule, ...] = (
         description="员工回答问题时背后的执行引擎：接收请求、规划步骤、调用能力、生成回复。",
         subs=(
             SubModule("runtime.coordinator", "对话调度", "管理会话与每轮对话，协调流程推进与回复生成。", "K", slots=(SlotName.RUNTIME_KERNEL,), module_ids=("runtime.coordinator",), legacy=("app.core.agent_loop", "app.core.harness_v2_engine")),
-            SubModule("runtime.bridge", "执行引擎", "可选 Harness v3 或 Harness v2 引擎，同一时间只启用一个。", "T", slots=(SlotName.RUNTIME_ENGINE,), legacy=("staffdeck_harness.bridge",)),
+            SubModule("runtime.bridge", "执行引擎", "统一 AgentLoop 执行接口，同一时间只启用一个实现。", "T", slots=(SlotName.RUNTIME_ENGINE,), legacy=("staffdeck_harness.bridge",)),
+            SubModule("runtime.services", "运行数据与服务接线", "为运行线程提供事务、租户上下文和数据映射。", "T", slots=(SlotName.RUNTIME_SERVICES, SlotName.RUNTIME_TRANSPORT, SlotName.RUNTIME_WORKSPACE, SlotName.RUNTIME_EXECUTION)),
             SubModule("runtime.agentloop", "引擎核心", "Harness v3 引擎本体，以独立进程运行。", "K", module_ids=("harness_v3.core",)),
         ),
         edges=(("capability", "调用能力"), ("interaction", "通知、转发或等待回复"), ("channel", "输出消息"), ("governance", "投影运行事件")),

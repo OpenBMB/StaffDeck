@@ -148,7 +148,7 @@ class ExecutionContext:
             "artifacts": result.artifacts[-20:],
         }
         if pooled is not None:
-            if result.status in {"failed", "cancelled", "action_budget"}:
+            if result.status in {"failed", "cancelled", "action_budget", "waiting_external_task"}:
                 pooled.context_sessions.pop(self.key, None)
             else:
                 pooled.context_sessions[self.key] = {"session_id": sid, "revision": revision}

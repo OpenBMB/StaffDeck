@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from pydantic import ValidationError
+
 import base64
 import json
 import re
@@ -91,6 +94,32 @@ router = APIRouter(
 )
 
 
+def validate_published_sop(db: Session, tenant_id: str, agent_id: str | None, sop_id: str) -> None:
+    """Validate the published instance through the same module sources/compiler as runtime."""
+    from app.config import get_settings
+    from staffdeck_harness.composition.sources import validate_configuration
+    from staffdeck_harness.contracts.errors import ModuleSdkError
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.modules.registry import get_registry
+    db.flush()
+    try:
+        validate_configuration(get_registry(get_settings()), db, SourceContext(tenant_id, agent_id), sop_id=sop_id)
+    except (ModuleSdkError, ValueError, LookupError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"SOP 模块装配无效：{exc}") from exc
+
+
+def _read_persisted_skill_content(value):
+    """Keep malformed persisted drafts inspectable; writes and execution stay strict."""
+    try:
+        content, _warnings = skill_card_with_unique_step_ids(skill_card_from_persisted(value))
+        return content, []
+    except ValidationError as exc:
+        if not isinstance(value, dict):
+            raise
+        return deepcopy(value), [item["msg"] for item in exc.errors(include_input=False, include_url=False)]
+
+
 def skill_read(
     row: Skill,
     stats: dict[str, dict[str, float | int]] | None = None,
@@ -100,9 +129,7 @@ def skill_read(
     skill_stats = _stats_for(all_stats, row.skill_id, row.version)
     total_stats = all_stats.get(row.skill_id, {})
     recent_skill_stats = (recent_stats or {}).get(row.skill_id, {})
-    content, _warnings = skill_card_with_unique_step_ids(
-        skill_card_from_persisted(row.content_json)
-    )
+    content, validation_errors = _read_persisted_skill_content(row.content_json)
     branch_meta = getattr(row, "agent_branch_meta", {}) or {}
     return SkillRead(
         id=row.id,
@@ -113,6 +140,7 @@ def skill_read(
         business_domain=row.business_domain,
         description=row.description,
         content=content,
+        validation_errors=validation_errors,
         status=row.status,
         call_count=int(skill_stats.get("call_count", 0)),
         positive_feedback_count=int(skill_stats.get("positive_feedback_count", 0)),
@@ -145,9 +173,7 @@ def skill_version_read(
     row: SkillVersion, stats: dict[str, dict[str, float | int]] | None = None
 ) -> SkillVersionRead:
     skill_stats = _stats_for(stats or {}, row.skill_id, row.version)
-    content, _warnings = skill_card_with_unique_step_ids(
-        skill_card_from_persisted(row.content_json)
-    )
+    content, validation_errors = _read_persisted_skill_content(row.content_json)
     return SkillVersionRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -157,6 +183,7 @@ def skill_version_read(
         business_domain=row.business_domain,
         description=row.description,
         content=content,
+        validation_errors=validation_errors,
         status=row.status,
         call_count=int(skill_stats.get("call_count", 0)),
         positive_feedback_count=int(skill_stats.get("positive_feedback_count", 0)),
@@ -169,18 +196,18 @@ def skill_version_read(
 
 
 def _branch_version_read(row: AgentSkillBranchVersion) -> SkillVersionRead:
-    content, _warnings = skill_card_with_unique_step_ids(
-        skill_card_from_persisted(row.content_json)
-    )
+    content, validation_errors = _read_persisted_skill_content(row.content_json)
+    data = content if isinstance(content, dict) else content.model_dump()
     return SkillVersionRead(
         id=row.id,
         tenant_id=row.tenant_id,
         skill_id=row.skill_id,
         version=row.version,
-        name=content.name,
-        business_domain=content.business_domain,
-        description=content.description,
+        name=data.get("name") or row.skill_id,
+        business_domain=data.get("business_domain"),
+        description=data.get("description"),
         content=content,
+        validation_errors=validation_errors,
         status=row.status,
         call_count=0,
         positive_feedback_count=0,
@@ -383,6 +410,8 @@ def create_skill(
             binding_status,
             metadata_json=creator_metadata,
         )
+    if request.status == "published":
+        validate_published_sop(db, request.tenant_id, agent_id, row.skill_id)
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)
@@ -459,6 +488,8 @@ def update_skill(
             row.skill_id,
             normalized_content.model_dump(),
         )
+        if branch.status == "active" and binding.status == "active":
+            validate_published_sop(db, request.tenant_id, agent.id, row.skill_id)
         db.commit()
         projected = project_skill_with_branch(row, branch, binding.status)
         stats = _skill_stats(db, request.tenant_id)
@@ -474,6 +505,8 @@ def update_skill(
         row.status = request.status
     row.updated_at = utc_now()
     db.add(row)
+    if row.status == "published":
+        validate_published_sop(db, request.tenant_id, agent_id, row.skill_id)
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)
@@ -516,6 +549,7 @@ def publish_skill(
         db.add(branch)
         _sync_skill_tool_bindings(db, tenant_id, row.skill_id, branch.content_json)
         ensure_private_resource_binding(db, tenant_id, agent.id, "skill", row.id, "active")
+        validate_published_sop(db, tenant_id, agent.id, row.skill_id)
         db.commit()
         projected = project_skill_with_branch(row, branch, "active")
         stats = _skill_stats(db, tenant_id)
@@ -528,6 +562,7 @@ def publish_skill(
     db.add(row)
     db.flush()
     ensure_open_gallery_binding(db, tenant_id, "skill", row.id, "active")
+    validate_published_sop(db, tenant_id, agent_id, row.skill_id)
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)

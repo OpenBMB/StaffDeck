@@ -106,9 +106,8 @@ def _ledger_record(ctx: HookContext, st: PipelineState) -> HookDecision:
 
 
 def _citations_collect(ctx: HookContext, st: PipelineState) -> HookDecision:
-    for c in ctx.payload.get("citations") or ():
-        if isinstance(c, Mapping):
-            st.citations.append(dict(c))
+    from app.knowledge.citations import normalize_knowledge_citations
+    st.citations.extend(normalize_knowledge_citations(ctx.payload.get('citations')))
     return HookDecision.passthrough()
 
 

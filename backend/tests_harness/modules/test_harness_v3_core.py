@@ -104,7 +104,7 @@ def test_manifest_harness_v3_core_root_and_enabled_follow_settings(settings):
     item = reg.get(MODULE_ID)
     assert item is not None and item.enabled is True
     assert item.provider.root == "/opt/harness-v3"
-    assert [i.manifest.module_id for i in reg.providers(SlotName.RUNTIME_KERNEL)] == ["runtime.coordinator", "harness_v3.core"]
+    assert [i.manifest.module_id for i in reg.providers(SlotName.RUNTIME_KERNEL)] == ["control.authentication", "runtime.coordinator", "harness_v3.core"]
 
 
 # --------------------------------------------------------------------------- 2. placement

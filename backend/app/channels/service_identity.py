@@ -19,6 +19,7 @@ from app.db.models import (
     utc_now,
 )
 from app.security.auth import hash_password
+from staffdeck_harness.runtime.identity_directory import is_internal_actor
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +294,7 @@ def unbind_external_identity(
     """
     identity = find_channel_identity(db, tenant_id, channel, external_id, account_scope)
     current = db.get(User, identity.staffdeck_user_id) if identity else None
-    if not identity or not current or current.source != "web":
+    if not identity or not current or not is_internal_actor(current):
         return None
 
     lazy_username = channel_username(tenant_id, channel, external_id, account_scope)

@@ -214,6 +214,18 @@ export default function TeamDetailPage({
   const [teamLog, setTeamLog] = useState<TeamLogPayload | null>(null);
   const [loadingTeamLog, setLoadingTeamLog] = useState(false);
   const [promotingEntryId, setPromotingEntryId] = useState<string | null>(null);
+  const [publicationEntry, setPublicationEntry] = useState<TeamBlackboardEntryRead | null>(null);
+  const [publicationTargets, setPublicationTargets] = useState<{ id: string; name: string }[]>([]);
+  const [publicationTarget, setPublicationTarget] = useState('');
+  const [publicationDefault, setPublicationDefault] = useState(false);
+  const [loadingPublicationTargets, setLoadingPublicationTargets] = useState(false);
+  const publicationRequest = useRef(0);
+  useEffect(() => {
+    setPublicationEntry(null);
+    setPromotingEntryId(null);
+    publicationRequest.current += 1;
+    return () => { publicationRequest.current += 1; };
+  }, [teamId]);
   const openedTaskParamRef = useRef<string | null>(null);
   const memberScrollRef = useRef<HTMLDivElement | null>(null);
   const [memberScrollEdges, setMemberScrollEdges] = useState({
@@ -573,19 +585,46 @@ export default function TeamDetailPage({
     return '成员';
   }
 
-  async function promoteBoardEntry(entry: TeamBlackboardEntryRead) {
+  async function choosePublicationTarget(entry: TeamBlackboardEntryRead) {
+    const ticket = ++publicationRequest.current;
+    setPublicationEntry(entry);
+    setPublicationTargets([]);
+    setPublicationTarget('');
+    setPublicationDefault(false);
+    setLoadingPublicationTargets(true);
+    try {
+      const options = await api.get<{ targets: { id: string; name: string }[]; default_id?: string; can_use_default: boolean }>(
+        `/api/enterprise/teams/${teamId}/knowledge-targets?tenant_id=${TENANT_ID}`,
+      );
+      if (ticket !== publicationRequest.current) return;
+      setPublicationTargets(options.targets);
+      setPublicationDefault(options.can_use_default);
+      setPublicationTarget(options.targets.some((target) => target.id === options.default_id)
+        ? `resource:${options.default_id}` : options.can_use_default ? 'default' : '');
+    } catch (error) {
+      if (ticket === publicationRequest.current) notify.error(error instanceof Error ? error.message : '无法读取知识发布目标');
+    } finally {
+      if (ticket === publicationRequest.current) setLoadingPublicationTargets(false);
+    }
+  }
+
+  async function promoteBoardEntry(entry: TeamBlackboardEntryRead, targetId: string) {
     if (promotingEntryId) return;
+    const ticket = publicationRequest.current;
     setPromotingEntryId(entry.id);
     try {
       await api.post(`/api/enterprise/teams/${teamId}/blackboard/${entry.id}/promote`, {
         tenant_id: TENANT_ID,
+        ...(targetId !== 'default' ? { knowledge_base_id: targetId.slice('resource:'.length) } : {}),
       });
-      notify.success('已沉淀到知识库');
+      if (ticket !== publicationRequest.current) return;
+      notify.success('已提交入库');
+      setPublicationEntry(null);
       await loadBoard();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '沉淀到知识库失败');
+      if (ticket === publicationRequest.current) notify.error(error instanceof Error ? error.message : '沉淀到知识库失败');
     } finally {
-      setPromotingEntryId(null);
+      if (ticket === publicationRequest.current) setPromotingEntryId(null);
     }
   }
 
@@ -1092,7 +1131,7 @@ export default function TeamDetailPage({
                     <button
                       type="button"
                       disabled={promoted || promotingEntryId === entry.id}
-                      onClick={() => void promoteBoardEntry(entry)}
+                      onClick={() => void choosePublicationTarget(entry)}
                       className="rounded-[8px] px-[8px] py-[4px] text-[12px] text-[#464c5e] transition-colors hover:bg-[#f6f6f6] disabled:cursor-not-allowed disabled:text-[#a7adbb]"
                     >
                       {promoted ? '已沉淀' : promotingEntryId === entry.id ? '沉淀中…' : '沉淀到知识库'}
@@ -1434,6 +1473,35 @@ export default function TeamDetailPage({
               )}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={publicationEntry !== null} onOpenChange={(open) => {
+        if (!open && !promotingEntryId) { publicationRequest.current += 1; setPublicationEntry(null); }
+      }}>
+        <DialogContent className="w-[calc(100%-32px)] rounded-[16px] sm:max-w-[480px]">
+          <DialogTitle className="text-[16px] font-semibold text-foreground">沉淀到知识库</DialogTitle>
+          <p className="line-clamp-2 rounded-[10px] bg-muted px-[14px] py-[12px] text-[13px] leading-6 text-muted-foreground">
+            {publicationEntry?.content}
+          </p>
+          <div className="space-y-[8px]">
+            <label className="text-[13px] font-medium text-foreground" htmlFor="publication-target">目标知识库</label>
+            <Select value={publicationTarget} onValueChange={setPublicationTarget} disabled={loadingPublicationTargets || Boolean(promotingEntryId)}>
+              <SelectTrigger id="publication-target" aria-label="目标知识库"><SelectValue placeholder={loadingPublicationTargets ? '正在读取…' : '选择知识库'} /></SelectTrigger>
+              <SelectContent>
+                {publicationDefault && <SelectItem value="default">平台默认知识库</SelectItem>}
+                {publicationTargets.map((target) => <SelectItem key={target.id} value={`resource:${target.id}`}>{target.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-[12px] leading-5 text-muted-foreground">提交后由当前知识模块处理，可在知识库中查看入库进度。</p>
+            {!loadingPublicationTargets && !publicationDefault && publicationTargets.length === 0 && <p className="text-[12px] text-muted-foreground">暂无可写入的知识库，请先创建或获取写入权限。</p>}
+          </div>
+          <div className="flex justify-end gap-[8px] pt-[8px]">
+            <Button variant="outline" disabled={Boolean(promotingEntryId)} onClick={() => { publicationRequest.current += 1; setPublicationEntry(null); }}>取消</Button>
+            <Button disabled={!publicationTarget || loadingPublicationTargets || Boolean(promotingEntryId)} onClick={() => {
+              if (publicationEntry) void promoteBoardEntry(publicationEntry, publicationTarget);
+            }}>{promotingEntryId ? '提交中…' : '确认提交'}</Button>
+          </div>
         </DialogContent>
       </Dialog>
 

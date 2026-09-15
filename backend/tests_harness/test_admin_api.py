@@ -61,6 +61,31 @@ def ctx(env):
     db.close()
 
 
+def test_preset_save_uses_server_snapshot_without_applying(ctx, tmp_path, monkeypatch):
+    c, headers, db = ctx
+    settings = get_settings()
+    monkeypatch.setattr(settings, 'harness_runtime_config_path', str(tmp_path / 'assembly.json'))
+    before = c.get('/api/enterprise/harness/config', params={'tenant_id': 'tenant_demo'}, headers=headers).json()
+    response = c.post('/api/enterprise/harness/assembly/presets', json={
+        'tenant_id': 'tenant_demo', 'name': 'Reusable', 'source': 'saved',
+        'assembly': {'base': {'decision_token': 'untrusted'}},
+    }, headers=headers)
+    assert response.status_code == 201, response.text
+    row = response.json()
+    assert row['custom'] and row['name'] == 'Reusable'
+    assert 'base' not in row['assembly']
+    assert row['assembly']['security_profile'] == before['saved']['security_profile']
+    assert c.get('/api/enterprise/harness/config', params={'tenant_id': 'tenant_demo'}, headers=headers).json() == before
+    assert row in c.get('/api/enterprise/harness/assembly/options', params={'tenant_id': 'tenant_demo'}, headers=headers).json()['presets']
+    assert c.post('/api/enterprise/harness/assembly/presets', json={
+        'tenant_id': 'tenant_demo', 'name': 'Reusable'}, headers=headers).status_code == 409
+    assert c.post('/api/enterprise/harness/assembly/presets', json={
+        'tenant_id': 'tenant_demo', 'name': 'Other'}, headers={}).status_code == 401
+    monkeypatch.setattr(settings, 'harness_operator_tenants', 'different')
+    assert c.post('/api/enterprise/harness/assembly/presets', json={
+        'tenant_id': 'tenant_demo', 'name': 'Other'}, headers=headers).status_code == 403
+
+
 def test_status_and_modules(ctx) -> None:
     c, headers, db = ctx
     r = c.get("/api/enterprise/harness/status", params={"tenant_id": "tenant_demo"}, headers=headers)
@@ -89,9 +114,9 @@ def test_snapshot_and_staff_engine_roundtrip(ctx) -> None:
     r = c.get("/api/enterprise/harness/staff/agent_1/engine", params={"tenant_id": "tenant_demo"}, headers=headers)
     assert r.status_code == 200 and r.json()["effective_engine"] in {"harness_v2", "harness_v3"}
     r = c.put("/api/enterprise/harness/staff/agent_1/engine", json={"tenant_id": "tenant_demo", "engine": "harness_v3"}, headers=headers)
-    assert r.status_code == 200 and r.json()["engine"] == "harness_v3" and r.json()["effective_engine"] == "harness_v3"
-    assert (db.get(AgentProfile, "agent_1").metadata_json or {}).get("execution_engine") == "harness_v3"
-    # effective_engine honors the persisted override
+    assert r.status_code == 200 and r.json()["engine"] == "default" and r.json()["effective_engine"] == "harness_v3"
+    assert "execution_engine" not in (db.get(AgentProfile, "agent_1").metadata_json or {})
+    # The engine is selected by the deployment, not persisted on individual resources.
     from staffdeck_harness.api.admin import effective_engine_for
 
     assert effective_engine_for(get_settings(), db.get(AgentProfile, "agent_1")) == "harness_v3"
@@ -268,7 +293,7 @@ def test_business_base_switch_requires_connection_and_preflight(ctx, tmp_path, m
     assert st["pending"] is True and st["applied"]["security_profile"] == "BUSINESS_BASE" and st["last_restart_error"].startswith("无法切换")
     assert c.get("/api/enterprise/harness/status", params={"tenant_id": "tenant_demo"}, headers=headers).json()["registry_generation"] == gen_before
 
-    # 6. a process boot with an unbuildable saved assembly falls back to defaults instead of crashing
+    # 6. a bad unapproved draft does not replace the durable last-applied assembly at boot.
     monkeypatch.setattr(settings, "security_profile", "OSS_LOCAL", raising=False)
     monkeypatch.setattr(settings, "base_authz_url", "", raising=False)
     monkeypatch.setattr(settings, "base_authz_decision_token", "", raising=False)
@@ -276,9 +301,9 @@ def test_business_base_switch_requires_connection_and_preflight(ctx, tmp_path, m
     assert r.status_code == 200 and r.json()["saved"]["base"]["configured"] is False
     (tmp_path / "rt.json").write_text((tmp_path / "rt.json").read_text().replace('"security_profile": "OSS_LOCAL"', '"security_profile": "BUSINESS_BASE"'))
     assembly.stop_harness_runtime()
-    with pytest.raises(assembly.AssemblyFailed, match="禁止自动降级"):
-        assembly.start_harness_runtime(settings)
-    assert assembly.assembly_state(settings)["applied"] is None
+    assembly.start_harness_runtime(settings)
+    assert assembly.assembly_state(settings)["applied"]["security_profile"] == "BUSINESS_BASE"
+    assert assembly.assembly_state(settings)["pending"] is True
     assembly.stop_harness_runtime()
 
 

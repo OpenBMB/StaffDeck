@@ -27,7 +27,7 @@ from sqlmodel import Session
 
 from app.channels.adapters import ChannelAdapter, ChannelInbound, get_channel_adapter, register_channel_adapter
 from app.channels.service_outbox import stage_channel_delivery
-from app.db.models import AgentProfile, ChannelBinding, ChatSession, Message, User
+from app.db.models import ChannelBinding, ChatSession, Message, User
 from staffdeck_harness.composition import projection
 from staffdeck_harness.contracts.errors import PermissionDenied
 from staffdeck_harness.contracts.security import SecurityContext, SecurityProfile
@@ -64,24 +64,27 @@ class ChannelHost:
 
         if user is None:
             return ReceiveDecision(False, "unmapped channel identity")
-        ctx = self.profile.identity.from_user(user, channel=binding.channel)
         try:
+            channel_identity = getattr(self.profile.identity, "from_channel", None)
+            ctx = channel_identity(self.db, user, binding) if callable(channel_identity) else self.profile.identity.from_user(user, channel=binding.channel)
             self.guard.require(ctx, "channel.receive/v1", projection.channel_ref(binding))
         except PermissionDenied as exc:
             return ReceiveDecision(False, exc.message)
         agent_id = binding.agent_id
         if agent_id and check_staff:
-            agent = self.db.get(AgentProfile, agent_id)
-            if agent is None or agent.tenant_id != binding.tenant_id or agent.status != "active":
-                return ReceiveDecision(False, "target staff unavailable")
             try:
                 from dataclasses import replace
+                from fastapi import HTTPException
+                from staffdeck_harness.runtime.staff_directory import staff_profile
 
+                agent = staff_profile(self.db, binding.tenant_id, agent_id, user=user, active_only=True)
                 mapped = projection.channel_identity_bound(self.db, binding, user.id, scope=inbound.account_scope or None)
-                ref = replace(projection.agent_ref(agent), attributes={**projection.agent_ref(agent).attributes, "channel_bound_agent": mapped})
+                ref = replace(agent.ref, attributes={**agent.ref.attributes, "channel_bound_agent": mapped})
                 Guard("staffdeck.runtime", self.profile).require(ctx, "staff.use/v1", ref)
             except PermissionDenied as exc:
                 return ReceiveDecision(False, exc.message)
+            except HTTPException as exc:
+                return ReceiveDecision(False, str(exc.detail))
         return ReceiveDecision(True, "allowed", ctx)
 
     # -- send -----------------------------------------------------------------------

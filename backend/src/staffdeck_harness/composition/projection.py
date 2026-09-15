@@ -268,7 +268,7 @@ def handoff_ref(row: HumanHandoffRequest, *, agent_owner_user_id: str | None = N
 
 
 def team_ref(row: Team) -> ResourceRef:
-    return ResourceRef(type="team", id=row.id, tenant_id=row.tenant_id, attributes={"owner_user_id": row.owner_user_id, "status": row.status})
+    return ResourceRef(type="team", id=row.id, tenant_id=row.tenant_id, attributes={"owner_user_id": row.owner_user_id, "status": row.status, "authority": "staffdeck.team"})
 
 
 def overall_agent_id(db: Session, tenant_id: str) -> str | None:

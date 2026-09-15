@@ -40,6 +40,9 @@ export type HarnessModule = {
   summary?: string;
   category?: string;
   switchable?: boolean;
+  optional_slot?: boolean;
+  feature_requires?: string[];
+  feature_exports?: string[];
   metadata?: Record<string, string | number | boolean>;
   placement?: HarnessPlacement;
   movable?: boolean;
@@ -168,8 +171,11 @@ export type HarnessAssembly = {
   engine: 'harness_v3' | 'harness_v2' | string;
   security_profile: string;
   disabled_modules: string[];
+  enabled_modules?: string[];
   extra_modules: string[];
   placements: Record<string, string>;
+  selections?: Record<string, string>;
+  module_configs?: Record<string, Record<string, unknown>>;
   base: HarnessBaseConnection;
   updated_at?: string | null;
   updated_by?: string | null;
@@ -190,12 +196,22 @@ export type HarnessAssemblyUpdate = {
   engine?: 'harness_v3' | 'harness_v2';
   security_profile?: string;
   disabled_modules?: string[];
+  enabled_modules?: string[];
   extra_modules?: string[];
   placements?: Record<string, string | null>;
+  selections?: Record<string, string>;
+  module_configs?: Record<string, Record<string, unknown>>;
   base?: HarnessBaseConnectionUpdate;
 };
 
 export type HarnessPreflightCheck = { name: string; ok: boolean | null; message: string; status?: number | null; latency_ms?: number | null; fatal: boolean; detail?: Record<string, unknown> };
+
+export type AssemblyPreset = { id: string; name: string; description: string; assembly: HarnessAssemblyUpdate; custom?: boolean; source?: 'saved' | 'applied' };
+export type AssemblyOptions = {
+  presets: AssemblyPreset[];
+  slots: Array<{ slot: string; active: string | null; choices: Array<{ module_id: string; name: string; requires: string[]; exports: string[]; default_enabled?: boolean; security_profile?: string | null; connection_owner?: string | null }> }>;
+};
+export type AssemblyPreview = { ok: boolean; error?: string; diff?: { enable: string[]; disable: string[]; unchanged: string[] }; features?: string[] };
 
 export type HarnessBaseTestResult = { ok: boolean; checks: HarnessPreflightCheck[]; authz_revision?: string | null; tested_at: string; saved: boolean };
 
@@ -265,6 +281,10 @@ export const harnessApi = {
     api.put<HarnessStaffEngine>(`/api/enterprise/harness/staff/${encodeURIComponent(agentId)}/engine`, { tenant_id: tenantId, engine }),
   events: (tenantId: string, sessionId: string, limit = 200) => api.get<HarnessEvent[]>(`/api/enterprise/harness/events/recent${q(tenantId, { session_id: sessionId, limit })}`),
   config: (tenantId: string) => api.get<HarnessAssemblyState>(`/api/enterprise/harness/config${q(tenantId)}`),
+  assemblyOptions: (tenantId: string) => api.get<AssemblyOptions>(`/api/enterprise/harness/assembly/options${q(tenantId)}`),
+  assemblyPreview: (tenantId: string) => api.post<AssemblyPreview>('/api/enterprise/harness/assembly/preview', { tenant_id: tenantId }),
+  savePreset: (tenantId: string, request: { name: string; description: string; source: 'saved' | 'applied' }) =>
+    api.post<AssemblyPreset>('/api/enterprise/harness/assembly/presets', { tenant_id: tenantId, ...request }),
   setConfig: (tenantId: string, patch: HarnessAssemblyUpdate) => api.put<HarnessAssemblyState>('/api/enterprise/harness/config', { tenant_id: tenantId, ...patch }),
   restart: (tenantId: string) => api.post<{ restart_count: number; restarted_at: string; state: HarnessAssemblyState; runtime_error?: { code: string; message: string } }>('/api/enterprise/harness/restart', { tenant_id: tenantId }),
   treeOptions: (tenantId: string) => api.get<HarnessTreeOption[]>(`/api/enterprise/harness/modules/tree/options${q(tenantId)}`),

@@ -189,6 +189,8 @@ export default function OpenPlatformPage({
   const [skills, setSkills] = useState<SkillRead[]>([]);
   const [tools, setTools] = useState<ToolRead[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingKinds, setLoadingKinds] = useState<Partial<Record<PlatformKind, boolean>>>({});
+  const [loadErrors, setLoadErrors] = useState<Partial<Record<PlatformKind, string>>>({});
   const [deletingItemKey, setDeletingItemKey] = useState('');
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [detailItem, setDetailItem] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
@@ -205,23 +207,26 @@ export default function OpenPlatformPage({
 
   const loadPlatformData = useCallback(async () => {
     setLoading(true);
+    setLoadErrors({});
+    setLoadingKinds({ agents: true, knowledge: true, 'general-skills': true, skills: true, tools: true });
     try {
       const agentRows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
+      setAgents(agentRows);
+      setLoadingKinds((state) => ({ ...state, agents: false }));
       const overall = agentRows.find((item) => item.is_overall);
       const overallSuffix = overall ? `&agent_id=${encodeURIComponent(overall.id)}` : '';
-      const [kbRows, generalRows, skillRows, toolRows] = await Promise.all([
-        api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${overallSuffix}`),
-        api.get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${overallSuffix}`),
-        overall
-          ? api.get<SkillRead[]>(`/api/enterprise/agents/${overall.id}/skills?tenant_id=${TENANT_ID}`)
-          : Promise.resolve([]),
-        api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${overallSuffix}`),
+      async function loadKind<T>(kind: PlatformKind, request: Promise<T>, apply: (rows: T) => void) {
+        try { apply(await request); }
+        catch (error) {
+          setLoadErrors((state) => ({ ...state, [kind]: error instanceof Error ? error.message : '加载失败，请重试' }));
+        } finally { setLoadingKinds((state) => ({ ...state, [kind]: false })); }
+      }
+      await Promise.all([
+        loadKind('knowledge', api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${overallSuffix}`), setKnowledgeBases),
+        loadKind('general-skills', api.get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${overallSuffix}`), setGeneralSkills),
+        loadKind('skills', overall ? api.get<SkillRead[]>(`/api/enterprise/agents/${overall.id}/skills?tenant_id=${TENANT_ID}`) : Promise.resolve([]), setSkills),
+        loadKind('tools', api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${overallSuffix}`), setTools),
       ]);
-      setAgents(agentRows);
-      setKnowledgeBases(kbRows);
-      setGeneralSkills(generalRows);
-      setSkills(skillRows);
-      setTools(toolRows);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载开放广场失败');
     } finally {
@@ -516,6 +521,13 @@ export default function OpenPlatformPage({
 
   if (selectedKind) {
     const config = PLATFORM_BY_KIND.get(selectedKind) || PLATFORM_CONFIGS[0];
+    if (loadErrors[selectedKind]) return (
+      <div className="p-8">
+        <AppHeader title={config.title} onLogout={onLogout} userName={currentUser?.username} />
+        <p role="alert" className="my-4 text-amber-800">{loadErrors[selectedKind]}</p>
+        <button type="button" onClick={() => void loadPlatformData()}>重新加载</button>
+      </div>
+    );
     const PlatformIcon = PLATFORM_ICON[selectedKind];
     return (
       <>
@@ -527,7 +539,7 @@ export default function OpenPlatformPage({
           signals={config.signals}
           icon={PlatformIcon}
           items={platformItems[selectedKind]}
-          loading={loading}
+          loading={loadingKinds[selectedKind] ?? loading}
           employeeStats={employeeStats}
           onBack={() => navigate('/enterprise/platform')}
           onRefresh={() => void loadPlatformData()}
@@ -566,6 +578,7 @@ export default function OpenPlatformPage({
         userName={currentUser?.username}
         title="开放广场平台"
       />
+      {Object.keys(loadErrors).length > 0 && <div role="alert" className="mb-3 text-sm text-amber-800">部分数据加载失败，其他模块仍可使用</div>}
       <div className="mx-auto grid w-full grid-cols-1 gap-[12px] sm:grid-cols-2 xl:min-h-0 xl:flex-1 xl:grid-cols-5 xl:grid-rows-1">
         {platformStats.map((platform) => {
           const items = platformItems[platform.kind];
@@ -579,7 +592,8 @@ export default function OpenPlatformPage({
               count={platform.count}
               countLabel={platformCountLabel(platform.kind)}
               filters={platform.signals}
-              loading={loading}
+              loading={loadingKinds[platform.kind] ?? loading}
+              error={loadErrors[platform.kind]}
               isEmpty={previews.length === 0}
               onViewAll={() => navigate(`/enterprise/platform/${platform.kind}`)}
             >

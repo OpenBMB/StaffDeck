@@ -192,6 +192,34 @@ def test_work_record_returns_timezone_aware_reply_and_activity_times(monkeypatch
         }
 
 
+def test_remote_staff_history_does_not_need_local_staff_or_resource_rows(monkeypatch):
+    from types import SimpleNamespace as NS
+    from staffdeck_harness.modules.registry import ModuleRegistry, manifest
+    from staffdeck_harness.contracts.manifest import ModuleKind, SlotName
+    from staffdeck_harness.contracts.security import ResourceRef, SecurityContext
+    from staffdeck_harness.contracts.staff import StaffProfile, StaffResourceAssignment
+    from staffdeck_harness.security.oss_local import build_oss_local_profile
+    with _test_session() as db:
+        owner, _ = _seed_users(db)
+        ref = ResourceRef('agent', 'remote', 'tenant_demo', {'owner_user_id': owner.id})
+        source = NS(reference=lambda ctx: ref, profile=lambda ctx: StaffProfile('remote', 'tenant_demo', 'Remote', 'active', ref),
+            resolve=lambda *a: pytest.fail('No model/execution snapshot for history'), model=lambda *a: pytest.fail('No model resolution'),
+            resource_timeline=lambda ctx, **kw: [StaffResourceAssignment('assigned', 'tenant_demo', 'remote', 'knowledge', datetime(2026, 9, 10), 'Remote knowledge')])
+        registry = ModuleRegistry()
+        for slot, provider in ((SlotName.STAFF_SOURCE, source), (SlotName.IDENTITY_SOURCE,
+                NS(resolve=lambda ctx, adapter: SecurityContext(owner.id, 'tenant_demo')))):
+            registry.install(manifest(slot.value, slot.value, kind=ModuleKind.TRUSTED, slots=[slot]),
+                NS(build=lambda db, provider=provider: provider), slot=slot)
+        registry.seal()
+        registry.security_profile = build_oss_local_profile()
+        db.info['staffdeck_registry'] = registry
+        monkeypatch.setattr(agents_api, '_get_agent', lambda *a: pytest.fail('No local staff lookup'))
+        monkeypatch.setattr(agents_api, '_local_agent_resource_timeline_events', lambda *a: pytest.fail('No local resource lookup'))
+        result = get_agent_work_record('remote', tenant_id='tenant_demo', timezone='Asia/Shanghai', db=db, current_user=owner)
+        assert result.reply_stats.total == 0
+        assert [(e.kind, e.label) for e in result.events] == [('knowledge', 'Remote knowledge')]
+
+
 def test_work_record_rejects_invalid_timezone_and_private_agent_access() -> None:
     with _test_session() as db:
         owner, other = _seed_users(db)

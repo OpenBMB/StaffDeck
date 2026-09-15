@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 
 from sqlalchemy import create_engine, inspect, text
 
@@ -55,7 +56,8 @@ def test_sqlite_startup_migration_adds_display_name_login_index(
     ]
 
 
-def test_knowledge_base_migration_accepts_existing_noncanonical_version_id(tmp_path) -> None:
+@pytest.mark.parametrize("knowledge_name", ["Sales", "默认知识库"])
+def test_knowledge_base_migration_accepts_existing_noncanonical_version_id(tmp_path, knowledge_name) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'knowledge-version.db'}")
     child_tables = (
         "knowledge_documents",
@@ -108,9 +110,9 @@ def test_knowledge_base_migration_accepts_existing_noncanonical_version_id(tmp_p
                 """
                 INSERT INTO knowledge_bases
                     (id, tenant_id, name, status, capability_scope, metadata_json)
-                VALUES ('kb_preset_sales_001', 'tenant_demo', 'Sales', 'active', 'general', '{}')
+                VALUES ('kb_preset_sales_001', 'tenant_demo', :name, 'active', 'general', '{}')
                 """
-            )
+            ), {"name": knowledge_name}
         )
         conn.execute(
             text(

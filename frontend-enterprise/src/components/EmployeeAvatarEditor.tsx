@@ -18,6 +18,7 @@ import {
 } from '../employee';
 import type { AgentProfileRead } from '../types';
 import EmployeeAvatar from './EmployeeAvatar';
+import { useEmployeeDetails } from '../hooks/useEmployeeDetails';
 
 const MAX_INPUT_IMAGE_BYTES = 5 * 1024 * 1024;
 const AVATAR_CANVAS_SIZE = 360;
@@ -25,7 +26,7 @@ const AVATAR_CANVAS_SIZE = 360;
 type AvatarDraft = Pick<EmployeeProfile, 'avatarKind' | 'avatarImage' | 'avatarPreset' | 'avatarText' | 'avatarTone'>;
 
 export default function EmployeeAvatarEditor({
-  agent,
+  agent: inputAgent,
   open,
   onClose,
   onSaved,
@@ -35,6 +36,7 @@ export default function EmployeeAvatarEditor({
   onClose: () => void;
   onSaved?: (agent: AgentProfileRead) => void;
 }) {
+  const agent = useEmployeeDetails(inputAgent, open);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [mode, setMode] = useState<'preset' | 'upload'>('preset');
   const [selectedPreset, setSelectedPreset] = useState(EMPLOYEE_AVATAR_PRESETS[0].key);

@@ -52,6 +52,7 @@ def resource_ref(db: Session, tenant_id: str, kind: str, identifier: str) -> Res
         id=row.id,
         tenant_id=tenant_id,
         attributes={
+            "authority": "staffdeck.team" if kind == "team" else None,
             "owner_user_id": getattr(row, "owner_user_id", None) or meta.get("owner_user_id"),
             "user_id": getattr(row, "user_id", None),
             "is_overall": getattr(row, "is_overall", False),
@@ -146,24 +147,17 @@ def install_response_filters(app: Any) -> None:
                 return response
             kind, tenant_id, user, db = state
             _, field, _ = RESOURCE_MODELS[kind]
-            filtered = []
-            for item in payload:
-                if not isinstance(item, dict) or not (item.get(field) or item.get("id")):
-                    filtered.append(item)
-                    continue
-                ref = resource_ref(db, tenant_id, kind, str(item.get(field) or item["id"]))
-                if ref is None:  # a child/list projection, guarded by its parent boundary
-                    filtered.append(item)
-                    continue
-                try:
-                    await run_in_threadpool(
-                        require_resource, user, ref, "view", module=kind, local_checked=True
-                    )
-                except HTTPException as exc:
-                    if exc.status_code != 403:
-                        raise
-                    continue
-                filtered.append(item)
+            def filter_catalog():
+                from app.security.module_policy import visible_resources
+                indexed = []
+                for index, item in enumerate(payload):
+                    if isinstance(item, dict) and (item.get(field) or item.get('id')):
+                        ref = resource_ref(db, tenant_id, kind, str(item.get(field) or item['id']))
+                        if ref is not None: indexed.append((index, ref))
+                allowed = visible_resources(user, [ref for _, ref in indexed], module=kind) if indexed else []
+                denied = {index for (index, _), keep in zip(indexed, allowed) if not keep}
+                return [item for index, item in enumerate(payload) if index not in denied]
+            filtered = await run_in_threadpool(filter_catalog)
             response.body = json.dumps(filtered, ensure_ascii=False, separators=(",", ":")).encode()
             response.headers["content-length"] = str(len(response.body))
             return response

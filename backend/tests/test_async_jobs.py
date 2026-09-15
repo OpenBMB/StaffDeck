@@ -131,11 +131,13 @@ def test_start_async_jobs_replaces_queue_closed_by_prior_app_lifecycle(monkeypat
 def test_agent_loop_enqueues_memory_capture_without_running_it_inline(monkeypatch) -> None:
     captured = {}
 
-    def fake_enqueue_memory_capture(*args):  # noqa: ANN002
+    def fake_enqueue_memory_capture(*args, **kwargs):  # noqa: ANN002
         captured["args"] = args
+        captured["kwargs"] = kwargs
         return SimpleNamespace(id="job_memory_1", name="memory.capture_turn")
 
     monkeypatch.setattr("app.core.agent_loop.enqueue_memory_capture", fake_enqueue_memory_capture)
+    monkeypatch.setattr("staffdeck_harness.runtime.services.runtime_services", lambda db: "test-services")
 
     loop = object.__new__(AgentLoop)
     loop.events = _FakeEvents()
@@ -182,6 +184,7 @@ class _FakeEvents:
 class _FakeDb:
     def __init__(self) -> None:
         self.commits = 0
+        self.info = {}
 
     def commit(self) -> None:
         self.commits += 1

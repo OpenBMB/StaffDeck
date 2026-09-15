@@ -13,7 +13,7 @@ Endpoints
     GET  /ledger/unknown             outcome_unknown invocations awaiting reconciliation
     POST /ledger/{id}/reconcile      settle one as completed|failed
     GET  /staff/{agent_id}/engine    which engine this staff runs on
-    PUT  /staff/{agent_id}/engine    set harness_v2|harness_v3|default for this staff (persisted on AgentProfile.metadata_json)
+    PUT  /staff/{agent_id}/engine    validate use of the shared v3 engine; no per-resource runtime fork
     GET  /events/recent?session_id=  Harness v3-related AgentEvents for one session (trace projection)
     GET  /config                     saved vs applied assembly (engine / profile / disabled / extra modules)
     PUT  /config                     save a new assembly (takes effect after /restart)
@@ -41,7 +41,6 @@ from app.security.auth import get_current_user
 from app.security.permissions import ensure_current_user_tenant, ensure_tenant_admin, is_admin_user
 from staffdeck_harness.capabilities.ledger import InvocationLedger
 from staffdeck_harness.composition.compiler import CompositionCompiler
-from staffdeck_harness.composition.staff import project_staff
 from staffdeck_harness.contracts.errors import EngineUnavailable, ModuleSdkError
 from staffdeck_harness.modules.config import ENGINES, SECURITY_PROFILES, BaseConnection, InvalidConnection, RuntimeOverrides, check_url_policy, load_overrides, save_overrides
 from staffdeck_harness.modules.registry import get_registry, validate_spec
@@ -89,6 +88,9 @@ class ModuleRead(BaseModel):
     summary: str = ""
     category: str = ""
     switchable: bool = True
+    optional_slot: bool = False
+    feature_requires: list[str] = []
+    feature_exports: list[str] = []
     metadata: dict[str, Any] = {}
     version: str
     kind: str
@@ -258,7 +260,9 @@ def harness_status(tenant_id: str = Query(...), user: User = Depends(get_current
         last_restart_error=state.get("last_restart_error") if is_admin_user(user) else None,
         last_restart_failed=bool(state.get("last_restart_error")),
         restarting=bool(state.get("restarting")),
-        base_configured=bool(state.get("saved", {}).get("base", {}).get("configured")),
+        base_configured=bool(state.get("saved", {}).get("base", {}).get("configured")) or any(
+            item.enabled and item.manifest.metadata.get("connection_owner") == "module"
+            for item in reg.installed()),
         fallback_count=int(_fallback_state().get("fallback_count") or 0),
         last_fallback=_fallback_state().get("last_fallback"),
         base_last_test_ok=state.get("saved", {}).get("base", {}).get("last_test_ok"),
@@ -309,12 +313,19 @@ def harness_modules_tree_options(tenant_id: str = Query(...), user: User = Depen
 def harness_snapshot(tenant_id: str = Query(...), agent_id: str | None = Query(None), db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> SnapshotRead:
     ensure_current_user_tenant(tenant_id, user)
     try:
-        staff = project_staff(db, tenant_id, agent_id)
-        snap = CompositionCompiler().compile(staff)
+        from staffdeck_harness.composition.sources import resolve_staff
+        from staffdeck_harness.contracts.sources import SourceContext
+        from staffdeck_harness.security.profile import get_profile
+        settings = get_settings()
+        staff, _ = resolve_staff(get_registry(settings), db,
+            SourceContext(tenant_id, agent_id, user_id=user.id), get_profile(settings))
+        snap = CompositionCompiler().compile(staff, strict=False)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ModuleSdkError as exc:
-        raise HTTPException(status_code=422, detail=exc.to_dict()) from exc
+        from staffdeck_harness.contracts.errors import PermissionDenied
+        status = 403 if isinstance(exc, PermissionDenied) else 503 if exc.code.endswith("UNAVAILABLE") else 422
+        raise HTTPException(status_code=status, detail=exc.to_dict()) from exc
     from staffdeck_harness.capabilities.host import PROXY_TOOLS
 
     allowed = snap.allowed_resource_ids()
@@ -394,30 +405,17 @@ def harness_ledger_reconcile(invocation_id: str, request: ReconcileRequest, db: 
 @router.get("/staff/{agent_id}/engine", response_model=StaffEngineRead)
 def harness_staff_engine(agent_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> StaffEngineRead:
     ensure_current_user_tenant(tenant_id, user)
-    row = db.get(AgentProfile, agent_id)
-    if row is None or row.tenant_id != tenant_id:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    return StaffEngineRead(agent_id=agent_id, engine=staff_engine_choice(row), effective_engine=effective_engine_for(get_settings(), row))
+    # Staff can be remote; inspecting the common engine must not require a shadow row.
+    harness_snapshot(tenant_id=tenant_id, agent_id=agent_id, db=db, user=user)
+    return StaffEngineRead(agent_id=agent_id, engine="default", effective_engine="harness_v3")
 
 
 @router.put("/staff/{agent_id}/engine", response_model=StaffEngineRead)
 def harness_set_staff_engine(agent_id: str, request: StaffEngineUpdate, db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> StaffEngineRead:
     _admin(request.tenant_id, user)
-    row = db.get(AgentProfile, agent_id)
-    if row is None or row.tenant_id != request.tenant_id:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    meta = dict(row.metadata_json or {})
-    if request.engine == "default":
-        meta.pop(ENGINE_METADATA_KEY, None)
-    else:
-        meta[ENGINE_METADATA_KEY] = request.engine
-    row.metadata_json = meta
-    row.updated_at = utc_now()
-    db.add(row)
-    db.add(AgentEvent(tenant_id=row.tenant_id, session_id=f"agent:{row.id}", event_type="staff_engine_changed", payload_json={"agent_id": row.id, "engine": request.engine, "by": user.id}))
-    db.commit()
-    db.refresh(row)
-    return StaffEngineRead(agent_id=agent_id, engine=staff_engine_choice(row), effective_engine=effective_engine_for(get_settings(), row))
+    if request.engine not in {"default", "harness_v3"}:
+        raise HTTPException(422, "所有员工共用当前装配的核心 AgentLoop，不支持旧运行时回退")
+    return harness_staff_engine(agent_id=agent_id, tenant_id=request.tenant_id, db=db, user=user)
 
 
 HARNESS_V3_EVENT_TYPES = (
@@ -449,8 +447,11 @@ class AssemblyRead(BaseModel):
     engine: str
     security_profile: str
     disabled_modules: list[str]
+    enabled_modules: list[str] = []
     extra_modules: list[str]
     placements: dict[str, str] = {}
+    selections: dict[str, str] = {}
+    module_configs: dict[str, dict[str, Any]] = {}
     base: dict[str, Any] = {}
     updated_at: str | None = None
     updated_by: str | None = None
@@ -472,14 +473,24 @@ class AssemblyUpdate(BaseModel):
     engine: str | None = None
     security_profile: str | None = None
     disabled_modules: list[str] | None = None
+    enabled_modules: list[str] | None = None
     extra_modules: list[str] | None = None
     placements: dict[str, str | None] | None = None
     base: dict[str, Any] | None = None
+    selections: dict[str, str] | None = None
+    module_configs: dict[str, dict[str, Any]] | None = None
 
 
 class BaseTestRequest(BaseModel):
     tenant_id: str
     base: dict[str, Any] | None = None
+
+
+class PresetSaveRequest(BaseModel):
+    tenant_id: str
+    name: str
+    description: str = ""
+    source: Literal["saved", "applied"] = "saved"
 
 
 class PlacementUpdate(BaseModel):
@@ -526,6 +537,62 @@ def harness_config(tenant_id: str = Query(...), user: User = Depends(get_current
     return _assembly_state_read(get_settings())
 
 
+@router.get("/assembly/options")
+def harness_assembly_options(tenant_id: str = Query(...), db: Session = Depends(get_session),
+                             user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _operator(tenant_id, user, db)
+    from staffdeck_harness.modules.presets import load_presets
+    from staffdeck_harness.modules.registry import SINGLE_PROVIDER_SLOTS
+    reg = get_registry(get_settings())
+    return {"presets": load_presets(get_settings()), "slots": [
+        {"slot": slot.value, "active": (reg.provider(slot).manifest.module_id if reg.provider(slot) else None),
+         "choices": [{"module_id": item.manifest.module_id, "name": item.manifest.name,
+                       "security_profile": item.manifest.metadata.get("security_profile"),
+                       "connection_owner": item.manifest.metadata.get("connection_owner"),
+                       "default_enabled": item.manifest.metadata.get("default_enabled", False),
+                       "requires": list(item.manifest.metadata.get("requires_features", ())),
+                       "exports": list(item.manifest.metadata.get("exports_features", ()))}
+                      for item in reg.installed() if item.slot == slot]}
+        for slot in sorted(SINGLE_PROVIDER_SLOTS, key=lambda slot: slot.value)
+        if any(item.slot == slot for item in reg.installed())]}
+
+
+@router.post("/assembly/preview")
+def harness_assembly_preview(request: RestartRequest, db: Session = Depends(get_session),
+                             user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Validate the saved draft without changing settings, data, leases or the active generation."""
+    _operator(request.tenant_id, user, db)
+    from staffdeck_harness.runtime.assembly import AssemblyFailed, preflight_assembly
+    try:
+        report = preflight_assembly(get_settings(), load_overrides(get_settings()),
+                                    tenant_id=request.tenant_id, principal_id=user.id)
+    except AssemblyFailed as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **report}
+
+
+@router.post("/assembly/presets", status_code=201)
+def harness_save_preset(request: PresetSaveRequest, db: Session = Depends(get_session),
+                        user: User = Depends(get_current_user)) -> dict[str, Any]:
+    _operator(request.tenant_id, user, db)
+    from staffdeck_harness.modules.presets import save_preset
+    from staffdeck_harness.runtime.assembly import assembly_state
+    settings = get_settings()
+    state = assembly_state(settings)
+    if state["restarting"]:
+        raise HTTPException(409, "装配正在应用，请完成后再保存预设")
+    selected = state[request.source]
+    if selected is None:
+        raise HTTPException(409, "尚无运行中的装配可供保存")
+    try:
+        return save_preset(settings, name=request.name, description=request.description,
+                           assembly=selected, source=request.source, by=user.id)
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.put("/config", response_model=AssemblyStateRead)
 def harness_set_config(request: AssemblyUpdate, db: Session = Depends(get_session), user: User = Depends(get_current_user)) -> AssemblyStateRead:
     """Save a new assembly. Nothing changes until ``POST /restart`` (placements apply immediately)."""
@@ -540,6 +607,14 @@ def harness_set_config(request: AssemblyUpdate, db: Session = Depends(get_sessio
     if request.security_profile is not None and request.security_profile not in SECURITY_PROFILES:
         raise HTTPException(status_code=400, detail=f"security_profile must be one of {list(SECURITY_PROFILES)}")
     disabled = current.disabled_modules if request.disabled_modules is None else list(request.disabled_modules)
+    enabled = current.enabled_modules if request.enabled_modules is None else list(request.enabled_modules)
+    from staffdeck_harness.modules.registry import SINGLE_PROVIDER_SLOTS
+    for mid in enabled:
+        item = known.get(mid)
+        if item is None or not item["switchable"] or item["slot"] in {s.value for s in SINGLE_PROVIDER_SLOTS}:
+            raise HTTPException(status_code=400, detail=f"不能通过启用列表选择模块：{mid}")
+    if set(enabled) & set(disabled):
+        raise HTTPException(status_code=400, detail="同一模块不能同时启用和停用")
     if request.disabled_modules is not None:
         for mid in disabled:
             item = known.get(mid)
@@ -575,8 +650,24 @@ def harness_set_config(request: AssemblyUpdate, db: Session = Depends(get_sessio
     except InvalidConnection as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     profile = request.security_profile or current.security_profile
+    selections = dict(current.selections if request.selections is None else request.selections)
+    if request.selections is not None and "security.pep" in request.selections:
+        chosen = reg.get(request.selections["security.pep"])
+        declared = chosen.manifest.metadata.get("security_profile") if chosen else None
+        if declared:
+            if request.security_profile and request.security_profile != declared:
+                raise HTTPException(400, "权限模块和权限模式不一致")
+            profile = declared
+    elif request.security_profile is not None:
+        candidates = [item.manifest.module_id for item in reg.installed()
+                      if item.slot.value == "security.pep" and item.manifest.metadata.get("security_profile") == profile]
+        if len(candidates) == 1:
+            selections["security.pep"] = candidates[0]
+    security_module = reg.get(selections.get("security.pep") or
+                              ("security.business_base" if profile == "BUSINESS_BASE" else "security.oss_local"))
+    managed_connection = bool(security_module and security_module.manifest.metadata.get("connection_owner") == "module")
     switching_to_business = request.security_profile == "BUSINESS_BASE" and current.security_profile != "BUSINESS_BASE"
-    if switching_to_business or (profile == "BUSINESS_BASE" and request.base is not None):
+    if not managed_connection and (switching_to_business or (profile == "BUSINESS_BASE" and request.base is not None)):
         eff = base.effective(settings)
         if not eff.authz_url or not eff.decision_token:
             raise HTTPException(status_code=400, detail="切换到企业版权限前，请先填写权限中心地址和决策令牌，并通过测试连接")
@@ -587,10 +678,25 @@ def harness_set_config(request: AssemblyUpdate, db: Session = Depends(get_sessio
         engine=request.engine or current.engine,
         security_profile=profile,
         disabled_modules=disabled,
+        enabled_modules=enabled,
         extra_modules=extra,
         placements=placements,
+        selections=selections,
+        module_configs=current.module_configs if request.module_configs is None else request.module_configs,
         base=base,
     )
+    # Drafts may be incomplete, but unknown slots/providers and secret-bearing JSON are refused.
+    from staffdeck_harness.modules.registry import SINGLE_PROVIDER_SLOTS
+    for slot_name, mid in new.selections.items():
+        if slot_name not in {s.value for s in SINGLE_PROVIDER_SLOTS} or mid not in known or known[mid]["slot"] != slot_name:
+            raise HTTPException(status_code=400, detail=f"不匹配的插槽选择：{slot_name} / {mid}")
+    from staffdeck_harness.modules.parameters import validate_public_parameters
+    try:
+        validate_public_parameters(new.module_configs)
+        if set(new.module_configs) - known.keys():
+            raise ValueError("模块参数引用了未安装的模块")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     save_overrides(settings, new, by=user.id)
     from staffdeck_harness.runtime.assembly import assembly_state, clear_restart_error
 

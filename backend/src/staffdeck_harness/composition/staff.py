@@ -18,8 +18,7 @@ Layout follows the architecture's L1/L2:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 from sqlmodel import Session, select
 
@@ -27,93 +26,14 @@ from app.agents.branching import get_agent, visible_published_skills
 from app.core.agent_loop import _agent_identity_prompt
 from app.db.models import AgentProfile, AgentResourceBinding, PersonaConfig, Skill, Team, TeamMember, UIConfig
 from staffdeck_harness.composition import projection
-from staffdeck_harness.composition.slots import SlotDeclaration, sop_slots
+from staffdeck_harness.composition.slots import sop_slots
 from staffdeck_harness.contracts.security import ResourceRef
 
+from staffdeck_harness.contracts.staff import (  # noqa: F401 public compatibility exports
+    SessionPolicy, CapabilityBindingView, SopView, ChannelView, TeamView, StaffComposition,
+)
+
 MAX_ACTIONS_LIMIT = 100
-
-
-@dataclass(frozen=True)
-class SessionPolicy:
-    max_actions: int = 32
-    context_token_budget: int = 32_000
-    compaction_trigger_ratio: float = 0.70
-    recent_round_limit: int = 6
-    step_timeout_seconds: int | None = None
-    sandbox_enabled: bool = False
-    sandbox_network_mode: str = "all"
-    sandbox_allowed_domains: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class CapabilityBindingView:
-    resource_type: str
-    resource_id: str
-    binding_id: str | None
-    ref: ResourceRef
-    name: str
-    capability_scope: str = "general"
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class SopView:
-    skill_id: str
-    row_id: str
-    version: str
-    name: str
-    content: Mapping[str, Any]
-    binding_id: str | None
-    slot_bindings: Mapping[str, str | Mapping[str, Any]]
-    declared_slots: tuple[SlotDeclaration, ...]
-    ref: ResourceRef
-    capability_scope: str = "general"
-    module_bindings: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class ChannelView:
-    binding_id: str
-    channel: str
-    status: str
-    team_id: str | None
-    ref: ResourceRef
-
-
-@dataclass(frozen=True)
-class TeamView:
-    team_id: str
-    role: str
-    ref: ResourceRef
-
-
-@dataclass(frozen=True)
-class StaffComposition:
-    tenant_id: str
-    staff_id: str                   # AgentProfile.id; None-agent turns use the overall agent
-    name: str
-    is_overall: bool
-    status: str
-    persona: str | None
-    model_route: Mapping[str, str]
-    session_policy: SessionPolicy
-    capabilities: tuple[CapabilityBindingView, ...]
-    sops: tuple[SopView, ...]
-    channels: tuple[ChannelView, ...]
-    team: TeamView | None
-    interactions: tuple[str, ...]
-    ref: ResourceRef
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-
-    def capability_ids(self, resource_type: str) -> set[str]:
-        return {c.resource_id for c in self.capabilities if c.resource_type == resource_type}
-
-    def visible_resource_ids(self) -> dict[str, set[str]]:
-        out: dict[str, set[str]] = {}
-        for c in self.capabilities:
-            out.setdefault(c.resource_type, set()).add(c.resource_id)
-        out.setdefault("skill", set()).update(s.skill_id for s in self.sops)
-        return out
 
 
 def _persona(db: Session, tenant_id: str, agent: AgentProfile | None) -> str | None:
@@ -224,6 +144,8 @@ def _capabilities(db: Session, tenant_id: str, agent: AgentProfile | None) -> tu
     out: list[CapabilityBindingView] = []
     for rtype in ("knowledge_base", "general_skill", "tool", "mcp_server"):
         for row, binding, ref in projection.bound_resources(db, tenant_id, agent_id, rtype):
+            if rtype == "general_skill" and row.status != "published":
+                continue
             out.append(
                 CapabilityBindingView(
                     resource_type=rtype,
@@ -235,6 +157,7 @@ def _capabilities(db: Session, tenant_id: str, agent: AgentProfile | None) -> tu
                     metadata={
                         **(dict(binding.metadata_json or {}) if binding else {}),
                         "resource_digest": tool_snapshot_digest(db, row) if rtype == "tool" else general_skill_snapshot_digest(row) if rtype == "general_skill" else None,
+                        **({"slug": row.slug} if rtype == "general_skill" else {}),
                     },
                 )
             )
@@ -256,7 +179,7 @@ def _team(db: Session, tenant_id: str, agent: AgentProfile | None) -> TeamView |
 DEFAULT_INTERACTIONS: tuple[str, ...] = ("sop_adapter", "memory", "output_supervisor", "handoff")
 
 
-def project_staff(db: Session, tenant_id: str, agent_id: str | None) -> StaffComposition:
+def project_staff(db: Session, tenant_id: str, agent_id: str | None, *, include_sops: bool = True) -> StaffComposition:
     agent = get_agent(db, tenant_id, agent_id) if agent_id else projection.get_overall_agent(db, tenant_id)
     if agent is None and agent_id:
         raise LookupError(f"agent {agent_id!r} not found in tenant {tenant_id!r}")
@@ -276,7 +199,7 @@ def project_staff(db: Session, tenant_id: str, agent_id: str | None) -> StaffCom
         model_route=projection.agent_model_route(db, tenant_id, agent.id if agent is not None else None),
         session_policy=_session_policy(db, tenant_id, agent),
         capabilities=_capabilities(db, tenant_id, agent),
-        sops=_sops(db, tenant_id, agent),
+        sops=_sops(db, tenant_id, agent) if include_sops else (),
         channels=channels,
         team=_team(db, tenant_id, agent),
         interactions=DEFAULT_INTERACTIONS,

@@ -295,6 +295,9 @@ def test_events_or_pep_engine_harness_v3_turn_context_enforces_staff_use(module,
     engine = module(MODULE_ID).provider.open(fake_loop, None, "a1")
     assert isinstance(engine, HarnessV3Engine)
     engine.profile = profile
+    from staffdeck_harness.modules.registry import ModuleRegistry, discover_and_install
+    engine.registry = discover_and_install(ModuleRegistry(), settings)
+    engine.registry.seal()
 
     # a1 belongs to t1 and is owned by u1; user u1 acting inside t1 is allowed …
     session = ChatSession(id="s1", tenant_id="t1", agent_id="a1")

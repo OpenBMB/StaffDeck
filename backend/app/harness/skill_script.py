@@ -27,10 +27,10 @@ class RunSkillScriptArguments(BaseModel):
     max_output_bytes: int = Field(default=64 * 1024, ge=128, le=128 * 1024)
 
 
-def run_skill_script(
+def prepare_skill_script(
     context: HarnessToolContext,
     arguments: BaseModel,
-) -> dict[str, Any]:
+) -> tuple[Path, list[str]]:
     if not isinstance(arguments, RunSkillScriptArguments):
         raise HarnessExecutionError("INVALID_ARGUMENTS", "Invalid skill script arguments.")
     workspace = context.workspace_root.resolve()
@@ -65,6 +65,12 @@ def run_skill_script(
         raise HarnessExecutionError("SKILL_SCRIPT_NOT_FOUND", "Skill script is not a regular file.")
 
     command = _script_argv(script, arguments.argv)
+    return script, command
+
+
+def run_skill_script(context: HarnessToolContext, arguments: BaseModel) -> dict[str, Any]:
+    script, command = prepare_skill_script(context, arguments)
+    workspace = context.workspace_root.resolve()
     process = run_sandboxed_process(
         workspace=workspace,
         argv=command,

@@ -22,6 +22,7 @@ import {
   type StreamEvent,
 } from '@/api/client';
 import { clearEnterpriseAuthSession, getEnterpriseAuthSession } from '@/auth';
+import { loadModelCatalog } from '@/api/model-catalog';
 import {
   emitAgentScopeChange,
   isTeamScope,
@@ -344,6 +345,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   );
   const [modelConfigsLoading, setModelConfigsLoading] = useState(Boolean(auth));
   const [modelConfigsLoadError, setModelConfigsLoadError] = useState('');
+  const [modelConfigsRevision, setModelConfigsRevision] = useState(0);
+  const modelCatalogRequest = useRef<{ controller: AbortController; valid: boolean } | null>(null);
   const [modelSetupOpen, setModelSetupOpen] = useState(false);
   const [input, setInput] = useState('');
   const [slashCommands, setSlashCommands] = useState<ChatSlashCommand[]>([]);
@@ -471,7 +474,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       return true;
     }
     const rawMessage = error instanceof Error ? error.message : fallback;
-    const isNetworkError = error instanceof TypeError;
+    const isNetworkError = error instanceof TypeError || (error instanceof ApiError && [502, 503, 504].includes(error.status));
     const noticeKey = isNetworkError ? 'chat-network-error' : `chat-${scope}-error`;
     const now = Date.now();
     const lastShownAt = loadErrorNoticeRef.current[noticeKey] || 0;
@@ -655,7 +658,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       return false;
     }
     if (modelConfigsLoadError) {
-      notify.error(t('无法读取模型配置，请刷新页面后重试'));
+      setModelConfigsRevision((current) => current + 1);
+      notify.warning(t('正在重新读取模型配置，请稍后再发送'));
       return false;
     }
     if (!selectedModelConfig) {
@@ -672,7 +676,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const loadAgents = useCallback(async (preferredAgentId?: string) => {
     setAgentsLoaded(false);
     try {
-      const rows = await api.get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`);
+      const rows = await api.get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}&view=summary`);
       setAgents(rows);
       setSelectedAgentId((current) => {
         // A team scope is not part of the employee roster; keep it untouched.
@@ -812,9 +816,11 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     }
     setModelConfigsLoading(true);
     setModelConfigsLoadError('');
-    api
-      .get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${tenantId}`)
+    const request = { controller: new AbortController(), valid: true };
+    modelCatalogRequest.current = request;
+    loadModelCatalog(tenantId, request.controller.signal)
       .then((rows) => {
+        if (!request.valid) return;
         setModelConfigs(rows);
         setSelectedModelConfigId((current) => {
           const enabledRows = rows.filter((item) => item.enabled);
@@ -829,19 +835,30 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         });
       })
       .catch((error) => {
+        if (!request.valid) return;
         if (isAuthError(error)) {
           redirectToLogin();
           return;
         }
         setModelConfigsLoadError(error instanceof Error ? error.message : '模型配置加载失败');
       })
-      .finally(() => setModelConfigsLoading(false));
-  }, [auth, redirectToLogin, tenantId]);
+      .finally(() => { if (request.valid) setModelConfigsLoading(false); });
+    return () => {
+      request.valid = false;
+      request.controller.abort();
+      if (modelCatalogRequest.current === request) modelCatalogRequest.current = null;
+    };
+  }, [auth, redirectToLogin, tenantId, modelConfigsRevision]);
 
   useEffect(() => {
     const onModelConfigsUpdated = (event: Event) => {
       const rows = (event as CustomEvent<{ models?: ModelConfigRead[] }>).detail?.models;
-      if (!rows) return;
+      if (!Array.isArray(rows) || rows.some((row) => row.tenant_id !== tenantId)) return;
+      if (modelCatalogRequest.current) {
+        modelCatalogRequest.current.valid = false;
+        modelCatalogRequest.current.controller.abort();
+        modelCatalogRequest.current = null;
+      }
       setModelConfigs(rows);
       setModelConfigsLoadError('');
       setModelConfigsLoading(false);
@@ -2086,6 +2103,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       || item.event === 'harness_action_failed'
       || item.event === 'harness_mcp_app_view'
       || item.event === 'harness_tool_completed'
+      || item.event === 'harness_tool_result'
       || item.event === 'harness_step_timeout'
     ) {
       const line = harnessEventTraceLine(item.event, item.data);

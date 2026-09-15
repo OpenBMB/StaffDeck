@@ -127,7 +127,7 @@ def test_install_validates_module_identity() -> None:
         item = reg.install(mk("acme.sink", "x", kind="A", slots=[SlotName.EVENT_OBSERVER], provides=["event.observe/v1"], metadata={"category": "governance.trace", "vendor": "ACME"}), object(), slot=SlotName.EVENT_OBSERVER)
     assert item.source == "acme_pkg:register"
     desc = next(m for m in reg.describe() if m["module_id"] == "acme.sink")
-    assert desc["category"] == "governance.trace" and desc["source"] == "acme_pkg:register" and desc["metadata"] == {"vendor": "ACME"} and desc["switchable"] is True
+    assert desc["category"] == "governance.trace" and desc["source"] == "acme_pkg:register" and desc["metadata"] == {"vendor": "ACME", "default_enabled": True} and desc["switchable"] is True
 
 
 def test_env_snapshot_lets_admin_values_be_cleared_back_to_env(tmp_path) -> None:

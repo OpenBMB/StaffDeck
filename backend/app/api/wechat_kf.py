@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.channels.storage import channel_session
+
 import base64
 import hashlib
 import hmac
@@ -100,7 +102,7 @@ def _decrypt_callback_message(ciphertext: str, aes_key: str, corp_id: str) -> st
 def _callback_binding(
     binding_id: str, *, allow_pending: bool = False
 ) -> tuple[ChannelBinding, dict[str, str]]:
-    with Session(engine) as db:
+    with channel_session(engine) as db:
         binding = db.get(ChannelBinding, binding_id)
         allowed_status = {"active"}
         if allow_pending:
@@ -147,7 +149,7 @@ def _parse_callback_xml(data: str | bytes) -> ET.Element:
 
 
 def _save_account_cursor(account_id: str, cursor: str) -> None:
-    with Session(engine) as db:
+    with channel_session(engine) as db:
         account = db.get(WeChatKfAccount, account_id)
         if not account:
             return
@@ -166,7 +168,7 @@ def _save_account_cursor(account_id: str, cursor: str) -> None:
 
 
 def _save_account_error(account_id: str, error: str) -> None:
-    with Session(engine) as db:
+    with channel_session(engine) as db:
         account = db.get(WeChatKfAccount, account_id)
         if not account:
             return
@@ -229,7 +231,7 @@ async def receive_callback(
                 status_code=409,
                 detail="微信客服渠道配置已变更，请重新触发回调",
             )
-        with Session(engine) as db:
+        with channel_session(engine) as db:
             account = db.exec(
                 select(WeChatKfAccount).where(
                     WeChatKfAccount.binding_id == binding.id,

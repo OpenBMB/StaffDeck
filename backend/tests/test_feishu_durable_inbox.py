@@ -34,6 +34,28 @@ from app.db.models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def fake_feishu_transport(monkeypatch):
+    # Inbox tests explicitly install the transport contract instead of relying on
+    # another test importing the real adapter first. No external Feishu calls.
+    from app.channels.adapters import base
+    from app.config import get_settings
+    class Adapter:
+        reaction_token = "OK"
+        reaction_attach_idempotent = True
+
+        def add_reaction(self, *args, **kwargs):
+            return "test-reaction"
+
+        def remove_reaction(self, *args, **kwargs):
+            return None
+
+        def send(self, *args, **kwargs):
+            raise AssertionError("Inbox regression must not send external messages")
+    monkeypatch.setitem(base._adapters, "feishu", Adapter())
+    monkeypatch.setattr(get_settings(), "channel_feishu_trace_enabled", False)
+
+
 def _engine(tmp_path):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'feishu-inbox.db'}",
@@ -309,8 +331,10 @@ def test_group_event_creates_group_session_and_preserves_sender_context(
         assert chat_session.external_conv_id == (
             "feishu_app:9:cli_app_a:tenant:12:tenant_key_a_group_oc_group"
         )
-        assert chat_session.channel_target_json == target
+        assert all(chat_session.channel_target_json[key] == value for key, value in target.items())
+        assert chat_session.channel_target_json["reply_to_user_id"] == "ou_sender"
         event_row = db.get(ChannelInboundEvent, staged.event_pk)
+        assert event_row.target_json == target
         assert event_row.status == "done"
 
 
@@ -384,6 +408,8 @@ def test_feishu_command_stages_notice_with_immutable_target(tmp_path) -> None:
             "receive_id_type": "open_id",
             "receive_id": "ou_user_a",
             "reaction_final": True,
+            "context_token": "om_message_a",
+            "to_user_id": "ou_user_a",
         }
 
 

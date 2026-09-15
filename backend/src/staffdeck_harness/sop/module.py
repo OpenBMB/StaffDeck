@@ -6,11 +6,15 @@ from staffdeck_harness.sop.contracts import SopDependencies
 class SopRuntimeModule:
     module_id = "sop.runtime"
 
+    def submission_validator(self, requirement):
+        from staffdeck_harness.sop.submission import SopResultValidator
+        return SopResultValidator(requirement)
+
     def build(self, dependencies: SopDependencies):
         from staffdeck_harness.sop.lifecycle import SopRuntime
 
         return SopRuntime(
-            dependencies.db, dependencies.events, create_handoff=dependencies.create_handoff
+            None, dependencies.events, create_handoff=dependencies.create_handoff
         )
 
     def store(self, db):

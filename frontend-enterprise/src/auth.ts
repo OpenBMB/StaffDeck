@@ -7,6 +7,7 @@ export type EnterpriseAuthUser = {
   display_name?: string;
   role: 'admin' | 'member';
   avatar_url?: string;
+  source?: string;
 };
 
 export type EnterpriseAuthSession = {

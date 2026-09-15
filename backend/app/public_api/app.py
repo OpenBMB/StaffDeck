@@ -58,7 +58,7 @@ def create_public_api_app() -> FastAPI:
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:
-        return {"status": "ok", "version": "v1", "engine": "harness_v2"}
+        return {"status": "ok", "version": "v1", "engine": "harness_v3"}
 
     app.include_router(credentials.router)
     app.include_router(gallery.router)

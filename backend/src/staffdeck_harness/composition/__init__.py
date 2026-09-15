@@ -17,15 +17,20 @@ from staffdeck_harness.composition.slots import (
     resolve_slots,
     sop_slots,
 )
-from staffdeck_harness.composition.staff import (
+from staffdeck_harness.contracts.staff import (
     CapabilityBindingView,
     ChannelView,
     SessionPolicy,
     SopView,
     StaffComposition,
     TeamView,
-    project_staff,
 )
+
+
+def project_staff(*args, **kwargs):
+    """Compatibility export; runtime assembly uses the configured Staff source."""
+    from staffdeck_harness.composition.staff import project_staff as project
+    return project(*args, **kwargs)
 
 __all__ = [
     "DEFAULT_HOOKS", "CapabilityGrant", "CompositionCompiler", "CompositionSnapshot", "HookPlan",

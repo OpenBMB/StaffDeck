@@ -184,4 +184,4 @@ def test_runtime_coordinator_stays_enabled_regardless_of_engine_choice(settings)
     reg.seal()
     item = reg.get(MODULE_ID)
     assert item is not None and item.enabled is True
-    assert [i.manifest.module_id for i in reg.providers(SlotName.RUNTIME_KERNEL)] == ["runtime.coordinator", "harness_v3.core"]
+    assert [i.manifest.module_id for i in reg.providers(SlotName.RUNTIME_KERNEL)] == ["control.authentication", "runtime.coordinator", "harness_v3.core"]

@@ -130,8 +130,12 @@ def _make_task(db: Session, team: Team, *, status: str = "pending") -> TeamTask:
 def _stub_start_wakeup(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """把异步唤醒改成同步收集,避免测试里真的起线程。"""
     started: list[str] = []
-    monkeypatch.setattr(wakeup, "start_wakeup_async", started.append)
-    monkeypatch.setattr(teams_api, "start_wakeup_async", started.append)
+    def record_wake(wake_id, *, db):
+        assert db is not None
+        started.append(wake_id)
+        return True
+    monkeypatch.setattr(wakeup, "start_wakeup_async", record_wake)
+    monkeypatch.setattr(teams_api, "start_wakeup_async", record_wake)
     return started
 
 
@@ -593,6 +597,7 @@ def test_publish_team_planner_frames_persists_parallel_and_serial_dag(
         assert wakes[0].payload_json == {
             "task_id": tasks[0].id,
             "team_run_id": run.id,
+            "_runtime_context": {"actor_id": "user_admin", "binding": None},
         }
         assert started == [wakes[0].id]
 
@@ -967,7 +972,7 @@ def test_planner_member_completion_skips_review_and_enqueues_one_synthesis(
             select(TeamWakeEvent).where(TeamWakeEvent.trigger_type == "team_synthesis")
         ).all()
         assert len(synthesis_wakes) == 1
-        assert synthesis_wakes[0].payload_json == {"team_run_id": run.id}
+        assert synthesis_wakes[0].payload_json == {"team_run_id": run.id, "_runtime_context": {"actor_id": "user_admin", "binding": None}}
         assert started == [synthesis_wakes[0].id]
         assert wakeup.maybe_enqueue_team_synthesis(db, team, run.id) is None
         assert len(
@@ -1422,7 +1427,7 @@ def test_dispatches_abandoned_pending_wake_once(monkeypatch: pytest.MonkeyPatch)
         db.add(wake)
         db.commit()
         started: list[str] = []
-        monkeypatch.setattr(wakeup, "start_wakeup_async", lambda wake_id: started.append(wake_id) or True)
+        monkeypatch.setattr(wakeup, "start_wakeup_async", lambda wake_id, *, db: started.append(wake_id) or True)
 
         dispatched = dispatch_pending_wake_events(db, now=utc_now(), grace_seconds=5)
 

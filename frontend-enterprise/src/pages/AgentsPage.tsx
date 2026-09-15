@@ -58,7 +58,7 @@ export default function AgentsPage({
   async function load() {
     setLoading(true);
     try {
-      const rows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
+      const rows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}&scope=managed&view=summary`);
       setAgents(rows);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '加载员工失败');
@@ -69,6 +69,9 @@ export default function AgentsPage({
 
   useEffect(() => {
     void load();
+    const refresh = () => { void load(); };
+    window.addEventListener('ultrarag-enterprise-agent-scope-refresh', refresh);
+    return () => window.removeEventListener('ultrarag-enterprise-agent-scope-refresh', refresh);
   }, []);
 
   useEffect(() => {
@@ -143,7 +146,6 @@ export default function AgentsPage({
       await api.put<AgentProfileRead>(`/api/enterprise/agents/${row.id}`, {
         tenant_id: TENANT_ID,
         status,
-        metadata: row.metadata || {},
       });
       notify.success(status === 'active' ? '员工已上线' : '员工已下线');
       await load();
@@ -155,8 +157,11 @@ export default function AgentsPage({
 
   async function updateGalleryState(row: AgentProfileRead, published: boolean) {
     try {
+      const detail = row.metadata?.directory_summary
+        ? await api.get<AgentProfileRead>(`/api/enterprise/agents/${encodeURIComponent(row.id)}?tenant_id=${encodeURIComponent(row.tenant_id)}`)
+        : row;
       const metadata = {
-        ...(row.metadata || {}),
+        ...(detail.metadata || {}),
         published_to_gallery: published,
         gallery_published_at: published ? new Date().toISOString() : undefined,
         gallery_published_by: published ? currentUser?.username : undefined,
@@ -203,6 +208,7 @@ export default function AgentsPage({
 
   function updateAgentInList(row: AgentProfileRead) {
     setAgents((current) => current.map((item) => (item.id === row.id ? row : item)));
+    void load();
   }
 
   const employeeTabs: UnderlineTabItem<typeof employeeFilter>[] = [

@@ -5,6 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    demo_seed_enabled: bool = True
+    startup_orphan_cleanup_enabled: bool = True
     app_name: str = "Skill Agent Loop Service"
     database_url: str = "sqlite:///./skill_agent_loop.db"
     app_secret: str = "change-me-in-development"
@@ -15,6 +17,8 @@ class Settings(BaseSettings):
     model_thinking_mode: str = ""
     model_thinking_models: str = ""
     tool_timeout_seconds: float = 8.0
+    external_task_poll_seconds: float = 2.0
+    external_task_callback_base_url: str = ""
     a2a_task_timeout_seconds: float = 600.0
     a2a_poll_interval_seconds: float = 0.5
     codex_a2a_enabled: bool = False
@@ -94,6 +98,12 @@ class Settings(BaseSettings):
     harness_v3_request_timeout_seconds: float = 600.0
     # OSS_LOCAL or BUSINESS_BASE; one per deployment.
     security_profile: str = "OSS_LOCAL"
+    harness_module_selections: dict[str, str] = {}
+    harness_enabled_modules: str = ""
+    harness_module_configs: dict[str, dict[str, object]] = {}
+    harness_presets_dir: str = ""
+    # Deployment-only; never changed by runtime presets or module enable/disable.
+    harness_control_auth_provider: str = ""
     base_authz_url: str = ""
     base_authz_decision_token: str = ""
     base_authz_control_token: str = ""

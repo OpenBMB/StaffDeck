@@ -229,8 +229,9 @@ def test_provider_interaction_default_post_tool_handlers(module, snapshot):
     assert h["ledger.record"](_ctx("post_tool", snapshot, {"receipt": {"invocation_id": "inv1", "status": "ok"}}), st).kind == "pass"
     assert h["ledger.record"](_ctx("post_tool", snapshot, {"receipt": "not-a-mapping"}), st).kind == "pass"
     assert st.receipts == [{"invocation_id": "inv1", "status": "ok"}]
-    assert h["citations.collect"](_ctx("post_tool", snapshot, {"citations": [{"doc": "d1"}, "junk", {"doc": "d2"}]}), st).kind == "pass"
-    assert st.citations == [{"doc": "d1"}, {"doc": "d2"}]
+    assert h["citations.collect"](_ctx("post_tool", snapshot, {"citations": [{"source_path": "d1"}, "junk", {"source_path": "d2"}]}), st).kind == "pass"
+    assert [c['source_path'] for c in st.citations] == ['d1', 'd2']
+    assert all(c['id'].startswith('kref_') for c in st.citations)
 
 
 def test_provider_interaction_default_turn_stopping_handlers(module, snapshot):

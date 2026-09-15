@@ -214,7 +214,8 @@ class SkillRead(BaseModel):
     name: str
     business_domain: Optional[str]
     description: Optional[str]
-    content: SkillCard
+    content: SkillCard | dict[str, Any]
+    validation_errors: list[str] = Field(default_factory=list)
     status: str
     call_count: int = 0
     positive_feedback_count: int = 0
@@ -252,7 +253,8 @@ class SkillVersionRead(BaseModel):
     name: str
     business_domain: Optional[str]
     description: Optional[str]
-    content: SkillCard
+    content: SkillCard | dict[str, Any]
+    validation_errors: list[str] = Field(default_factory=list)
     status: str
     call_count: int = 0
     positive_feedback_count: int = 0

@@ -16,6 +16,7 @@ def run_session(
     tenant_id: str,
     host_session_id: str,
     timeout_seconds: float = 600.0,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     try:
         return _run_session(
@@ -27,6 +28,7 @@ def run_session(
             tenant_id=tenant_id,
             host_session_id=host_session_id,
             timeout_seconds=timeout_seconds,
+            on_event=on_event,
         )
     except BaseException:
         proc.close()  # a phase without an idle acknowledgement is never reusable
@@ -43,6 +45,7 @@ def _run_session(
     tenant_id: str,
     host_session_id: str,
     timeout_seconds: float = 600.0,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     import time
 
@@ -82,6 +85,8 @@ def _run_session(
                         continue
                     events.append(ev)
                     relay(ev)
+                    if on_event:
+                        on_event(ev)
             if (
                 n.method == "session.status"
                 and payload.get("sessionId") == session_id
