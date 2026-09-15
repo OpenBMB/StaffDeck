@@ -71,11 +71,13 @@ class UsageError(Exception):
 class Parser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         # argparse's default includes raw user input, which may contain secrets.
-        raise UsageError("Invalid arguments; use staffdeck [resource] [command] --help.")
+        raise UsageError("Invalid arguments; use staffdeck-api [resource] [command] --help.")
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = Parser(description="StaffDeck Open API v1 client (JSON / NDJSON output).")
+    parser = Parser(
+        prog="staffdeck-api", description="StaffDeck Open API v1 client (JSON / NDJSON output).",
+    )
     parser.add_argument("--base-url", default=os.environ.get("STAFFDECK_BASE_URL"))
     parser.add_argument("--http-timeout", type=float, default=30.0, help="Per-request timeout seconds")
     parser.add_argument("--max-retries", type=int, default=2, help="GET retries only; writes are once")

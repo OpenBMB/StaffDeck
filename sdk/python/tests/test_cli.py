@@ -149,4 +149,6 @@ def test_help_does_not_require_credentials(monkeypatch, capsys):
     with pytest.raises(SystemExit) as result:
         cli.main(["sops", "publish", "--help"])
     assert result.value.code == 0
-    assert "--draft-id" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "--draft-id" in output
+    assert "staffdeck-api sops publish" in output
