@@ -90,3 +90,22 @@ def test_channel_name_loaders_do_not_scan_a_local_catalog():
     db = NS(exec=lambda *_: pytest.fail('no local resource table scans'))
     assert _load_skill_trace_names(db, 'tenant') == ({}, {}, {})
     assert _load_wecom_progress_names(NS(tenant_id='tenant')) == ({}, {}, {})
+
+
+def test_archived_staff_history_still_requires_permission_and_cannot_execute():
+    from sqlmodel import SQLModel, Session, create_engine
+    from app.db.models import Tenant, User, AgentProfile
+    engine = create_engine('sqlite://')
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        owner = User(id='owner', tenant_id='tenant', username='owner', password_hash='test')
+        other = User(id='other', tenant_id='tenant', username='other', password_hash='test')
+        db.add_all([Tenant(id='tenant', name='Test'), owner, other,
+                    AgentProfile(id='staff', tenant_id='tenant', name='Archived', status='archived',
+                                 metadata_json={'owner_user_id': 'owner'})])
+        db.commit()
+        assert staff_directory.can_manage_staff(db, 'tenant', 'staff', owner)
+        assert not staff_directory.can_manage_staff(db, 'tenant', 'staff', other)
+        with pytest.raises(HTTPException):
+            staff_directory.staff_profile(db, 'tenant', 'staff', user=owner, action='use', active_only=True)
+    engine.dispose()

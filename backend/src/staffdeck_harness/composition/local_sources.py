@@ -52,14 +52,21 @@ class LocalStaffSource:
             for row in _local_agent_resource_timeline_events(self.db, context.tenant_id, context.staff_id))
 
     def profile(self, context):
-        from app.agents.branching import get_agent
         from staffdeck_harness.contracts.staff import StaffProfile
         from staffdeck_harness.composition.projection import agent_ref
-        row = get_agent(self.db, context.tenant_id, context.staff_id)
+        row = self._profile_row(context)
         if row is None or row.tenant_id != context.tenant_id:
             raise ModuleSdkError("员工不存在于当前来源", code="STAFF_NOT_FOUND")
         return StaffProfile(row.id, row.tenant_id, row.name, row.status, agent_ref(row),
             row.is_overall, row.description, row.persona_prompt, row.harness_max_actions, dict(row.metadata_json or {}))
+
+    def _profile_row(self, context):
+        from app.agents.branching import get_agent
+        from app.db.models import AgentProfile
+        if context.resource_config.get('include_inactive') and context.staff_id:
+            row = self.db.get(AgentProfile, context.staff_id)
+            return row if row and row.tenant_id == context.tenant_id else None
+        return get_agent(self.db, context.tenant_id, context.staff_id)
 
     def profiles(self, context, staff_ids):
         from sqlmodel import select
@@ -72,16 +79,17 @@ class LocalStaffSource:
                 row.is_overall, row.description, metadata_json=dict(row.metadata_json or {})) for row in rows]
 
     def reference(self, context):
-        from app.agents.branching import get_agent, get_overall_agent
+        from app.agents.branching import get_overall_agent
         from app.db.models import ChatSession
         from staffdeck_harness.composition.projection import agent_ref, runtime_staff_ref
         from staffdeck_harness.contracts.security import ResourceRef
 
-        agent = (get_agent(self.db, context.tenant_id, context.staff_id)
+        agent = (self._profile_row(context)
                  if context.staff_id else get_overall_agent(self.db, context.tenant_id))
         if agent is None and context.staff_id:
             raise ModuleSdkError("target Staff unavailable", code="STAFF_NOT_FOUND")
-        if agent is not None and (agent.tenant_id != context.tenant_id or agent.status != "active"):
+        if agent is not None and (agent.tenant_id != context.tenant_id or
+                                 (agent.status != "active" and not context.resource_config.get('include_inactive'))):
             raise PermissionDenied("target Staff unavailable")
         ref = agent_ref(agent) if agent else ResourceRef(
             "agent", f"{context.tenant_id}:overall", context.tenant_id,

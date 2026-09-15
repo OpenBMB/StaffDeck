@@ -23,6 +23,9 @@ def staff_profile(db, tenant_id, staff_id, *, user=None, action=None, active_onl
     from staffdeck_harness.modules.registry import peek_registry
     from staffdeck_harness.security.profile import get_profile, Guard
     context = directory_context(db, tenant_id, staff_id, user=user)
+    if action in {'view', 'manage'} and not active_only:
+        from dataclasses import replace
+        context = replace(context, resource_config={**context.resource_config, 'include_inactive': True})
     registry = getattr(db, "info", {}).get("staffdeck_registry") or peek_registry()
     try:
         if registry is None:
