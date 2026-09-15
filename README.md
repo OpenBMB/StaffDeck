@@ -38,6 +38,11 @@ StaffDeck is an enterprise platform for building and managing digital employees.
 
 ## Desktop Downloads
 
+For integrations without modifying platform source, see the
+[Python SDK and CLI](sdk/python/README.md). It wraps the existing Open API v1
+for tools, SOPs, sessions and runs; the `staffdeck-api` command is separate from
+the desktop launcher below.
+
 Visit the [StaffDeck official website](https://staffdeck.openbmb.cn/) or download the latest desktop release directly:
 
 | Platform | Architecture | Download |
