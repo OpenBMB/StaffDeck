@@ -53,6 +53,8 @@ SOP 内容与能力绑定按 TaskFrame 实例固定，记录在现有 `ChatSessi
 
 ### 管理与后台任务的来源边界
 
+独立运行 `channel_scope_service` 的部署必须将其纳入同一次源码发布及进程重启，不能只更新主 API。systemd 可由主 Runtime `Wants=` 校验服务，校验服务 `PartOf=` 主 Runtime；这样 stop/start 与 restart 都会同步。具体单元名由部署指定。发布后需检查校验服务及依赖方的就绪契约，不能只以主 API 的 `/health` 成功作为验收。装配加载失败返回 `CHANNEL_SCOPE_ASSEMBLY_UNAVAILABLE` 和关联错误 ID，日志仅记录异常类型/代码与栈位置，不输出任意异常文本或配置值。
+
 - 外部控制身份适配器实现 `MemberDirectoryPort`：声明 `member_identity_source`，批量返回 `MemberRecord`（含明确的启停状态）。渠道绑定、协作者、人工处理人及 SOP 人工节点统一使用该目录，不要求成员先登录以生成本地投影。
 - 本地身份投影仅用于关联渠道和运行记录。不能从投影推断成员仍有效；绑定码兑换和后台执行重新校验。目录不可用不回退本地账号，也不冒用管理员身份。
 - 定时任务、记忆、会话和反馈的员工访问通过 `staff_directory` 与当前 PEP；后台任务沿用接纳时的运行服务和装配租约。
