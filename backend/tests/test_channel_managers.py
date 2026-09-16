@@ -202,6 +202,43 @@ def test_manager_can_invite_internal_user_to_bind_identity() -> None:
     assert forbidden.status_code == 403
 
 
+def test_manager_can_invite_internal_user_to_bind_identity_on_non_feishu_channel() -> None:
+    engine = _engine()
+    users = _seed(engine)
+    client = _client(engine)
+    binding_id = _seed_binding(engine, channel="dingtalk")
+    with Session(engine) as db:
+        binding = db.get(ChannelBinding, binding_id)
+        binding.credentials_enc = "encrypted-secret"
+        db.add(binding)
+        db.commit()
+
+    invited = client.post(
+        f"/api/enterprise/channels/{binding_id}/identity-bind-code",
+        params={"tenant_id": "tenant_demo"},
+        json={"user_id": "user_other"},
+        headers=_auth(users["owner"]),
+    )
+    assert invited.status_code == 200, invited.text
+    assert len(invited.json()["code"]) == 6
+
+
+def test_invite_identity_bind_requires_channel_credentials() -> None:
+    engine = _engine()
+    users = _seed(engine)
+    client = _client(engine)
+    for channel in ("feishu", "dingtalk", "wecom", "wechat"):
+        binding_id = _seed_binding(engine, channel=channel)
+        resp = client.post(
+            f"/api/enterprise/channels/{binding_id}/identity-bind-code",
+            params={"tenant_id": "tenant_demo"},
+            json={"user_id": "user_other"},
+            headers=_auth(users["owner"]),
+        )
+        assert resp.status_code == 409, f"{channel}: {resp.text}"
+
+
+
 def test_collaborator_cannot_delete(monkeypatch) -> None:
     engine = _engine()
     users = _seed(engine)

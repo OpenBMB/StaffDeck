@@ -174,6 +174,11 @@ def get_channel_adapter(channel: str) -> ChannelAdapter:
     return adapter
 
 
+def channel_adapter_registered(channel: str) -> bool:
+    """该渠道是否已有适配器注册(含测试或定制代码注入的实例)。"""
+    return _adapters.get(channel) is not None
+
+
 def channel_reaction_token(channel: str) -> str | None:
     """该渠道"处理中"标记的标识;不支持 reaction 时返回 None。
 

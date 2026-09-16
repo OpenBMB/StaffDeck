@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import threading
@@ -132,12 +133,15 @@ def channel_services_enabled() -> bool:
 
 
 def _ensure_adapters_registered() -> None:
-    # 各适配器模块导入即自注册(模块级 register_channel_adapter)
-    import app.channels.adapters.dingtalk  # noqa: F401
-    import app.channels.adapters.feishu  # noqa: F401
-    import app.channels.adapters.wechat  # noqa: F401
-    import app.channels.adapters.wechat_kf  # noqa: F401
-    import app.channels.adapters.wecom  # noqa: F401
+    # 各适配器模块导入即自注册(模块级 register_channel_adapter)。
+    # 已注册的渠道跳过导入:模块重复导入本是 no-op,显式跳过可保留测试
+    # 或定制代码预先注入的适配器实例不被真实适配器覆盖。
+    from app.channels.adapters.base import channel_adapter_registered
+
+    for channel in ("dingtalk", "feishu", "wechat", "wechat_kf", "wecom"):
+        if channel_adapter_registered(channel):
+            continue
+        importlib.import_module(f"app.channels.adapters.{channel}")
 
 
 def start_binding_ingress(channel: str, binding_id: str) -> None:

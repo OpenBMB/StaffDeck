@@ -577,6 +577,12 @@ def _stage_received_reaction(
     event: ChannelInboundEvent,
 ) -> None:
     """给已收到的入站事件登记"处理中"标记;渠道不支持 reaction 时直接跳过。"""
+    # 能力门禁依赖 adapter 注册表(各适配器模块导入即自注册)。inbox 守护进程
+    # 可独立于 start_channel_services 被调用(单测/组件化部署),此处幂等兜底,
+    # 避免飞书等渠道的 reaction 因适配器未注册被静默跳过。
+    from app.channels import _ensure_adapters_registered
+
+    _ensure_adapters_registered()
     token = channel_reaction_token(binding.channel)
     if not token or not _reaction_staging_enabled(binding.channel):
         return
@@ -1223,10 +1229,10 @@ def process_inbound(
             ):
                 return False
         if event:
-            target = {
-                **target,
-                **dict(event.target_json or {}),
-            }
+            # 暂存事件的 target 由各渠道 inbox 按该渠道的投递形状构建,即权威投递
+            # 目标,直接采用;不与上面的通用基础形状合并,避免 wecom 风格键
+            # (to_user_id/reply_quote 等)污染 feishu/dingtalk 的会话快照与通知目标。
+            target = dict(event.target_json or {})
         kf_account = None
         if binding.channel == "wechat_kf":
             kf_account = db.exec(
@@ -1554,6 +1560,7 @@ def process_inbound(
                 interaction_mode=interaction_mode,
             )
             _send_wechat_typing(binding, inbound.from_user_id, inbound.context_token, 1, db_engine=use_engine)
+            from app.channels.dingtalk_trace import DingTalkTraceStreamer, is_dingtalk_trace_enabled
             stream_sink = None
             if binding.channel == "wecom" and isinstance(inbound.raw, dict):
                 adapter = get_channel_adapter(binding.channel)
@@ -1568,14 +1575,25 @@ def process_inbound(
                             inbound.event_id,
                         )
             from app.channels.feishu_trace import FeishuTraceStreamer, is_feishu_trace_enabled
+            from app.channels.trace_streamer import TraceStreamer
 
-            trace_streamer: FeishuTraceStreamer | None = None
+            trace_streamer: TraceStreamer | None = None
             if is_feishu_trace_enabled(binding):
                 trace_streamer = FeishuTraceStreamer(
                     binding,
                     target,
                     inbound.event_id,
                     db=db,
+                    user_message=user_message,
+                )
+                trace_streamer.start()
+            elif is_dingtalk_trace_enabled(binding):
+                trace_streamer = DingTalkTraceStreamer(
+                    binding,
+                    target,
+                    inbound.event_id,
+                    db=db,
+                    user_message=user_message,
                 )
                 trace_streamer.start()
             try:

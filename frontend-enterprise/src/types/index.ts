@@ -705,6 +705,20 @@ export type ChatSessionEventRead = {
   data: Record<string, unknown>;
 };
 
+export type HumanHandoffNoticeConversationItem = {
+  role: string;
+  text: string;
+};
+
+export type HumanHandoffNotice = {
+  title: string;
+  inquirer_name: string;
+  assignee_notice: string;
+  scoped: boolean;
+  conversation: HumanHandoffNoticeConversationItem[];
+  fallback_question: string;
+};
+
 export type HumanHandoffRead = {
   id: string;
   tenant_id: string;
@@ -720,6 +734,7 @@ export type HumanHandoffRead = {
   human_reply?: string | null;
   resume_payload?: Record<string, unknown> | null;
   metadata?: Record<string, unknown> | null;
+  notice?: HumanHandoffNotice | null;
   created_at: string;
   updated_at: string;
   answered_at?: string | null;

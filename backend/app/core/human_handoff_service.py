@@ -16,6 +16,13 @@ from app.db.models import (
 )
 from app.session.session_schema import StepAgentResult
 
+# 转人工处理人选择开关(现行方案:SOP 节点处理人下拉框已下线)。
+# False = 忽略 SOP 节点上的 assignee_user_id/assignee_notify_channel(历史数据保留但不生效),
+#        优先级变为:渠道默认处理人 → 数字员工负责人 → 租户管理员;
+# True  = 回滚开关,恢复原优先级:SOP 节点指定 → 渠道默认 → owner → admin,
+#        同时前端需把 DistillPage.tsx 的 HANDOFF_ASSIGNEE_SELECTOR_ENABLED 改回 true 恢复下拉框。
+HANDOFF_STEP_ASSIGNEE_ENABLED = False
+
 
 class HumanHandoffService:
     def __init__(self, db: Session, events: Any) -> None:
@@ -62,17 +69,27 @@ class HumanHandoffService:
             chat_session.updated_at = utc_now()
             return existing
 
-        # Assignee 优先级:SOP 节点指定 → 当前渠道默认处理人 → 数字员工负责人 → 租户管理员。
+        # Assignee 优先级(现行,开关关闭):当前渠道默认处理人 → 数字员工负责人 → 租户管理员。
+        # HANDOFF_STEP_ASSIGNEE_ENABLED=True(回滚)时恢复原顺序:
+        # SOP 节点指定 → 当前渠道默认处理人 → 数字员工负责人 → 租户管理员。
         # 不再从知识库 Contact 概念推断 assignee(知识内容变化会导致处理人不稳定,
         # 且缺少权限/审计入口)。
         # 通知渠道随命中的配置走:None=默认投递;"web"=仅网页端;绑定渠道=按该渠道转接。
+        candidates: list[tuple[str | None, str | None, str]] = []
+        if HANDOFF_STEP_ASSIGNEE_ENABLED:
+            # 回滚态:SOP 节点指定的处理人(handoff 节点下拉框)优先于渠道默认处理人。
+            candidates.append((step_assignee_user_id, step_notify_channel, "step"))
+        candidates.append(
+            (
+                binding_default_assignee_user_id,
+                binding_default_notify_channel,
+                "binding_default",
+            )
+        )
         configured = next(
             (
-                (user_id, notify_channel)
-                for user_id, notify_channel in (
-                    (step_assignee_user_id, step_notify_channel),
-                    (binding_default_assignee_user_id, binding_default_notify_channel),
-                )
+                (user_id, notify_channel, source)
+                for user_id, notify_channel, source in candidates
                 if self._is_internal_assignee(tenant_id, user_id)
             ),
             None,
@@ -80,9 +97,11 @@ class HumanHandoffService:
         if configured:
             configured_assignee = configured[0]
             assignee_notify_channel = str(configured[1] or "").strip() or None
+            assignee_source = configured[2]
         else:
             configured_assignee = None
             assignee_notify_channel = None
+            assignee_source = "fallback"
         assignee_user_id = configured_assignee or assignee_resolver(
             tenant_id, chat_session.agent_id, chat_session.user_id
         )
@@ -113,6 +132,9 @@ class HumanHandoffService:
                 "step_reply": step_result.reply,
                 "step_handoff": step_result.handoff,
                 "assignee_notify_channel": assignee_notify_channel,
+                # 处理人命中来源:step=SOP 节点(仅回滚态);binding_default=渠道默认;
+                # fallback=回退链(owner/admin/队列)。供未配置提示判断使用。
+                "assignee_source": assignee_source,
             },
         )
         self.db.add(handoff)
@@ -143,6 +165,39 @@ class HumanHandoffService:
             return False
         user = self.db.get(User, user_id)
         return bool(user and user.tenant_id == tenant_id and user.source == "web")
+
+    @staticmethod
+    def unconfigured_assignee_notice(
+        handoff: HumanHandoffRequest,
+        assignee: User | None,
+    ) -> str | None:
+        """转人工未命中显式配置时的用户可见提示。
+
+        现行方案(HANDOFF_STEP_ASSIGNEE_ENABLED=False):命中渠道默认处理人
+        (assignee_source == "binding_default")视为已配置,返回 None;回退到
+        数字员工负责人/租户管理员/人工队列时,告知用户实际转接对象。
+        回滚开关打开时沿用旧规则:SOP 节点通过 assignee_user_id 指定处理人则
+        返回 None(按配置转接,无需说明)。
+        """
+        metadata = handoff.metadata_json if isinstance(handoff.metadata_json, dict) else {}
+        step = metadata.get("step")
+        if (
+            HANDOFF_STEP_ASSIGNEE_ENABLED
+            and isinstance(step, dict)
+            and str(step.get("assignee_user_id") or "").strip()
+        ):
+            return None
+        if (
+            not HANDOFF_STEP_ASSIGNEE_ENABLED
+            and metadata.get("assignee_source") == "binding_default"
+        ):
+            return None
+        name = ""
+        if assignee is not None:
+            name = str(assignee.display_name or assignee.username or "").strip()
+        if name:
+            return f"由于没有配置处理人，已经转接给{name}。"
+        return "由于没有配置处理人，已转入人工处理队列。"
 
     def assignee_user_id(
         self,

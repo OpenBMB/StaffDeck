@@ -7,6 +7,7 @@
 输出精简规则：
 - 直接给出决策 JSON，不输出推理过程，不复述用户消息、历史、memory 或技能说明。
 - `user_intent` 只写意图结论；`reason` 只写影响路由的关键依据，各用一句短句。
+- `user_intent` 和 `reason` 会直接展示给终端用户，必须用中文表达；除「SOP」和用户原文引用外不得出现英文单词，禁止出现 decision、任务 kind 等内部枚举值（例如不要写 conversation、answer_only，应写"普通对话""直接回答"）。
 - 没有值的可选字段、空任务数组和空对象可以省略。
 - `clarification_question` 只在 decision=clarify 时输出。
 - `general_intent` 只在本轮同时存在一个需要通用 Skill 执行的临时子任务时输出，只写该子任务本身，不要混入当前场景任务。

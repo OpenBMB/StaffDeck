@@ -20,6 +20,7 @@ from app.db.models import (
     HarnessSessionLeaseRecord,
     HarnessTaskFrameRecord,
     HarnessTurnRecord,
+    HumanHandoffRequest,
     Team,
     Tenant,
     User,
@@ -301,3 +302,109 @@ def test_delete_team_cleans_team_session_harness_state_and_workspace(
         assert db.get(HarnessInvocationRecord, target_ids[0]) is None
         assert db.get(HarnessRunRecord, target_ids[1]) is None
         assert db.get(HarnessTaskFrameRecord, target_ids[2]) is None
+
+
+def test_delete_chat_session_cancels_pending_handoffs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """会话删除级联取消其 pending 转人工:历史项保留,其他会话不受影响。"""
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        user = User(
+            id="user_demo",
+            tenant_id="tenant_demo",
+            username="demo",
+            password_hash="test",
+        )
+        db.add(user)
+        db.add(ChatSession(id="session_target", tenant_id="tenant_demo", user_id=user.id))
+        db.add(ChatSession(id="session_keep", tenant_id="tenant_demo", user_id=user.id))
+        db.add_all(
+            [
+                HumanHandoffRequest(
+                    id="handoff_pending",
+                    tenant_id="tenant_demo",
+                    session_id="session_target",
+                    agent_id="agent_demo",
+                    status="pending",
+                ),
+                HumanHandoffRequest(
+                    id="handoff_answered",
+                    tenant_id="tenant_demo",
+                    session_id="session_target",
+                    agent_id="agent_demo",
+                    status="answered",
+                ),
+                HumanHandoffRequest(
+                    id="handoff_other_session",
+                    tenant_id="tenant_demo",
+                    session_id="session_keep",
+                    agent_id="agent_demo",
+                    status="pending",
+                ),
+            ]
+        )
+        db.commit()
+
+        result = delete_chat_session(
+            "session_target",
+            tenant_id="tenant_demo",
+            current_user=user,
+            db=db,
+        )
+
+        assert result == {"status": "deleted"}
+        cancelled = db.get(HumanHandoffRequest, "handoff_pending")
+        assert cancelled is not None
+        assert cancelled.status == "cancelled"
+        assert cancelled.metadata_json["cancelled_reason"] == "session deleted"
+        # answered 属于历史记录,保留供审计
+        assert db.get(HumanHandoffRequest, "handoff_answered").status == "answered"
+        # 其他会话的 pending 不受影响
+        assert db.get(HumanHandoffRequest, "handoff_other_session").status == "pending"
+
+
+def test_delete_team_cancels_pending_handoffs_of_team_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """删团队走同一级联:团队成员会话的 pending handoff 一并取消。"""
+    monkeypatch.setenv("ULTRARAG_DATA_DIR", str(tmp_path / "data"))
+    engine = _test_engine()
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        team = Team(
+            tenant_id="tenant_demo",
+            name="增长团队",
+            owner_user_id="user_demo",
+            status="active",
+        )
+        db.add(team)
+        db.add(
+            ChatSession(
+                id="session_team",
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+                team_id=team.id,
+            )
+        )
+        db.add(
+            HumanHandoffRequest(
+                id="handoff_team_pending",
+                tenant_id="tenant_demo",
+                session_id="session_team",
+                agent_id="agent_demo",
+                status="pending",
+            )
+        )
+        db.commit()
+
+        delete_team(db, team)
+
+        cancelled = db.get(HumanHandoffRequest, "handoff_team_pending")
+        assert cancelled is not None
+        assert cancelled.status == "cancelled"
+        assert cancelled.metadata_json["cancelled_reason"] == "session deleted"

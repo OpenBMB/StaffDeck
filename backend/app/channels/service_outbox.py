@@ -21,7 +21,6 @@ from app.db.models import (
     ChatSession,
     HumanHandoffRequest,
     Message,
-    User,
     new_id,
     utc_now,
 )
@@ -43,10 +42,8 @@ _NON_DELIVERY_CHANNELS = {
     PILOTDECK_GROUP_CHAT_CHANNEL,
     "skill_test",
 }
-# handoff 问题描述里要过滤掉的内部 slot 键。
-_INTERNAL_SLOT_KEYS = frozenset(
-    {"handoff_confirmed", "message_content", "_tool_results"}
-)
+# web 控制台发起的回合不向外部渠道投递回复；渠道侧消息与回复仍通过会话同步在网页端可见。
+_WEB_TURN_ORIGIN = "web"
 
 
 def _stage_failed_delivery(
@@ -82,15 +79,32 @@ def _stage_failed_delivery(
     )
 
 
-def _message_client_turn_id(db: Session, message: Message) -> str:
+def _turn_user_message(db: Session, message: Message) -> Message | None:
     metadata = message.metadata_json or {}
     user_message_id = str(metadata.get("user_message_id") or "").strip()
-    user_message = db.get(Message, user_message_id) if user_message_id else None
+    if not user_message_id:
+        return None
+    return db.get(Message, user_message_id)
+
+
+def _message_client_turn_id(db: Session, message: Message) -> str:
+    metadata = message.metadata_json or {}
+    user_message = _turn_user_message(db, message)
     return str(
         ((user_message.metadata_json or {}) if user_message else {}).get("client_turn_id")
         or metadata.get("client_turn_id")
         or ""
     ).strip()
+
+
+def _turn_origin_channel(db: Session, message: Message) -> str:
+    """解析回复所属回合的来源渠道（记录在用户消息 metadata 上）。
+
+    历史数据（升级前创建的回合）没有来源标记，返回空串并维持既有投递行为。
+    """
+    user_message = _turn_user_message(db, message)
+    origin = ((user_message.metadata_json or {}) if user_message else {}).get("channel")
+    return str(origin or "").strip()
 
 
 def _reply_idempotency_key(db: Session, binding_id: str, message: Message) -> str:
@@ -156,11 +170,14 @@ def _find_active_binding_for_agent(db: Session, chat_session: ChatSession) -> Ch
 def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Message) -> None:
     """把 assistant 回复登记为渠道 outbox 投递（随主事务提交，不单独 commit）。
 
-    Web 会话不受渠道 staging 影响；渠道会话必须留下 delivery 或让事务失败。
+    Web 会话不受渠道 staging 影响；web 控制台发起的回合即使落在渠道会话上也不投递
+    （渠道用户只收到渠道侧发起消息的回复）；其余渠道会话必须留下 delivery 或让事务失败。
     """
     try:
         channel = str(getattr(chat_session, "channel", None) or "").strip()
         if not channel or channel in _NON_DELIVERY_CHANNELS:
+            return
+        if _turn_origin_channel(db, message) == _WEB_TURN_ORIGIN:
             return
         # 已锚定会话绝不跨 binding 回退，避免携带旧 target/context_token 串 Bot。
         binding = None
@@ -785,6 +802,13 @@ def _run_delivery_lane(
 
 
 def start_delivery_daemon(*, db_engine=None) -> None:
+    """启动渠道投递守护线程（幂等,已存活则跳过）。
+
+    分别拉起两条独立轮询 lane:
+    - 普通投递(reply/handoff_notice/admin_alert 等非 reaction 类型);
+    - reaction 投递(reaction_add/reaction_remove),便于独立重试与卡死恢复。
+    共享 _delivery_stop 事件,由 stop_delivery_daemon 统一唤醒退出。
+    """
     global _delivery_thread, _reaction_delivery_thread
     _delivery_stop.clear()
     if not (_delivery_thread and _delivery_thread.is_alive()):
@@ -1007,96 +1031,29 @@ def _write_handoff_notify_message_id(
     db.add(handoff)
 
 
-def _resolve_inquirer_display_name(
-    db: Session,
-    session: ChatSession,
-    binding: ChannelBinding,
-) -> str:
-    """查找提问人显示名:优先 ChannelIdentity.display_name,回退 User.display_name。"""
-    if not session.user_id:
-        return ""
-    scope = external_account_scope(db, binding)
-    identity = db.exec(
-        select(ChannelIdentity).where(
-            ChannelIdentity.staffdeck_user_id == session.user_id,
-            ChannelIdentity.channel == binding.channel,
-            ChannelIdentity.external_account_scope == scope,
-        )
-    ).first()
-    if identity and identity.display_name:
-        return identity.display_name.strip()
-    user = db.get(User, session.user_id)
-    if user:
-        return str(user.display_name or user.username or "").strip()
-    return ""
-
-
-def _build_handoff_problem_description(
-    db: Session,
-    handoff: HumanHandoffRequest,
-    binding: ChannelBinding,
-) -> str:
-    """构造给处理人看的问题描述:提问人 + 用户原始消息 + 已收集 slots + step 名称。
-
-    找不到 session/message 时回退到 handoff.pending_question。
-    """
-    parts: list[str] = []
-    # step name
-    metadata = handoff.metadata_json or {}
-    step = metadata.get("step") if isinstance(metadata, dict) else None
-    if isinstance(step, dict):
-        step_name = str(step.get("name") or "").strip()
-        if step_name:
-            parts.append(f"[{step_name}]")
-    # 提问人 + 用户最后一条消息 + slots
-    session = db.get(ChatSession, handoff.session_id)
-    if session:
-        inquirer = _resolve_inquirer_display_name(db, session, binding)
-        if inquirer:
-            parts.append(f"提问人:{inquirer}")
-        user_msg = db.exec(
-            select(Message)
-            .where(
-                Message.session_id == handoff.session_id,
-                Message.role == "user",
-            )
-            .order_by(Message.created_at.desc())
-        ).first()
-        if user_msg and user_msg.content.strip():
-            parts.append(user_msg.content.strip()[:300])
-        slots = session.slots_json or {}
-        if isinstance(slots, dict) and slots:
-            slot_lines = [
-                f"  {k}: {v}"
-                for k, v in slots.items()
-                if v and k not in _INTERNAL_SLOT_KEYS
-            ]
-            if slot_lines:
-                parts.append("已收集信息:\n" + "\n".join(slot_lines))
-    if not parts:
-        fallback = (handoff.pending_question or "").strip()
-        if fallback:
-            return fallback[:600]
-        return "当前 SOP 需要人工确认后继续执行。"
-    # 截断保证整条通知(含上下文摘要)不超过渠道单条消息上限:超限会拆分多条,
-    # 处理人引用回复时只有末条消息 id 可关联,拆分会破坏引用回复匹配。
-    return "\n".join(parts)[:600]
-
-
 def notify_handoff_assignee(
     db: Session,
     binding: ChannelBinding,
     handoff: HumanHandoffRequest,
-    pending_question: str,
-    context_summary: str,
 ) -> None:
     """转人工时给 assignee 发渠道私聊通知(kind=handoff_notice)。
+
+    本函数只负责落库:向 outbox 写入一条 status="pending" 的 ChannelDelivery
+    记录并 commit,不实际调用渠道 API。真正投递由 start_delivery_daemon 启动
+    的守护线程异步轮询完成。
 
     通用链路:assignee_user_id → 当前 binding scope 下的非群聊 ChannelIdentity
     → 外部用户 id(open_id/chat_id)。按 binding.channel 构造各渠道投递 target,
     经 outbox worker 用对应渠道 adapter 投递。无可用身份时跳过(网页收件箱兜底)。
     任何异常仅记日志,不影响 handoff 主流程。
     """
+    # 延迟导入:app.core 包 __init__ 会拉起 agent_loop → service_outbox,
+    # 模块级导入会形成环(与 agent_loop._maybe_notify_handoff_assignee 同款处理)。
+    from app.core.handoff_notice import (
+        build_handoff_notice_content,
+        render_handoff_notice_text,
+    )
+
     try:
         if binding.channel not in HANDOFF_NOTIFY_CHANNELS:
             logger.info(
@@ -1133,32 +1090,11 @@ def notify_handoff_assignee(
                 handoff.assignee_user_id,
             )
             return
-        # assignee 显示名:从 User 表取,无则空
-        assignee = db.get(User, handoff.assignee_user_id) if handoff.assignee_user_id else None
-        name = ""
-        if assignee:
-            name = str(assignee.display_name or assignee.username or "").strip()
-        problem_description = _build_handoff_problem_description(db, handoff, binding)
-        text_parts = [
-            f"【人工介入转接】{'已转接给真人员工 ' + name if name else '有一条人工介入待处理'}",
-            "",
-            "问题:" + problem_description,
-        ]
-        if context_summary:
-            text_parts.append("")
-            text_parts.append("上下文:")
-            text_parts.append(context_summary[:800])
-        text_parts.append("")
-        if binding.channel == "feishu":
-            text_parts.append(
-                "如需答复，请直接回复本条消息（引用后输入答复内容）；"
-                "也可发送 /回复反馈 <答复内容>。"
-            )
-        else:
-            text_parts.append(
-                f"请发送 /回复反馈 {handoff.id} <答复内容> 精确回复此请求。"
-            )
-        text = "\n".join(text_parts)
+        text = render_handoff_notice_text(
+            build_handoff_notice_content(db, handoff),
+            channel=binding.channel,
+            handoff_id=handoff.id,
+        )
         build_target = _HANDOFF_NOTIFY_TARGET_BUILDERS[binding.channel]
         target = build_target(external_user_id, handoff.id)
         target["handoff_id"] = handoff.id
