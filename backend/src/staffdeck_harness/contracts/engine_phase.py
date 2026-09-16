@@ -20,7 +20,8 @@ class PhaseRunner(Protocol):
 class EnginePhaseError(RuntimeError):
     """The engine reported a turn-level error during a tool-less phase (plan / reply)."""
 
-    def __init__(self, phase: str, detail: str):
+    def __init__(self, phase: str, detail: str, *, origin: str = "engine"):
         super().__init__(f"{phase} 阶段引擎报错：{detail}")
         self.phase = phase
         self.detail = detail
+        self.origin = origin

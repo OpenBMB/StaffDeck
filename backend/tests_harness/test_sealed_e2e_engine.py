@@ -268,6 +268,37 @@ def test_real_engine_guest_turn_does_not_require_web_identity_for_memory(db, fak
     assert len(model.requests) >= 3 and len(contexts) >= 3
 
 
+def test_real_engine_unreadable_history_is_storage_error_not_model_error(db, fake_model):
+    import os
+    from pathlib import Path
+    from app.db.models import AgentEvent
+    if os.geteuid() == 0:
+        pytest.skip("OS permission regression must run as an unprivileged service user")
+    model, base = fake_model
+    agent, user = _seed(db, base)
+    blocked = Path(get_settings().harness_v3_home) / user.tenant_id / "sessions" / "unreadable-history"
+    blocked.mkdir(parents=True)
+    blocked.chmod(0)
+    try:
+        response = AgentLoop(db).handle_turn(ChatTurnRequest(tenant_id=user.tenant_id, agent_id=agent.id,
+            user_id=user.id, message="退货期限是几天？", client_turn_id="storage-permission-test"))
+        assert response.runtime_error_code == "ENGINE_STORAGE_PERMISSION_DENIED", response.reply
+        assert "MODEL_UPSTREAM_UNAVAILABLE" not in response.reply and "检查模型配置" not in response.reply
+        assert str(blocked) not in response.reply
+        assert model.requests == [], "local persistence failed before any model request"
+        errors = db.exec(select(AgentEvent).where(AgentEvent.session_id == response.session_id,
+            AgentEvent.event_type == "error_occurred")).all()
+        assert errors[-1].payload_json["code"] == "ENGINE_STORAGE_PERMISSION_DENIED"
+    finally:
+        blocked.chmod(0o700)
+    from staffdeck_harness.bridge.engine_host import reset_runtime
+    reset_runtime()
+    recovered = AgentLoop(db).handle_turn(ChatTurnRequest(tenant_id=user.tenant_id, agent_id=agent.id,
+        user_id=user.id, message="退货期限是几天？", client_turn_id="storage-permission-recovered"))
+    assert recovered.runtime_error_code is None, recovered.reply
+    assert "7" in recovered.reply and model.requests
+
+
 @pytest.mark.parametrize("detached", [False, True])
 def test_real_engine_repairs_bad_tool_json_without_replaying_business_action(db, fake_model, monkeypatch, detached):
     from app.db.models import Tool, ExternalBusinessTask

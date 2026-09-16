@@ -6,6 +6,7 @@ from time import sleep
 from typing import Any, Literal
 
 from sqlmodel import Session, select
+from staffdeck_harness.contracts.errors import EngineStoragePermissionDenied
 
 from app.agents.branching import (
     model_for_agent,
@@ -280,23 +281,24 @@ class AgentLoop:
                 "模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc)
             )
         except Exception as exc:
-            runtime_error_code = "HARNESS_V3_ERROR"
+            storage_error = isinstance(exc, EngineStoragePermissionDenied)
+            runtime_error_code = exc.code if storage_error else "HARNESS_V3_ERROR"
             chat_session = engine.session
             user_message_id = engine.user_message_id
-            engine.mark_interrupted("HARNESS_V3_ERROR", str(exc))
+            engine.mark_interrupted(runtime_error_code, str(exc))
             chat_session = chat_session or self._get_or_create_session(request)
             self.events.record(
                 request.tenant_id,
                 chat_session.id,
                 "error_occurred",
-                {"code": "HARNESS_V3_ERROR", "message": str(exc)},
+                {"code": runtime_error_code, "message": str(exc)},
             )
             self.db.commit()
             reply = format_runtime_failure_reply(
-                "Harness v3 执行出错",
+                "引擎存储不可访问" if storage_error else "Harness v3 执行出错",
                 exc,
-                "HARNESS_V3_ERROR",
-                "请查看执行记录或服务日志定位具体原因。",
+                runtime_error_code,
+                "请管理员修复引擎目录权限后重试。" if storage_error else "请查看执行记录或服务日志定位具体原因。",
             )
         finally:
             terminal_record = getattr(engine, "turn_record", None)

@@ -147,6 +147,12 @@ def render_patch(*, mcp_url: str, persona: str = RUNTIME_PERSONA, disabled: tupl
 def materialize_home(config: HarnessV3WorkerConfig, *, mcp_url: str) -> Path:
     home = config.harness_v3_home
     home.mkdir(parents=True, exist_ok=True)
+    # Even root diagnostics must not populate another runtime user's private home.
+    # Reuse a service-owned home as that user, or select a separate test home.
+    import os
+    from staffdeck_harness.contracts.errors import EngineStoragePermissionDenied
+    if hasattr(os, "geteuid") and home.stat().st_uid != os.geteuid():
+        raise EngineStoragePermissionDenied()
     patch = home / PATCH_FILENAME
     patch.write_text(render_patch(mcp_url=mcp_url), encoding="utf-8")
     return patch

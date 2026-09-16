@@ -6,6 +6,16 @@ from app.core.harness_agent import HarnessExecutionCancelled
 from staffdeck_harness.events.relay import SessionEventRelay
 
 
+def _check_storage_error(message: str) -> None:
+    # The engine currently serializes native filesystem errors as UNKNOWN.
+    # Match only the native errno + syscall envelope, never arbitrary model text.
+    import re
+    from staffdeck_harness.contracts.errors import EngineStoragePermissionDenied
+
+    if re.match(r"^(?:EACCES|EPERM): (?:permission denied|operation not permitted), (?:scandir|open|mkdir|stat|lstat|access|rename|unlink)\b", message):
+        raise EngineStoragePermissionDenied()
+
+
 def run_session(
     proc: Any,
     session_id: str,
@@ -19,7 +29,7 @@ def run_session(
     on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     try:
-        return _run_session(
+        result = _run_session(
             proc,
             session_id,
             content_blocks,
@@ -30,6 +40,13 @@ def run_session(
             timeout_seconds=timeout_seconds,
             on_event=on_event,
         )
+        for event in reversed(result[0]):
+            if event.get("type") == "turn/end":
+                reason = (event.get("data") or {}).get("reason") or {}
+                if isinstance(reason, dict) and reason.get("kind") == "error":
+                    _check_storage_error(str((reason.get("error") or {}).get("message") or ""))
+                break
+        return result
     except BaseException:
         proc.close()  # a phase without an idle acknowledgement is never reusable
         raise

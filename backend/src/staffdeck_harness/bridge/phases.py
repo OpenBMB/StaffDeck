@@ -105,7 +105,7 @@ class EnginePhaseRunner:
             events, final_text, finish_reason = run_session(self.pooled.process, engine_session, [{"type": "text", "text": text}], self.cancelled, phase_trace, tenant_id=self.tenant_id, host_session_id=self.session_id, timeout_seconds=timeout)
             self.trace(f"harness_v3_{phase}_finished", {"engine_session": engine_session, "finish_reason": finish_reason, "duration_ms": int((time.monotonic() - started) * 1000), "events": len(events)})
             if getattr(host, "model_error", None):
-                raise EnginePhaseError(phase, host.model_error)
+                raise EnginePhaseError(phase, host.model_error, origin="model")
             if finish_reason == "error" or (not final_text.strip() and finish_reason not in (None, "completed", "end_turn", "stop")):
                 # The engine ended the turn on an error (typically the model provider); say so
                 # instead of reporting "empty output" and letting a schema-repair retry mask it.

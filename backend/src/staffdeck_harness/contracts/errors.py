@@ -81,3 +81,10 @@ class ActivationFenced(ModuleSdkError):
 
 class EngineUnavailable(ModuleSdkError):
     code = "ENGINE_UNAVAILABLE"
+
+
+class EngineStoragePermissionDenied(ModuleSdkError):
+    code = "ENGINE_STORAGE_PERMISSION_DENIED"
+
+    def __init__(self):
+        super().__init__("引擎会话存储权限异常，请管理员检查运行用户与会话目录归属；无需修改模型或 API Key。")

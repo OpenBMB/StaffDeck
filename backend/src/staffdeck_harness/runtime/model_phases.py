@@ -62,6 +62,8 @@ class EngineTurnPlanner:
                     engine_session=f"{self.engine_session}-plan{attempt}",
                 )
             except EnginePhaseError as exc:
+                if exc.origin != "model":
+                    raise
                 raise LLMError(f"LLM provider request failed (MODEL_UPSTREAM_UNAVAILABLE); message={exc.detail}") from exc
         try:
             plan = generate_structured(call, payload, TurnPlan.model_validate,
