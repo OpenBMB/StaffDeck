@@ -279,7 +279,10 @@ def normalize_dingtalk_message(raw: dict[str, Any], *, account_scope: str = "") 
     if not text and not attachments:
         return None
 
-    is_group = str(raw.get("conversationType") or "") == "2"
+    # 保守判群：仅显式 "1"(单聊)才按私聊处理；缺失/未知 conversationType
+    # 一律按群聊对待，必须 isInAtList=True(@ 机器人)才放行，避免异常
+    # payload 被当成单聊绕过 @ 校验。
+    is_group = str(raw.get("conversationType") or "").strip() != "1"
     if is_group and raw.get("isInAtList") is not True:
         return None
     if text:

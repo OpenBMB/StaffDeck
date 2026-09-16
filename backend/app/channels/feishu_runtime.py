@@ -210,7 +210,9 @@ def _normalize_event(event, *, bot_open_id: str) -> tuple[ChannelInbound, dict] 
             if str(getattr(getattr(mention, "id", None), "open_id", "") or "")
             == bot_open_id
         ]
-        if not bot_mentions and not attachments:
+        # 群聊一律要求 @ 机器人：附件(图片/文件/post 带图)不豁免，
+        # 否则飞书推送的每条群消息(机器人接收全部群消息)都会触发回复。
+        if not bot_mentions:
             return None
         for mention in bot_mentions:
             key = str(getattr(mention, "key", "") or "")

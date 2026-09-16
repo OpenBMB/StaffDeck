@@ -604,29 +604,49 @@ def test_normalize_image_without_image_key_returns_none() -> None:
     assert _normalize_event(event, bot_open_id="ou_bot") is None
 
 
-def test_normalize_group_attachment_without_mention_is_accepted() -> None:
-    """群聊 image/file 消息天然不携带 mentions,无需 @ 机器人即可通过。"""
-    # 不带 @ 机器人 → 仍接受(image 消息无法携带 mentions)
+def test_normalize_group_attachment_without_mention_is_dropped() -> None:
+    """群聊消息一律要求 @ 机器人：image/file 不因携带附件而豁免。
+
+    飞书会把机器人所在群的全部消息推送给应用，若附件消息免 @ 放行，
+    群里任何人发图片/文件/带图富文本都会触发机器人回复。
+    """
+    # 不带 @ 机器人的 image 消息 → 丢弃
     event_no_mention = _p2p_event(
         message_type="image",
         content={"image_key": "img_v3_002"},
         chat_type="group",
     )
     result = _normalize_event(event_no_mention, bot_open_id="ou_bot")
-    assert result is not None
-    inbound, _target = result
-    assert inbound.is_group is True
-    assert len(inbound.attachments) == 1
-    assert inbound.attachments[0].media_id == "img_v3_002"
+    assert result is None
 
-    # 带 @ 机器人的 text+image 也正常
-    event = _group_attachment_event("image", {"image_key": "img_v3_003"})
+    # 不带 @ 机器人的 file 消息 → 丢弃
+    event_file_no_mention = _p2p_event(
+        message_type="file",
+        content={"file_key": "file_v3_002", "file_name": "a.pdf"},
+        chat_type="group",
+    )
+    assert _normalize_event(event_file_no_mention, bot_open_id="ou_bot") is None
+
+    # 带 @ 机器人的图片+文字(post 富文本)正常通过
+    event = _group_attachment_event(
+        "post",
+        {
+            "title": "",
+            "content": [
+                [
+                    {"tag": "text", "text": "@_user_1 看这张图"},
+                    {"tag": "img", "image_key": "img_v3_003"},
+                ]
+            ],
+        },
+    )
     result = _normalize_event(event, bot_open_id="ou_bot")
     assert result is not None
     inbound, target = result
     assert inbound.is_group is True
     assert len(inbound.attachments) == 1
     assert inbound.attachments[0].media_id == "img_v3_003"
+    assert inbound.text == "看这张图"
     assert target["receive_id_type"] == "chat_id"
     assert target["receive_id"] == "oc_group"
 
@@ -815,8 +835,8 @@ def test_normalize_post_message_extracts_image_and_text() -> None:
     assert target["receive_id"] == "oc_group"
 
 
-def test_normalize_post_message_only_image_without_mention_is_accepted() -> None:
-    """群聊 post 消息仅含图片且未 @机器人,应被接受(image 消息天然不携带 mentions)。"""
+def test_normalize_post_message_only_image_without_mention_is_dropped() -> None:
+    """群聊 post 消息仅含图片且未 @机器人,应被丢弃(群聊一律要求 @)。"""
     content = {
         "zh_cn": {
             "content": [[{"tag": "img", "image_key": "img_v3_post_2"}]],
@@ -824,12 +844,7 @@ def test_normalize_post_message_only_image_without_mention_is_accepted() -> None
     }
     event = _group_post_event(content)
     result = _normalize_event(event, bot_open_id="ou_bot")
-    assert result is not None
-    inbound, _target = result
-    assert inbound.is_group is True
-    assert len(inbound.attachments) == 1
-    assert inbound.attachments[0].media_id == "img_v3_post_2"
-    assert inbound.text == ""
+    assert result is None
 
 
 def test_normalize_post_message_multiple_images() -> None:

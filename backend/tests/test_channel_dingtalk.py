@@ -82,6 +82,25 @@ def test_normalize_dingtalk_text_and_filters():
     assert not validate_dingtalk_webhook("https://attacker.example/steal")
 
 
+def test_normalize_dingtalk_missing_conversation_type_requires_at():
+    """conversationType 缺失/未知时保守按群聊处理：必须 @ 机器人(isInAtList)才放行。"""
+    # 缺失 conversationType 且未 @ → 丢弃(不能当单聊绕过 @ 校验)
+    missing = dict(_raw())
+    missing.pop("conversationType")
+    missing.pop("isInAtList")
+    assert normalize_dingtalk_message(missing) is None
+
+    # 未知取值同样按群聊处理
+    assert normalize_dingtalk_message(_raw(conversationType="9", isInAtList=False)) is None
+
+    # 缺失 conversationType 但在 @ 列表 → 放行
+    at_list = dict(missing)
+    at_list["isInAtList"] = True
+    inbound = normalize_dingtalk_message(at_list)
+    assert inbound is not None
+    assert inbound.is_group is True
+
+
 def test_stage_dingtalk_is_deduplicated_and_fixes_tenant_scope():
     db_engine = _engine()
     with Session(db_engine) as db:
