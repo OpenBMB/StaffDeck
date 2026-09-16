@@ -102,7 +102,13 @@ def _parser() -> argparse.ArgumentParser:
 
 def _load_json(source: str, name: str) -> Any:
     try:
-        text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+        if source == "-":
+            buffer = getattr(sys.stdin, "buffer", None)
+            # Real pipes must not use the locale encoding. Text-only replacements
+            # (e.g. StringIO in embedded callers) already contain decoded Unicode.
+            text = buffer.read().decode("utf-8") if buffer is not None else sys.stdin.read()
+        else:
+            text = Path(source).read_text(encoding="utf-8")
         value = json.loads(text)
     except (OSError, ValueError):
         raise UsageError("Cannot read valid UTF-8 JSON from the supplied input.") from None
@@ -115,10 +121,20 @@ def _load_json(source: str, name: str) -> Any:
 
 
 def _error(kind: str, message: str, **metadata: Any) -> None:
-    payload = json.dumps({"error": {"kind": kind, "message": message, **metadata}})
     key = os.environ.get("STAFFDECK_API_KEY", "").strip()
-    if key:
-        payload = payload.replace(json.dumps(key)[1:-1], "[REDACTED]")
+
+    def redact(value: Any) -> Any:
+        if isinstance(value, str):
+            return value.replace(key, "[REDACTED]") if key else value
+        if isinstance(value, dict):
+            return {name: redact(item) for name, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        return value
+
+    # Protocol keys and the fixed error kind are not credential-bearing data.
+    # Redact values before encoding so placeholders like "null" cannot corrupt JSON.
+    payload = json.dumps({"error": {"kind": kind, "message": redact(message), **redact(metadata)}})
     print(payload, file=sys.stderr)
 
 

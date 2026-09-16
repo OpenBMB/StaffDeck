@@ -134,7 +134,19 @@ def emit_job_event(
     data: dict[str, Any],
     *,
     public: bool = True,
-) -> APIJobEvent:
+    terminal: bool = False,
+) -> APIJobEvent | None:
+    if not terminal:
+        # Serialize event publication with terminalization, including callbacks
+        # holding stale job objects. Once terminal, the public sequence is frozen.
+        writable = db.exec(
+            update(APIJob)
+            .where(APIJob.id == job.id, APIJob.status.in_(["queued", "running"]))
+            .values(updated_at=APIJob.updated_at)
+            .execution_options(synchronize_session=False)
+        )
+        if getattr(writable, "rowcount", 0) != 1:
+            return None
     latest = db.exec(
         select(APIJobEvent)
         .where(APIJobEvent.job_id == job.id)
@@ -391,7 +403,7 @@ def _emit_terminal_job_event(
 ) -> None:
     _finalize_run_session(db, job, terminal_status=status, error=error)
     event_data = dict(error or {"job_id": job.id})
-    emit_job_event(db, job, f"{job.kind}.{status}", event_data)
+    emit_job_event(db, job, f"{job.kind}.{status}", event_data, terminal=True)
     _commit_and_dispatch(db)
 
 
@@ -597,7 +609,7 @@ def recover_public_jobs() -> None:
             now = utc_now()
             # Incrementing the generation fences an old in-process worker that
             # returns after startup recovery has published this terminal state.
-            db.exec(
+            recovered_update = db.exec(
                 update(APIJob)
                 .where(
                     APIJob.id == job.id,
@@ -617,6 +629,8 @@ def recover_public_jobs() -> None:
                 )
                 .execution_options(synchronize_session=False)
             )
+            if getattr(recovered_update, "rowcount", 0) != 1:
+                continue
             db.expire_all()
             recovered = db.get(APIJob, job.id)
             if recovered is None or recovered.status != "failed":
@@ -627,7 +641,7 @@ def recover_public_jobs() -> None:
                 terminal_status="failed",
                 error=error,
             )
-            emit_job_event(db, recovered, f"{recovered.kind}.failed", error)
+            emit_job_event(db, recovered, f"{recovered.kind}.failed", error, terminal=True)
         _reconcile_terminal_run_sessions(db)
         queued = db.exec(select(APIJob).where(APIJob.status == "queued")).all()
         _commit_and_dispatch(db)

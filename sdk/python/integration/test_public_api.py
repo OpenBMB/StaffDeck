@@ -1,8 +1,62 @@
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from staffdeck import APIError, RunFailedError
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+@pytest.mark.parametrize("empty_reconnect", [False, True])
+def test_process_event_at_proxy_eof_does_not_hide_persisted_terminal_event(
+    api, monkeypatch, status, empty_reconnect,
+):
+    from app.public_api import jobs
+
+    _, engine, _, sdk_factory = api
+    monkeypatch.setattr(jobs, "engine", engine)
+    monkeypatch.setattr("staffdeck.runs.time.sleep", lambda _: None)
+
+    def execute(db, job):
+        jobs.update_job(db, job, event_type=f"run.{status}", event_data={"process": True})
+        if status == "cancelled":
+            raise jobs.JobCancelled()
+        raise RuntimeError("fixture failure")
+
+    monkeypatch.setitem(jobs._handlers, "run", execute)
+    with sdk_factory() as sdk:
+        run_id = sdk.runs.create("agent_api", {"input": "failure fixture"}).data["id"]
+        jobs.run_job(run_id)
+        state = sdk.runs.get(run_id).data
+        assert state["status"] == status
+        assert state["final_event_id"] == "4"
+        original = sdk._http._transport.handle_request
+        cursors = []
+
+        def proxy(request):
+            response = original(request)
+            if request.url.path.endswith("/events"):
+                cursors.append(request.headers.get("last-event-id"))
+                if len(cursors) == 1:
+                    # The real backend persisted four events. Simulate a proxy's
+                    # clean EOF after the third, terminal-named process event.
+                    frames = response.content.split(b"\n\n")
+                    assert len(frames) == 5
+                    assert f"event: run.{status}".encode() in frames[2]
+                    response.close()
+                    return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                          content=b"\n\n".join(frames[:3]) + b"\n\n")
+                if empty_reconnect and len(cursors) == 2:
+                    response.close()
+                    return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                          content=b"")
+            return response
+
+        monkeypatch.setattr(sdk._http._transport, "handle_request", proxy)
+        events = list(sdk.runs.events(run_id))
+        assert [event.id for event in events] == ["1", "2", "3", "4"]
+        assert events[-1].event == f"run.{status}"
+        assert cursors == ([None, "3", "3"] if empty_reconnect else [None, "3"])
 
 
 def test_sdk_tool_sop_session_run_round_trip(api, skill_card, monkeypatch):
@@ -72,6 +126,28 @@ def test_sdk_tool_sop_session_run_round_trip(api, skill_card, monkeypatch):
         assert any(e.event == "run.output.delta" for e in events)
         assert events[-1].event == "run.succeeded"
         assert list(sdk.runs.events(run_id, last_event_id=events[-1].id)) == []
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_unicode_run_output_round_trips_through_persisted_sse(api, monkeypatch, separator):
+    from app.public_api import jobs
+
+    _, engine, _, sdk_factory = api
+    monkeypatch.setattr(jobs, "engine", engine)
+    content = f"before{separator}after"
+
+    def execute(db, job):
+        jobs.update_job(db, job, event_type="run.output.delta", event_data={"content": content})
+        return {"reply": content}
+
+    monkeypatch.setitem(jobs._handlers, "run", execute)
+    with sdk_factory() as sdk:
+        run_id = sdk.runs.create("agent_api", {"input": "unicode fixture"}).data["id"]
+        jobs.run_job(run_id)
+        events = list(sdk.runs.events(run_id))
+        assert [e.data["content"] for e in events if e.event == "run.output.delta"] == [content]
+        assert events[-1].event == "run.succeeded"
+        assert sdk.runs.wait(run_id).data["reply"] == content
 
 
 def test_runtime_credential_cannot_manage_tools_or_other_agents(api):

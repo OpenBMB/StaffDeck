@@ -16,7 +16,7 @@ from .errors import (
 )
 from .models import APIResponse, RunEvent
 from .resources import Resource, agent_path, segment
-from .streaming import IncompleteEvent, is_sequence_id, parse_events
+from .streaming import IncompleteEvent, is_sequence_id, iter_sse_lines, parse_events
 
 _TERMINAL = {"succeeded", "failed", "cancelled"}
 
@@ -92,30 +92,36 @@ class Runs(Resource):
         cursor = last_event_id
         for attempt in range(max_reconnects + 1):
             delay = self._client._retry_delay(attempt)
-            delivered = False
-            terminal_event = False
             try:
                 with self._client._event_response(path, cursor) as response:
-                    for event in parse_events(response.iter_lines()):
+                    for event in parse_events(iter_sse_lines(response.iter_text())):
                         if cursor is not None and int(event.id) <= int(cursor):
                             continue
                         cursor = event.id
-                        delivered = True
-                        terminal_event = event.event in {f"run.{status}" for status in _TERMINAL}
                         yield event
                 # EOF alone is not success: proxies may close a healthy but active run.
                 state = self.get(run_id).data
                 status = _status(state)
-                # If this connection delivered only a prefix, drain again before stopping.
-                if status in _TERMINAL and (terminal_event or not delivered):
-                    return
+                # Neither terminal-named process events nor repeated empty streams
+                # prove delivery. Only the server's authoritative final cursor does.
+                if status in _TERMINAL:
+                    final_id = state.get("final_event_id")
+                    if final_id is not None:
+                        if not is_sequence_id(final_id):
+                            raise ProtocolError("Invalid final event ID in run response.")
+                        if int(cursor or "0") == int(final_id):
+                            return
+                        if int(cursor or "0") > int(final_id):
+                            raise ProtocolError("Event cursor exceeds the run's final event ID.")
+                    # Older servers cannot certify completion. Resume within budget,
+                    # then report StreamError rather than silently dropping the tail.
             except APIError as exc:
                 if exc.status_code not in {429, 502, 503, 504}:
                     raise
                 delay = self._client._retry_delay(attempt, exc.retry_after)
             except (httpx.TransportError, TransportError, IncompleteEvent):
                 pass
-            except ProtocolError:
+            except (httpx.DecodingError, ProtocolError):
                 raise StreamError(run_id, cursor, "Invalid StaffDeck event stream.") from None
             if attempt == max_reconnects or delay is None:
                 raise StreamError(run_id, cursor, "StaffDeck event stream interrupted.") from None

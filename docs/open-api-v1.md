@@ -180,6 +180,8 @@ curl -N "$BASE/runs/$RUN_ID/events" \
 
 断线后携带 `Last-Event-ID` 续传。公开 Trace 包含意图、TaskFrame、能力选择、工具结果、引用和回复阶段，不包含模型原始 COT。
 
+`GET /runs/{run_id}` 额外返回 `final_event_id`：运行中为 `null`；终态时为最后一条持久化公开事件的数字字符串 ID，无可用事件时仍为 `null`。终态与最终事件在同一事务提交，之后不再追加事件。客户端只有在状态为 `succeeded`、`failed` 或 `cancelled`，且已接收或恢复的游标等于该 ID 时，才能确认事件流完整结束。单独的 EOF、空续传响应或名为 `run.failed` / `run.cancelled` 的过程事件都不构成完成凭据。旧服务缺少此字段时，SDK 会在重连预算耗尽后报 `StreamError`，不会猜测完成。事件重放仍受保留期限限制，此字段不保证已过期的历史事件可恢复。
+
 `POST .../runs:stream` 适合一次 HTTP 连接直接消费回复；`POST .../runs` + `GET .../events` 适合任务队列、断线续传和异步消费者。两种方式使用同一个持久化 Run/Harness v2 内核。
 
 ### 5. 下载 Harness 产物

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import closing
 
 import httpx
@@ -42,13 +43,40 @@ def test_sse_framing_unicode_multiline_comments():
             if request.headers.get("last-event-id") == "1":
                 return event_response(Chunks([]))
             return event_response(stream)
-        return httpx.Response(200, json={"status": "succeeded"})
+        return httpx.Response(200, json={"status": "succeeded", "final_event_id": "1"})
 
     with client(handle) as sdk:
         events = list(sdk.runs.events("run"))
     assert len(events) == 1
     assert events[0].id == "1"
     assert events[0].data == {"content": "你好"}
+    assert stream.closed
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+@pytest.mark.parametrize("newline", ["\n", "\r", "\r\n"])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_sse_preserves_unicode_separators_across_utf8_and_line_boundaries(
+    separator, newline, chunked,
+):
+    data = {"content": f"before{separator}after"}
+    frame = newline.join([
+        "\ufeff: keepalive", "", "id: 1", "event: run.succeeded",
+        "data: " + json.dumps(data, ensure_ascii=False), "", "",
+    ]).encode()
+    # One-byte chunks split both UTF-8 code points and CRLF pairs.
+    stream = Chunks([frame[i:i + 1] for i in range(len(frame))] if chunked else [frame])
+
+    def handle(request):
+        if request.url.path.endswith("events"):
+            if request.headers.get("last-event-id") == "1":
+                return event_response(Chunks([]))
+            return event_response(stream)
+        return httpx.Response(200, json={"status": "succeeded", "final_event_id": "1"})
+
+    with client(handle) as sdk:
+        events = list(sdk.runs.events("run", max_reconnects=0))
+    assert [(e.id, e.event, e.data) for e in events] == [("1", "run.succeeded", data)]
     assert stream.closed
 
 
@@ -68,7 +96,7 @@ def test_stream_reconnect_uses_last_delivered_id_and_deduplicates(monkeypatch):
                 return event_response(first)
             assert request.headers["last-event-id"] == "1"
             return event_response(second)
-        return httpx.Response(200, json={"status": "succeeded"})
+        return httpx.Response(200, json={"status": "succeeded", "final_event_id": "2"})
 
     with client(handle) as sdk:
         assert [e.id for e in sdk.runs.events("run")] == ["1", "2"]
@@ -89,10 +117,72 @@ def test_normal_eof_reconnects_until_terminal_state(monkeypatch):
             return event_response(Chunks([
                 f'id: {streams + 5}\nevent: {name}\ndata: {{}}\n\n'.encode()
             ]))
-        return httpx.Response(200, json={"status": "running" if streams == 1 else "succeeded"})
+        return httpx.Response(200, json={
+            "status": "running" if streams == 1 else "succeeded",
+            "final_event_id": None if streams == 1 else "7",
+        })
 
     with client(handle) as sdk:
         assert [e.id for e in sdk.runs.events("run", last_event_id="5")] == ["6", "7"]
+
+
+@pytest.mark.parametrize("prefix", [b"", b": keepalive\n\n", b"id: 10\ndata: {}\n\n"])
+@pytest.mark.parametrize("status", ["succeeded", "failed", "cancelled"])
+def test_empty_eof_drains_events_after_observing_terminal_status(monkeypatch, prefix, status):
+    monkeypatch.setattr("staffdeck.runs.time.sleep", lambda _: None)
+    calls = []
+    streams = [
+        Chunks([prefix]),
+        Chunks([f"id: 11\nevent: run.{status}\ndata: {{}}\n\n".encode()]),
+    ]
+
+    def handle(request):
+        calls.append(request)
+        assert request.method == "GET"
+        if request.url.path.endswith("events"):
+            assert request.headers["last-event-id"] == "10"
+            return event_response(streams[(len(calls) - 1) // 2])
+        # The job finished after the proxy closed the first connection, so its
+        # terminal event has not yet been delivered even though status is terminal.
+        return httpx.Response(200, json={"status": status, "final_event_id": "11"})
+
+    with client(handle) as sdk:
+        events = list(sdk.runs.events("run", last_event_id="10", max_reconnects=2))
+    assert [e.id for e in events] == ["11"]
+    assert len(calls) == 4
+    assert all(stream.closed for stream in streams)
+
+
+def test_empty_eof_without_drain_budget_exposes_resume_cursor():
+    calls = []
+    stream = Chunks([])
+
+    def handle(request):
+        calls.append(request)
+        if request.url.path.endswith("events"):
+            return event_response(stream)
+        return httpx.Response(200, json={"status": "succeeded"})
+
+    with client(handle) as sdk, pytest.raises(StreamError) as caught:
+        list(sdk.runs.events("run", last_event_id="10", max_reconnects=0))
+    assert caught.value.last_event_id == "10"
+    assert len(calls) == 2
+    assert stream.closed
+
+
+def test_already_consumed_terminal_run_finishes_with_final_cursor():
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        if request.url.path.endswith("events"):
+            assert request.headers["last-event-id"] == "10"
+            return event_response(Chunks([]))
+        return httpx.Response(200, json={"status": "succeeded", "final_event_id": "10"})
+
+    with client(handle) as sdk:
+        assert list(sdk.runs.events("run", last_event_id="10", max_reconnects=0)) == []
+    assert len(calls) == 2
 
 
 def test_stream_exhaustion_exposes_resume_cursor_and_closes(monkeypatch):
@@ -194,7 +284,7 @@ def test_partial_frame_reconnects_even_if_job_has_finished(monkeypatch):
                 return event_response(Chunks([b'id: 1\ndata: {}\n\nid: 2\ndata: {']))
             assert request.headers["last-event-id"] == "1"
             return event_response(Chunks([b'id: 2\nevent: run.succeeded\ndata: {}\n\n']))
-        return httpx.Response(200, json={"status": "succeeded"})
+        return httpx.Response(200, json={"status": "succeeded", "final_event_id": "2"})
 
     with client(handle) as sdk:
         assert [e.id for e in sdk.runs.events("run")] == ["1", "2"]
@@ -211,7 +301,7 @@ def test_stream_transient_http_error_retry_after(monkeypatch):
             return httpx.Response(503, headers={"Retry-After": "3"})
         if request.url.path.endswith("events"):
             return event_response(Chunks([b'id: 1\nevent: run.succeeded\ndata: {}\n\n']))
-        return httpx.Response(200, json={"status": "succeeded"})
+        return httpx.Response(200, json={"status": "succeeded", "final_event_id": "1"})
 
     with client(handle) as sdk:
         assert len(list(sdk.runs.events("run"))) == 1

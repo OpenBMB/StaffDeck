@@ -53,4 +53,4 @@ jobs:
       - name: Real API and wheel subprocess regression tests
         run: |
           STAFFDECK_TEST_PYTHON="$PWD/.dev/sdk-wheel/bin/python" python -m pytest sdk/python/integration -q
-          python -m pytest backend/tests/test_public_api_v1.py backend/tests/test_public_api_sessions.py -q
+          python -m pytest backend/tests/test_public_api_v1.py backend/tests/test_public_api_sessions.py backend/tests/test_public_api_event_completion.py -q

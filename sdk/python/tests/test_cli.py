@@ -107,6 +107,24 @@ def test_missing_credentials(factory, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().err)["error"]["kind"] == "usage"
 
 
+@pytest.mark.parametrize("url", [
+    "http://localhost:private-config", "http://[::1", "http://localhost/api/v1\n",
+])
+@pytest.mark.parametrize("source", ["flag", "environment"])
+def test_invalid_base_url_is_a_safe_usage_error(monkeypatch, capsys, url, source):
+    monkeypatch.setenv("STAFFDECK_API_KEY", "test-secret")
+    monkeypatch.setenv("STAFFDECK_BASE_URL", url if source == "environment" else "https://test")
+    args = ["agents", "list"]
+    if source == "flag":
+        args = ["--base-url", url, *args]
+    # Use the real client constructor, not the factory mock.
+    assert cli.main(args) == 2
+    out = capsys.readouterr()
+    assert not out.out
+    assert "test-secret" not in out.err and "private-config" not in out.err
+    assert json.loads(out.err)["error"]["kind"] == "usage"
+
+
 @pytest.mark.parametrize("error,exit_code,kind", [
     (APIError(403, problem={"detail": "test-secret", "code": "FORBIDDEN"},
               request_id="test-secret"), 1, "api"),
@@ -152,3 +170,17 @@ def test_help_does_not_require_credentials(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "--draft-id" in output
     assert "staffdeck-api sops publish" in output
+
+
+@pytest.mark.parametrize("key", ["error", "null", "true", "1", "api", 'quoted"\\key'])
+def test_redaction_preserves_error_schema_and_json_types(monkeypatch, capsys, key):
+    monkeypatch.setenv("STAFFDECK_API_KEY", key)
+    cli._error("api", "Failure", request_id=None, status_code=401,
+               details={"enabled": True, "count": 1, "items": [f"prefix {key} suffix"]})
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert error["kind"] == "api"
+    assert error["request_id"] is None
+    assert error["status_code"] == 401
+    assert error["details"] == {
+        "enabled": True, "count": 1, "items": ["prefix [REDACTED] suffix"],
+    }

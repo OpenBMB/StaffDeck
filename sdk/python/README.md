@@ -117,10 +117,20 @@ UTF-8/multiline frames, numeric IDs, deduplication and bounded reconnection
 (default two reconnects in total). Persisted `Last-Event-ID` allows continuation
 in a later process. An incomplete frame is replayed; malformed protocol data
 raises `StreamError` with `run_id` and the last delivered ID. Event frames are
-limited to 1,048,576 decoded characters. Stop early with `closing` or `.close()`.
+limited to 1,048,576 decoded characters; unfinished lines are bounded while
+receiving chunks too. Stop early with `closing` or `.close()`.
 
-Stream EOF is checked against job status, not treated as success. A fully
-consumed **failed** run is still a valid event stream: check terminal status or
+Stream EOF is checked against job status and `GET /runs/{id}`'s authoritative
+`final_event_id`, not treated as success. Even events named `run.failed` or
+`run.cancelled` can be process events, and an empty reconnect can be another proxy
+cutoff. Completion requires terminal status and a delivered/resumed cursor equal
+to `final_event_id`. A complete initial stream needs no reconnect. Missing events
+trigger bounded reconnection; exhaustion raises `StreamError` with the cursor.
+Older servers without `final_event_id` (or with a null value) cannot certify
+completion and likewise raise `StreamError`, even if all visible events arrived;
+upgrade the server to use automatic stream completion. Replay is limited by the
+server's event retention window; this check does not restore expired history.
+A fully consumed **failed** run is still a valid event stream: check terminal status or
 call `wait()` to assert success. `wait()` obtains `/result` only after
 `succeeded`; `failed` or `cancelled` raises `RunFailedError`. `WaitTimeout` and
 local interruption do not cancel the remote job. Cancellation is explicit and

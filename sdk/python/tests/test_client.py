@@ -50,6 +50,7 @@ def test_rejects_unsafe_paths_before_sending_credentials(path):
     "file:///tmp/test", "https://user:password@staffdeck.test/api/v1",
     "https://staffdeck.test/api/v1?key=secret", "https://staffdeck.test/api/v1#x",
     "https://staffdeck.test/api/enterprise", "relative",
+    "http://localhost:notaport", "http://[::1", "http://localhost/api/v1\n",
 ])
 def test_rejects_invalid_base_url(url):
     with pytest.raises(ValueError):

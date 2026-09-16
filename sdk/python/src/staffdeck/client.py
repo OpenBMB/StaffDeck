@@ -32,7 +32,10 @@ def _header(value: str, name: str) -> str:
 
 
 def _base_url(value: str) -> httpx.URL:
-    url = httpx.URL(value)
+    try:
+        url = httpx.URL(value)
+    except httpx.InvalidURL:
+        raise ValueError("base_url must be a valid HTTP(S) URL.") from None
     if (
         url.scheme not in {"http", "https"}
         or not url.host
@@ -180,6 +183,8 @@ class StaffDeck:
                 response = self._http.request(
                     method, path, json=body, params=params, headers=headers, timeout=request_timeout
                 )
+            except httpx.DecodingError:
+                raise ProtocolError("Invalid compressed response from StaffDeck.") from None
             except httpx.TransportError:
                 if attempt == attempts:
                     raise TransportError() from None
