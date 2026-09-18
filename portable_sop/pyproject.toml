@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "staffdeck-sop-runtime"
+version = "0.1.0"
+description = "HTTP adapter for the existing StaffDeck SOP runtime"
+requires-python = ">=3.11"
+# Production image dependencies come from ../backend. The adapter is shipped
+# beside that existing StaffDeck module rather than as a second SOP engine.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
