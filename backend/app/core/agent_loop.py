@@ -1262,13 +1262,15 @@ class AgentLoop:
             "error_occurred",
             {"code": code, "message": message},
         )
-        reply = self._finalize_turn(chat_session, chat_session.tenant_id, reply)
+        reply = self._finalize_turn(chat_session, chat_session.tenant_id, reply,
+            assistant_metadata_override={'runtime_error_code': code, 'execution_engine': 'harness_v3'})
         self.db.commit()
         self.db.refresh(chat_session)
         return ChatTurnResponse(
             reply=reply,
             session_id=chat_session.id,
             session_state=public_session(chat_session),
+            runtime_error_code=code,
         )
 
     def _finalize_turn(

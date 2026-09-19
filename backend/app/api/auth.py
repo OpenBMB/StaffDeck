@@ -80,6 +80,19 @@ class AvatarRead(BaseModel):
 class LoginResponse(BaseModel):
     token: str
     user: UserRead
+    refresh_mode: Literal['cookie', 'none'] = 'none'
+
+
+class PasswordChangeChallenge(BaseModel):
+    password_change_required: Literal[True] = True
+    password_change_token: str
+    token_type: Literal['password_change'] = 'password_change'
+    user_id: str
+
+
+class PasswordChangeConfirmRequest(BaseModel):
+    token: str = Field(min_length=1)
+    new_password: str = Field(min_length=12)
 
 
 class AccountAPICredentialCreateRequest(BaseModel):
@@ -115,16 +128,23 @@ def _require_local_account_management():
                                  'message': '企业账号由统一权限中心管理，请在权限中心修改'})
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/login", response_model=LoginResponse | PasswordChangeChallenge)
 def login(request: LoginRequest, response: Response = None, http_request: Request = None, db: Session = Depends(get_session)) -> LoginResponse:
     from staffdeck_harness.runtime.control_auth import provider, project_subject
     control = provider()
     if control is not None:
-        result = control.login(request.tenant_id, request.username, request.password)
+        from staffdeck_harness.runtime.control_auth import ControlPasswordChange
+        begin = getattr(control, 'begin_login', None)
+        if http_request is not None and http_request.headers.get('x-staffdeck-auth-contract') == 'session-v1' and callable(begin):
+            result = begin(request.tenant_id, request.username, request.password)
+        else:
+            result = control.login(request.tenant_id, request.username, request.password)
+        if isinstance(result, ControlPasswordChange):
+            return PasswordChangeChallenge(password_change_token=result.token, user_id=result.user_id)
         user = project_subject(db, result.subject)
         if response is not None and http_request is not None:
             _set_control_refresh(response, http_request, result.refresh_token)
-        return LoginResponse(token=result.token, user=_user_read(user))
+        return LoginResponse(token=result.token, user=_user_read(user), refresh_mode='cookie' if result.refresh_token else 'none')
     ensure_tenant(db, request.tenant_id)
     username = request.username.strip()
     if not username or not request.password:
@@ -185,7 +205,18 @@ def refresh_control_session(request: Request, response: Response, db: Session = 
     result = control.refresh(token)
     user = project_subject(db, result.subject)
     _set_control_refresh(response, request, result.refresh_token)
-    return LoginResponse(token=result.token, user=_user_read(user))
+    return LoginResponse(token=result.token, user=_user_read(user), refresh_mode='cookie')
+
+
+@router.post('/temporary-password/confirm')
+def confirm_temporary_password(body: PasswordChangeConfirmRequest, request: Request):
+    from staffdeck_harness.runtime.control_auth import provider
+    _control_origin(request)
+    confirm = getattr(provider(), 'confirm_temporary_password', None)
+    if not callable(confirm):
+        raise HTTPException(501, {'code': 'FEATURE_UNAVAILABLE', 'message': '当前身份服务不支持首次改密'})
+    confirm(body.token, body.new_password)
+    return {'confirmed': True}
 
 
 @router.post("/logout")

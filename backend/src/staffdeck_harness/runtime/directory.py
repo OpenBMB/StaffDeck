@@ -70,6 +70,7 @@ def _employee_directory(db, tenant_id, user, *, scope='visible', authorization='
         metadata = dict(row.get('metadata') or {})
         metadata.update(published_to_gallery=entry.public,
             directory_access={'owned': entry.owner_user_id == actor_id, 'public': entry.public, 'shared': entry.shared,
+                              'allowed_actions': list(entry.allowed_actions),
                               'can_view': 'view' in entry.allowed_actions, 'can_use': 'use' in entry.allowed_actions,
                               'can_manage': 'manage' in entry.allowed_actions},
             directory_statistics={'status': 'available' if stats_ok else 'unavailable',

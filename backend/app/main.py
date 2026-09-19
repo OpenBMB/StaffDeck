@@ -169,6 +169,9 @@ app.include_router(sessions.router)
 app.include_router(traces.router)
 app.include_router(mock.router)
 app.include_router(a2a_router)
+
+from app.api_enterprise import register_business_compat
+register_business_compat(app)
 if settings.harness_v3_enabled or settings.harness_admin_api_enabled:
     try:
         from staffdeck_harness.runtime import mount_admin_api

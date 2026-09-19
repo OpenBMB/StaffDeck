@@ -204,6 +204,19 @@ def test_unknown_engine_tools_are_visible_and_stop_after_three_attempts(db, fake
     assert frames[-1]['status'] != 'completed'
 
 
+def test_invalid_explicit_tool_ends_stream_as_error_without_a_model_call(db, fake_model):
+    model, base = fake_model
+    agent, user = _seed(db, base)
+    events = list(AgentLoop(db).handle_turn_stream(ChatTurnRequest(tenant_id=user.tenant_id,
+        user_id=user.id, agent_id=agent.id, message='/tool __missing_contract_probe__', client_turn_id='invalid-tool-contract')))
+    terminal = [event for event in events if event['event'] == 'error']
+    assert terminal and terminal[-1]['data']['code'].startswith('SLASH_')
+    assert not any(event['event'] == 'complete' for event in events)
+    assert not model.requests
+    messages = db.exec(select(Message).where(Message.role == 'assistant')).all()
+    assert messages[-1].metadata_json['runtime_error_code'].startswith('SLASH_')
+
+
 @pytest.mark.parametrize('continuation_name', [None, ''])
 def test_sealed_turn_on_real_engine_with_scripted_model(db: Session, fake_model, continuation_name) -> None:
     model, base = fake_model

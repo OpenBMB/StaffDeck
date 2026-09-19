@@ -17,6 +17,12 @@ class ControlLogin:
     refresh_token: str | None = field(default=None, repr=False)
 
 
+@dataclass(frozen=True)
+class ControlPasswordChange:
+    token: str = field(repr=False)
+    user_id: str
+
+
 @lru_cache(maxsize=8)
 def _load(spec):
     from staffdeck_harness.modules.registry import validate_spec

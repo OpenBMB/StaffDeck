@@ -501,6 +501,9 @@ def enterprise_app(path: str = "") -> FileResponse:
 
 
 @app.get("/login", include_in_schema=False)
+@app.get("/new", include_in_schema=False)
+@app.get("/plaza", include_in_schema=False)
+@app.get("/plaza/{path:path}", include_in_schema=False)
 @app.get("/chat", include_in_schema=False)
 @app.get("/chat/{path:path}", include_in_schema=False)
 @app.get("/workspace", include_in_schema=False)
