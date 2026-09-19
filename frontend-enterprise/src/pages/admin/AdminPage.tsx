@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { appPath } from '@/lib/app-path';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
   Button as UIButton, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Switch, Tabs, TabsList, TabsTrigger, notify,
@@ -102,7 +102,6 @@ function applyLocally(saved: HarnessAssembly, patch: HarnessAssemblyUpdate): Har
 }
 
 export default function AdminPage({ currentUser, onLogout }: { currentUser: EnterpriseAuthUser; onLogout?: () => void }) {
-  const navigate = useNavigate();
   const [tab, setTab] = useState<TabKey>('overview');
   const [tech, setTech] = useState<boolean>(() => readTechMode());
   const [loading, setLoading] = useState(false);
@@ -382,7 +381,7 @@ export default function AdminPage({ currentUser, onLogout }: { currentUser: Ente
             userName={currentUser?.username}
             left={(
               <div className="flex min-w-0 items-center gap-[14px]">
-                <button type="button" onClick={() => navigate(EnterpriseRoute.Gallery)} className="inline-flex h-[30px] shrink-0 items-center gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[10px] text-[12px] text-[#757f9c] hover:border-[#cbd3e6] hover:text-[#18181a]">
+                <button type="button" onClick={() => window.location.assign(appPath(EnterpriseRoute.Gallery))} className="inline-flex h-[30px] shrink-0 items-center gap-[4px] rounded-[8px] border-[0.5px] border-[#e3e7f1] bg-white px-[10px] text-[12px] text-[#757f9c] hover:border-[#cbd3e6] hover:text-[#18181a]">
                   <IconBack className="size-[12px] rotate-90" />
                   返回工作台
                 </button>
