@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -24,7 +28,10 @@ from app.tools.http_request import prepare_get_request
 from app.tools.mcp_client import MCPClientError, execute_mcp_tool, execute_mcp_tool_result
 from app.tools.tool_schema import MCPAppDescriptor, ToolCall, ToolError, ToolResult
 
+logger = logging.getLogger(__name__)
+
 SECRET_PATTERN = re.compile(r"\$\{secret\.([A-Z0-9_]+)\}")
+SCHEMA_INVALID_ERROR_LIMIT = 5
 
 
 def _json_path(value: Any, path: str) -> Any:
@@ -122,6 +129,10 @@ class ToolExecutor:
             return self._error(
                 tool.name, "UNSUPPORTED_TOOL_TYPE", f"不支持的工具类型：{tool.tool_type}"
             )
+
+        schema_error = self._validate_http_arguments(tool, tool_call.arguments)
+        if schema_error is not None:
+            return schema_error
 
         execution = (
             tool.config_json.get("execution", {}) if isinstance(tool.config_json, dict) else {}
@@ -651,6 +662,70 @@ class ToolExecutor:
             return os.getenv(match.group(1), "")
 
         return SECRET_PATTERN.sub(repl, value)
+
+    def _validate_http_arguments(self, tool: Tool, arguments: dict[str, Any]) -> ToolResult | None:
+        """Validate HTTP tool arguments against the tool's input_schema.
+
+        Returns an error ToolResult when arguments violate a well-formed
+        schema. Malformed or empty schemas are logged and skipped so a bad
+        schema never blocks a previously-working request.
+        """
+        schema = tool.input_schema
+        if schema is None or schema == {}:
+            return None
+        if not isinstance(schema, Mapping):
+            logger.warning(
+                "Skipping argument validation for tool %s: input_schema is not a dict.",
+                tool.name,
+            )
+            return None
+        try:
+            validator = Draft202012Validator(schema)
+        except (SchemaError, ValueError, TypeError, AttributeError) as exc:
+            logger.warning(
+                "Skipping argument validation for tool %s: malformed input_schema (%s).",
+                tool.name,
+                exc,
+            )
+            return None
+
+        try:
+            errors = sorted(
+                validator.iter_errors(arguments),
+                key=lambda e: (list(e.path), e.message),
+            )
+        except (TypeError, ValueError, AttributeError) as exc:
+            # Malformed schemas (e.g. required set to a scalar) can only fail
+            # during evaluation, not at validator construction time.
+            logger.warning(
+                "Skipping argument validation for tool %s: input_schema is not evaluable (%s).",
+                tool.name,
+                exc,
+            )
+            return None
+        if not errors:
+            return None
+
+        detail = self._schema_error_message(errors)
+        return self._error(tool.name, "SCHEMA_INVALID", detail)
+
+    @staticmethod
+    def _schema_error_message(errors: list) -> str:
+        parts = []
+        for err in errors[:SCHEMA_INVALID_ERROR_LIMIT]:
+            path = "$." + ".".join(str(p) for p in err.path) if err.path else "$"
+            if err.validator == "required":
+                missing = str(err.message).split("is")[0] or "required field"
+                parts.append(f"{path} 缺少必填字段 {missing.strip()}")
+            else:
+                parts.append(f"{path}: {err.message}")
+        if len(errors) > SCHEMA_INVALID_ERROR_LIMIT:
+            parts.append(f"(另有 {len(errors) - SCHEMA_INVALID_ERROR_LIMIT} 项未显示)")
+        return (
+            "工具参数不符合 input_schema："
+            + "；".join(parts)
+            + "。请修正参数后重新调用。"
+        )
 
     def _error(self, tool_name: str, code: str, message: str) -> ToolResult:
         return ToolResult(

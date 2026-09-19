@@ -4,14 +4,14 @@ from pathlib import Path
 
 import httpx
 import pytest
-
-from app.agents.branching import ensure_private_resource_binding
-from app.tools.tool_executor import ToolExecutor
-from app.tools.tool_schema import ToolCall
-from app.db.models import A2ATaskEvent, A2ATaskRun, AgentProfile, MCPServer, Tenant, Tool
-from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
+
+from app.agents.branching import ensure_private_resource_binding
+from app.db.models import A2ATaskEvent, A2ATaskRun, AgentProfile, MCPServer, Tenant, Tool
+from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
+from app.tools.tool_executor import ToolExecutor
+from app.tools.tool_schema import ToolCall
 
 
 def test_resolve_secret_header(monkeypatch):
@@ -897,6 +897,237 @@ def test_execute_get_tool_preserves_query_string_when_arguments_empty(monkeypatc
 
 def _mock_mcp_server_path() -> Path:
     return Path(__file__).resolve().parents[1] / "mock_servers" / "mcp_stdio_server.py"
+
+
+def _http_schema_session(
+    db, input_schema, *, extra_tool_kwargs=None
+):
+    """Insert a minimal HTTP tool and return (db, captured, FakeClient-agnostic name)."""
+    db.add(Tenant(id="tenant_demo", name="Demo"))
+    kwargs = dict(
+        tenant_id="tenant_demo",
+        name="order.query",
+        tool_type="http",
+        method="POST",
+        url="https://example.test/order/query",
+        input_schema=input_schema,
+        enabled=True,
+    )
+    kwargs.update(extra_tool_kwargs or {})
+    db.add(Tool(**kwargs))
+    db.commit()
+    return db
+
+
+class _RecordingFakeClient:
+    """httpx.Client stand-in that records requests and returns 200 JSON."""
+
+    def __init__(self, *, timeout: float):
+        self.requests: list[tuple[str, str, dict | None]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+    def request(self, method, url, headers=None, json=None, params=None):
+        self.requests.append((method, url, json))
+        return httpx.Response(200, json={"ok": True}, request=httpx.Request(method, url))
+
+
+def test_http_tool_missing_required_argument_returns_schema_invalid(monkeypatch) -> None:
+    recorded: list[_RecordingFakeClient] = []
+
+    class FakeClient(_RecordingFakeClient):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            recorded.append(self)
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        _http_schema_session(
+            db,
+            {"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]},
+        )
+        result = ToolExecutor(db).execute(
+            "tenant_demo", ToolCall(name="order.query", arguments={"wrong": 1})
+        )
+
+    assert result.success is False
+    assert result.error.code == "SCHEMA_INVALID"
+    assert "order_id" in result.error.message
+    assert not any(len(client.requests) for client in recorded), "HTTP request must not fire"
+
+
+def test_http_tool_wrong_type_argument_returns_schema_invalid(monkeypatch) -> None:
+    recorded: list[_RecordingFakeClient] = []
+
+    class FakeClient(_RecordingFakeClient):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            recorded.append(self)
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        _http_schema_session(
+            db,
+            {"type": "object", "properties": {"amount": {"type": "integer"}}, "required": ["amount"]},
+        )
+        result = ToolExecutor(db).execute(
+            "tenant_demo", ToolCall(name="order.query", arguments={"amount": "not-a-number"})
+        )
+
+    assert result.success is False
+    assert result.error.code == "SCHEMA_INVALID"
+    assert "amount" in result.error.message
+    assert not any(len(client.requests) for client in recorded)
+
+
+def test_http_tool_nested_schema_error_includes_path(monkeypatch) -> None:
+    recorded: list[_RecordingFakeClient] = []
+
+    class FakeClient(_RecordingFakeClient):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            recorded.append(self)
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        _http_schema_session(
+            db,
+            {
+                "type": "object",
+                "properties": {"spec": {"type": "object", "properties": {"size": {"type": "integer"}}}},
+                "required": ["spec"],
+            },
+        )
+        result = ToolExecutor(db).execute(
+            "tenant_demo", ToolCall(name="order.query", arguments={"spec": {"size": "large"}})
+        )
+
+    assert result.success is False
+    assert result.error.code == "SCHEMA_INVALID"
+    assert "spec.size" in result.error.message
+    assert not any(len(client.requests) for client in recorded)
+
+
+def test_http_tool_valid_arguments_dispatch_normally(monkeypatch) -> None:
+    recorded: list[_RecordingFakeClient] = []
+
+    class FakeClient(_RecordingFakeClient):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            recorded.append(self)
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        _http_schema_session(
+            db,
+            {"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]},
+        )
+        result = ToolExecutor(db).execute(
+            "tenant_demo", ToolCall(name="order.query", arguments={"order_id": "O-1"})
+        )
+
+    assert result.success is True
+    assert result.data == {"ok": True}
+    assert len(recorded) == 1
+    assert recorded[0].requests[0][2] == {"order_id": "O-1"}
+
+
+def test_http_tool_empty_schema_keeps_previous_behavior(monkeypatch) -> None:
+    recorded: list[_RecordingFakeClient] = []
+
+    class FakeClient(_RecordingFakeClient):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            recorded.append(self)
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        _http_schema_session(db, {})
+        result = ToolExecutor(db).execute(
+            "tenant_demo", ToolCall(name="order.query", arguments={"anything": 1})
+        )
+
+    assert result.success is True
+    assert len(recorded) == 1
+
+
+def test_http_tool_none_schema_keeps_previous_behavior(monkeypatch) -> None:
+    recorded: list[_RecordingFakeClient] = []
+
+    class FakeClient(_RecordingFakeClient):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            recorded.append(self)
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        _http_schema_session(db, None)
+        result = ToolExecutor(db).execute(
+            "tenant_demo", ToolCall(name="order.query", arguments={"anything": 1})
+        )
+
+    assert result.success is True
+    assert len(recorded) == 1
+
+
+def test_http_tool_malformed_schema_is_skipped_not_blocking(monkeypatch) -> None:
+    recorded: list[_RecordingFakeClient] = []
+
+    class FakeClient(_RecordingFakeClient):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            recorded.append(self)
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        # 'required' must be a list of unique items in a valid schema; a scalar is malformed.
+        _http_schema_session(db, {"type": "object", "required": 5})
+        result = ToolExecutor(db).execute(
+            "tenant_demo", ToolCall(name="order.query", arguments={})
+        )
+
+    assert result.success is True, "malformed schema must not block the request"
+    assert len(recorded) == 1
+
+
+def test_mcp_tool_with_input_schema_bypasses_http_validation(monkeypatch) -> None:
+    recorded: list[_RecordingFakeClient] = []
+
+    class FakeClient(_RecordingFakeClient):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            recorded.append(self)
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(MCPServer(id="server_builtin", tenant_id="tenant_demo", name="builtin", transport="builtin"))
+        db.add(
+            Tool(
+                tenant_id="tenant_demo",
+                name="mcp.demo_echo",
+                tool_type="mcp",
+                method="POST",
+                url="mcp://builtin.demo/echo",
+                mcp_server_id="server_builtin",
+                config_json={"tool": "echo"},
+                input_schema={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+                enabled=True,
+            )
+        )
+        db.commit()
+        result = ToolExecutor(db).execute(
+            "tenant_demo",
+            ToolCall(name="mcp.demo_echo", arguments={"text": "hello"}),
+        )
+
+    # MCP path is unchanged: succeeds via the builtin MCP server, no HTTP client is used.
+    assert result.success is True
+    assert not recorded, "MCP tool must not go through the HTTP client"
 
 
 def _test_session():
