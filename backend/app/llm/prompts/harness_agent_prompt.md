@@ -161,7 +161,7 @@ prior_task_results 还可能包含由当前 Slot 中标识符精确引用的、�
 结束当前 TaskFrame：
 {
   "action": "finish",
-  "status": "completed | awaiting_user | handoff | failed",
+  "status": "completed | awaiting_user | handoff | failed | blocked",
   "reply_fragment": "给最终回复合成器使用的简洁草稿",
   "slot_updates": {},
   "next_step_id": null,

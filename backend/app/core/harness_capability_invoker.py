@@ -28,7 +28,7 @@ from app.core.capability_manifest import (
     general_skill_snapshot_digest,
     tool_snapshot_digest,
 )
-from app.core.harness_agent import HarnessExecutionCancelled
+from app.core.harness_agent import HarnessExecutionCancelled, HarnessExecutionFenced
 from app.core.published_deliverables import (
     MAX_PUBLISHED_DELIVERABLES,
     find_published_deliverable,
@@ -262,6 +262,20 @@ class HarnessCapabilityInvoker:
         except HarnessExecutionCancelled:
             invocation.status = "cancelled"
             invocation.logical_action_key = None
+            invocation.finished_at = utc_now()
+            invocation.updated_at = utc_now()
+            self.db.add(invocation)
+            self.db.commit()
+            raise
+        except HarnessExecutionFenced as exc:
+            # The external operation may have been accepted even though this
+            # host cannot prove its result. Persist that fact before the
+            # enclosing turn emits a result_unknown terminal; a later turn
+            # must reconcile rather than replay the side effect.
+            result = _failure("RESULT_UNKNOWN", str(exc))
+            invocation.status = "outcome_unknown"
+            invocation.result_json = _audit_result(result)
+            invocation.response_cache_json = dict(result)
             invocation.finished_at = utc_now()
             invocation.updated_at = utc_now()
             self.db.add(invocation)

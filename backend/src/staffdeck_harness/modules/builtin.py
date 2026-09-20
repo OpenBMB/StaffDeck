@@ -148,9 +148,12 @@ class HarnessV3BridgeEngine:
 
     def open(self, loop: Any, request: Any, agent_id: str | None) -> Any:
         from app.config import get_settings
-        from staffdeck_harness.bridge.engine_host import HarnessV3Engine, get_runtime
+        from staffdeck_harness.bridge.engine_host import (
+            HarnessV3Engine,
+            get_runtime_for_turn,
+        )
 
-        return HarnessV3Engine(loop, runtime=get_runtime(get_settings()))
+        return HarnessV3Engine(loop, runtime=get_runtime_for_turn(get_settings()))
 
 
 # --------------------------------------------------------------------------- security

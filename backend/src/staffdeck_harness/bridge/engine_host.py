@@ -36,6 +36,13 @@ _runtime_lock = threading.Lock()
 _runtime: HarnessV3Runtime | None = None
 
 
+class _PilotDeckSidecarRuntime:
+    """Carries host settings when PilotDeck owns the model/tool loop process."""
+
+    def __init__(self, settings: Any) -> None:
+        self.settings = settings
+
+
 def _settings_value(settings: Any, name: str, default: Any = None) -> Any:
     if settings is not None and hasattr(settings, name):
         return getattr(settings, name)
@@ -63,6 +70,14 @@ def get_runtime(settings: Any) -> HarnessV3Runtime:
             rt.start()
             _runtime = rt
         return _runtime
+
+
+def get_runtime_for_turn(settings: Any) -> Any:
+    from app.core.turn_coordinator import _pilotdeck_sidecar_enabled
+
+    if _pilotdeck_sidecar_enabled():
+        return _PilotDeckSidecarRuntime(settings)
+    return get_runtime(settings)
 
 
 def reset_runtime() -> None:
@@ -120,10 +135,20 @@ class HarnessV3Engine(TurnCoordinator):
         self._memory_context: list[dict[str, Any]] = []
         self._pooled: Any = None
         self._reply_policy = self.response_generator
-        self.response_generator = _LazyResponseGenerator(self)
-        # Lazily-bound phase planner: it needs the pooled process, which needs the model config,
-        # which the v2 turn resolves after ``run()`` starts. ``_LazyPlanner`` defers to ``_plan``.
-        self.planner = _LazyPlanner(self)  # type: ignore[assignment]
+        from app.core.turn_coordinator import _pilotdeck_sidecar_enabled
+
+        if _pilotdeck_sidecar_enabled():
+            from app.core.turn_planner import TurnPlanner
+
+            # PilotDeck owns the model/tool loop in this mode. Keep portable's
+            # local planning and response policies while retaining Harness v3
+            # composition, authorization, hooks, and capability execution.
+            self.planner = TurnPlanner()
+        else:
+            self.response_generator = _LazyResponseGenerator(self)
+            # Lazily-bound phase planner: it needs the pooled process, which needs the model config,
+            # which the v2 turn resolves after ``run()`` starts. ``_LazyPlanner`` defers to ``_plan``.
+            self.planner = _LazyPlanner(self)  # type: ignore[assignment]
 
     # -- turn-level capture ------------------------------------------------------------
 
@@ -320,7 +345,11 @@ class HarnessV3Engine(TurnCoordinator):
             live_stream=getattr(self, "_allow_frame_stream", True) and not self.supervision_required(active_skill),
             stream_sink=getattr(self.services, "stream_sink", None),
         )
-        pooled = self._turn_process(request, session, model_config)
+        from app.core.turn_coordinator import _pilotdeck_sidecar_enabled
+
+        pooled = None if _pilotdeck_sidecar_enabled() else self._turn_process(
+            request, session, model_config
+        )
         self.task_agent = HarnessV3TaskAgent(self.runtime, turn, pooled=pooled)  # type: ignore[assignment]
         return super()._run_frame(request, session, row, frame, active_skill, model_config, memory_context, prior_frame_results, max_actions)
 

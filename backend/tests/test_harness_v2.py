@@ -39,6 +39,7 @@ from app.core.harness_v2_engine import (
     _combine_results,
     _globalize_citations,
     _is_recoverable_action_protocol_failure,
+    _pilotdeck_context_messages,
     _prior_result,
     _response_task_payload,
     _sibling_task_intents,
@@ -2601,6 +2602,37 @@ def test_harness_task_agent_stops_when_sop_step_deadline_is_exhausted() -> None:
     assert trace_events[0][0] == "harness_step_timeout"
 
 
+def test_harness_task_agent_accepts_a_blocked_terminal_action(monkeypatch) -> None:
+    class FakeLLMClient:
+        def __init__(self, _model_config: ModelConfig):
+            pass
+
+        def generate_json(self, _system_prompt, _payload):
+            return {
+                "action": "finish",
+                "status": "blocked",
+                "reply_fragment": "当前步骤无法继续。",
+                "task_summary": "等待可用转换。",
+            }
+
+    monkeypatch.setattr(harness_agent_module, "LLMClient", FakeLLMClient)
+
+    result = HarnessTaskAgent().run(
+        TaskRequirement(
+            task_frame_id="task-blocked",
+            kind="sop",
+            goal="等待可用转换",
+            capability_manifest=CapabilityManifest(),
+        ),
+        _model_config(),
+        lambda _name, _arguments: {"success": True},
+    )
+
+    assert result.status == "blocked"
+    assert result.reply_fragment == "当前步骤无法继续。"
+    assert result.task_summary == "等待可用转换。"
+
+
 def test_general_skill_harness_tool_treats_legacy_execute_as_instruction_load(
     tmp_path,
     monkeypatch,
@@ -3849,6 +3881,11 @@ def test_harness_agent_limits_successful_knowledge_searches_to_two(
     assert result.capability_results[-1]["error"]["code"] == (
         "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED"
     )
+    assert result.status == "failed"
+    assert result.error == {
+        "code": "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED",
+        "message": "当前 TaskFrame 已完成两次有效知识检索。请使用已有证据完成原始需求；不要扩展相邻主题或继续改写同义查询。",
+    }
 
 
 def test_harness_agent_projects_only_validated_current_turn_images(
@@ -5226,3 +5263,59 @@ def test_agent_loop_transcript_compacts_old_tool_payloads_but_keeps_skill_instru
     assert "content" not in old_read["result"]["data"]
     assert old_read["result"]["data"]["continuation_token"] == "next"
     assert old_read["result"]["history_receipt"]["omitted_chars"] > 20_000
+
+
+def test_sidecar_context_replaces_generic_messages_when_sop_step_changes() -> None:
+    collect_requirement = TaskRequirement(
+        task_frame_id="frame-1",
+        kind="sop",
+        goal="collect",
+        sop_context={"step": {"node_id": "collect"}},
+        required_capability_names=["lookup"],
+        allowed_transitions=[{"next_node_id": "review"}],
+    )
+    review_requirement = TaskRequirement(
+        task_frame_id="frame-1",
+        kind="sop",
+        goal="review",
+        sop_context={"step": {"node_id": "review"}},
+        prior_task_results=[{"task_frame_id": "frame-1", "status": "completed"}],
+    )
+    prior_messages = [
+        {
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": json.dumps(collect_requirement.model_dump(mode="json")),
+            }],
+        },
+        {
+            "role": "assistant",
+            "content": [{
+                "type": "tool_call",
+                "id": "call-collect",
+                "name": "lookup",
+                "input": {"q": "collect"},
+            }],
+        },
+    ]
+
+    messages = _pilotdeck_context_messages(
+        review_requirement,
+        {"transcript": []},
+        None,
+        prior_messages,
+    )
+
+    assert len(messages) == 2
+    boundary = json.loads(messages[0]["content"][0]["text"])
+    assert boundary["sop_context"]["step"]["node_id"] == "review"
+    assert boundary["required_capability_names"] == []
+    assert boundary["prior_task_results"] == [{"task_frame_id": "frame-1", "status": "completed"}]
+    assert messages[1] == prior_messages[1]
+
+
+def test_harness_v2_compatibility_module_exports_turn_planner() -> None:
+    from app.core import harness_v2_engine
+
+    assert harness_v2_engine.TurnPlanner is TurnPlanner

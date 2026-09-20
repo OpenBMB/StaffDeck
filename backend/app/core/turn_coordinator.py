@@ -8,21 +8,27 @@ from staffdeck_harness.sop.results import (
 
 import hashlib
 import json
+import threading
 import time
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
+from app.config import get_settings
 from app.core.cancellation import is_chat_turn_cancelled
 from app.core.capability_discovery import project_capability_manifest
 from app.core.capability_manifest import CapabilityManifestBuilder
 from app.core.harness_agent import (
+    PROMPT_PATH,
     HarnessExecutionCancelled,
     HarnessExecutionFenced,
+    _step_timeout_result,
 )
 from app.core.harness_attachments import (
+    isolated_attachment_context,
     materialize_task_attachments,
     validated_task_image_payloads,
 )
@@ -37,6 +43,13 @@ from app.core.harness_session_lock import (
     release_harness_session,
 )
 from app.core.harness_turn_store import HarnessTurnStore
+from app.core.pilotdeck_agent_loop_client import (
+    PilotDeckAgentLoopClient,
+    PilotDeckAgentLoopError,
+    PilotDeckExecutionContext,
+    PilotDeckExecutionIdentity,
+)
+from app.core.pilotdeck_module_bridge import StaffDeckPilotDeckModuleBridge
 from app.core.slash_commands import (
     SlashCommandError,
     SlashCommandSelection,
@@ -56,7 +69,7 @@ from app.core.task_request_compiler import (
     TaskExecutionResult,
     TaskRequestCompiler,
 )
-from app.core.turn_planner import turn_plan_router_decision
+from app.core.turn_planner import TurnPlanner, turn_plan_router_decision
 from app.db.models import (
     ChatSession,
     ExternalBusinessTask,
@@ -68,6 +81,7 @@ from app.db.models import (
     Team,
 )
 from app.knowledge.citations import compact_knowledge_citation_labels, normalize_knowledge_citations, knowledge_citation_identity
+from app.llm import LLMClient
 from app.memory.service import memory_read
 from app.session.helpers import public_session
 from app.session.session_schema import (
@@ -987,6 +1001,278 @@ class TurnCoordinator:
             raise HarnessExecutionFenced(str(exc)) from exc
         self.db.commit()
 
+    def _run_pilotdeck_sidecar(
+        self,
+        *,
+        request: ChatTurnRequest,
+        session: ChatSession,
+        row: HarnessTaskFrameRecord,
+        frame: Any,
+        requirement: Any,
+        manifest: Any,
+        model_config: Any,
+        agent_loop: Any,
+        run: HarnessRunRecord,
+        remaining_actions: int,
+        loop_checkpoint: dict[str, Any],
+        attachment_descriptors: list[dict[str, Any]],
+        image_payloads: list[Any],
+        step_deadline_monotonic: float | None,
+        step_timeout_seconds: int | None,
+        trace: Any,
+    ) -> TaskExecutionResult:
+        """Run PilotDeck's loop while preserving the Harness v3 host boundary."""
+
+        self._raise_if_cancelled(request, session)
+        task_agent = self.task_agent
+        turn = getattr(task_agent, "turn", None)
+        if turn is None:
+            raise RuntimeError("PilotDeck sidecar requires the registered Harness v3 runtime")
+
+        from staffdeck_harness.bridge.control import ExecutionHost
+        from staffdeck_harness.capabilities.host import (
+            ActivationSlot,
+            CapabilityHost,
+            LifecycleFence,
+        )
+        from staffdeck_harness.contracts.hooks import HookContext
+        from staffdeck_harness.contracts.invocation import InvocationContext
+        from staffdeck_harness.interactions.pipeline_host import PipelineState
+        from staffdeck_harness.runtime.services import runtime_services
+
+        step_id = _requirement_step_id(requirement) or None
+        sop_context = getattr(requirement, "sop_context", None)
+        sop_id = (
+            str(sop_context.get("skill_id") or "") or None
+            if isinstance(sop_context, dict)
+            else None
+        )
+        services = runtime_services(turn.db, turn.module_registry)
+        identity = turn.security_context.execution
+
+        with services.session(identity, purpose="capability") as host_db:
+            slot = ActivationSlot(
+                turn.snapshot,
+                turn.generation,
+                turn.turn_id,
+                session_id=turn.session_id,
+                active_sop_id=sop_id,
+                active_node_id=step_id,
+                deadline_monotonic=step_deadline_monotonic,
+            )
+            fence = LifecycleFence(
+                expected_generation=turn.generation,
+                is_cancelled=lambda: self._is_cancelled(request, session),
+            )
+            runtime_security = replace(
+                turn.security_context,
+                agent_id=turn.agent_id,
+                run_id=run.id,
+                actor_user_id=turn.security_context.actor_user_id or turn.user_id,
+                run_attempt=(
+                    turn.run_attempt_provider()
+                    if turn.run_attempt_provider is not None
+                    else 1
+                ),
+            )
+            active_plan = turn.snapshot.sop(sop_id) if sop_id else None
+            runtime_security = replace(
+                runtime_security,
+                sop_authorization_ref=(
+                    dict(active_plan.authorization_ref) if active_plan else None
+                ),
+            )
+            host = CapabilityHost(
+                db=host_db,
+                guard=turn.guard,
+                security_context=runtime_security,
+                slot=slot,
+                fence=fence,
+                model_config=model_config,
+                trace=trace,
+                run_id=run.id,
+            )
+            host.registry = turn.module_registry
+            host.image_payloads = tuple(image_payloads)
+            execution_host = ExecutionHost(
+                host,
+                requirement,
+                max_actions=remaining_actions,
+            )
+
+            pipeline = getattr(task_agent, "pipeline", None)
+            state = PipelineState(
+                snapshot=turn.snapshot,
+                memory_context=list(turn.memory_context),
+                session_slots=dict(requirement.known_slots),
+                active_sop_id=sop_id,
+                active_node_id=step_id,
+            )
+            hook_lock = threading.Lock()
+
+            if pipeline is not None:
+                def hooks(point: str, invocation: Any, module_result: Any) -> Any:
+                    payload: dict[str, Any] = {
+                        "name": str(
+                            (invocation.metadata or {}).get("proxy_name")
+                            or invocation.operation
+                        ),
+                        "operation": invocation.operation,
+                        "arguments": dict(invocation.arguments),
+                        "binding_id": invocation.binding_id,
+                    }
+                    if module_result is not None:
+                        payload.update(
+                            {
+                                "success": module_result.success,
+                                "data": module_result.data,
+                                "error": module_result.error,
+                                "receipt": (
+                                    host.current_receipt.to_json()
+                                    if host.current_receipt
+                                    else None
+                                ),
+                                "citations": list(module_result.citations or ()),
+                            }
+                        )
+                    hook_context = HookContext(
+                        point=point,
+                        tenant_id=turn.tenant_id,
+                        agent_id=turn.agent_id,
+                        session_id=turn.session_id,
+                        turn_id=turn.turn_id,
+                        step=1,
+                        snapshot_id=turn.snapshot.snapshot_id,
+                        payload=payload,
+                        generation=turn.generation,
+                    )
+                    with hook_lock:
+                        return pipeline.run(point, hook_context, state)
+
+                host.hooks = hooks
+
+            def invocation_context(trace_id: str) -> InvocationContext:
+                return InvocationContext(
+                    tenant_id=turn.tenant_id,
+                    agent_id=turn.agent_id,
+                    user_id=turn.user_id or "anonymous",
+                    session_id=turn.session_id,
+                    turn_id=turn.turn_id,
+                    channel=turn.channel,
+                    task_frame_id=turn.task_frame_id,
+                    step_id=step_id,
+                    run_id=run.id,
+                    snapshot_id=turn.snapshot.snapshot_id,
+                    trace_id=trace_id,
+                    attempt=runtime_security.run_attempt,
+                    execution=turn.security_context.execution,
+                )
+
+            invoker = _HarnessV3SidecarCapabilityInvoker(
+                execution_host,
+                invocation_context,
+                manifest,
+            )
+            settings = get_settings()
+            client = PilotDeckAgentLoopClient(
+                settings.pilotdeck_agent_loop_command,
+                cwd=settings.pilotdeck_agent_loop_cwd or None,
+                timeout_seconds=settings.pilotdeck_agent_loop_timeout_seconds,
+            )
+            bridge = StaffDeckPilotDeckModuleBridge(
+                model_client=LLMClient(model_config),
+                capability_invoker=invoker,
+                remaining_actions=remaining_actions,
+                successful_knowledge_searches=int(
+                    loop_checkpoint.get("successful_knowledge_searches") or 0
+                ),
+                checkpoint_sink=lambda payload: _save_sidecar_checkpoint(
+                    self.store,
+                    agent_loop,
+                    payload,
+                    run.id,
+                    loop_checkpoint,
+                ),
+            )
+            try:
+                _, conversation_context = isolated_attachment_context(
+                    attachment_descriptors,
+                    image_payloads,
+                )
+                context_messages = _pilotdeck_context_messages(
+                    requirement,
+                    loop_checkpoint,
+                    conversation_context,
+                    loop_checkpoint.get("agentLoopMessages"),
+                )
+                context_metadata = _pilotdeck_context_metadata(
+                    loop_checkpoint,
+                    remaining_actions=remaining_actions,
+                )
+                result = client.execute(
+                    requirement,
+                    identity=PilotDeckExecutionIdentity(
+                        tenant_id=request.tenant_id,
+                        session_id=session.id,
+                        turn_id=str(
+                            self.user_message_id or request.client_turn_id or row.id
+                        ),
+                        run_id=run.id,
+                        operation_id=str(agent_loop.id),
+                        idempotency_key=f"task-frame:{row.id}",
+                        step_id=frame.target_step_id,
+                    ),
+                    checkpoint=loop_checkpoint,
+                    execution_context=PilotDeckExecutionContext(
+                        remaining_actions=remaining_actions,
+                        conversation_context=conversation_context,
+                        permission_context={
+                            "mode": "default",
+                            "canPrompt": False,
+                            "bypassAvailable": False,
+                            "source": "staffdeck",
+                        },
+                        metadata=context_metadata,
+                        context_override={
+                            "systemPrompt": PROMPT_PATH.read_text(
+                                encoding="utf-8"
+                            ).strip(),
+                            "messages": context_messages,
+                            "metadata": context_metadata,
+                        },
+                    ),
+                    bridge=bridge,
+                    trace_sink=trace,
+                    is_cancelled=lambda: self._is_cancelled(request, session),
+                    deadline_monotonic=step_deadline_monotonic,
+                )
+            except PilotDeckAgentLoopError as exc:
+                if exc.code == "CANCELLED":
+                    raise HarnessExecutionCancelled(str(exc)) from exc
+                if exc.code == "DEADLINE_EXCEEDED" and step_timeout_seconds is not None:
+                    result = _step_timeout_result(
+                        requirement,
+                        action_count=execution_host.total_actions,
+                        timeout_seconds=step_timeout_seconds,
+                        capability_results=list(host.results),
+                        citations=list(host.citations),
+                        evidence_results=list(host.evidence),
+                        artifacts=[],
+                        trace_sink=trace,
+                    )
+                elif exc.result_unknown:
+                    raise HarnessExecutionFenced(str(exc)) from exc
+                else:
+                    raise RuntimeError(
+                        f"PilotDeck AgentLoop failed [{exc.code}]: {exc}"
+                    ) from exc
+            finally:
+                slot.closed = True
+                client.close()
+
+            _merge_discovered_artifacts(result, invoker.discover_artifacts())
+            return result
+
     def _run_frame(
         self,
         request: ChatTurnRequest,
@@ -1128,7 +1414,11 @@ class TurnCoordinator:
             self.active_run_id = run.id
             self.db.commit()
 
-            def trace(event_type: str, payload: dict[str, Any]) -> None:
+            def trace(
+                event_type: str,
+                payload: dict[str, Any],
+                run_id: str = run.id,
+            ) -> None:
                 self.events.record(
                     request.tenant_id,
                     session.id,
@@ -1136,7 +1426,7 @@ class TurnCoordinator:
                     {
                         **payload,
                         "task_frame_id": row.task_id,
-                        "harness_run_id": run.id,
+                        "harness_run_id": run_id,
                         "agent_loop_id": agent_loop.id,
                         "execution_engine": "harness_v3",
                     },
@@ -1146,18 +1436,38 @@ class TurnCoordinator:
                 # running TaskFrame instead of revealing it only at the end.
                 self.db.commit()
 
-            result = self.task_agent.run(
-                requirement,
-                model_config,
-                None,  # capability dispatch belongs to the runtime's existing CapabilityHost
-                max_actions=remaining_actions,
-                trace_sink=trace,
-                is_cancelled=lambda: self._is_cancelled(request, session),
-                image_payloads=image_payloads,
-                step_deadline_monotonic=step_deadline_monotonic,
-                step_timeout_seconds=step_timeout_seconds,
-                checkpoint=loop_checkpoint,
-            )
+            if _pilotdeck_sidecar_enabled():
+                result = self._run_pilotdeck_sidecar(
+                    request=request,
+                    session=session,
+                    row=row,
+                    frame=frame,
+                    requirement=requirement,
+                    manifest=manifest,
+                    model_config=model_config,
+                    agent_loop=agent_loop,
+                    run=run,
+                    remaining_actions=remaining_actions,
+                    loop_checkpoint=loop_checkpoint,
+                    attachment_descriptors=attachment_descriptors,
+                    image_payloads=image_payloads,
+                    step_deadline_monotonic=step_deadline_monotonic,
+                    step_timeout_seconds=step_timeout_seconds,
+                    trace=trace,
+                )
+            else:
+                result = self.task_agent.run(
+                    requirement,
+                    model_config,
+                    None,  # capability dispatch belongs to the runtime's existing CapabilityHost
+                    max_actions=remaining_actions,
+                    trace_sink=trace,
+                    is_cancelled=lambda: self._is_cancelled(request, session),
+                    image_payloads=image_payloads,
+                    step_deadline_monotonic=step_deadline_monotonic,
+                    step_timeout_seconds=step_timeout_seconds,
+                    checkpoint=loop_checkpoint,
+                )
             if request.channel == "human_handoff_resume" and result.status == "handoff":
                 # The human reply is already the handoff completion signal. Do not
                 # re-enter the same terminal handoff node during the resume turn.
@@ -1196,7 +1506,10 @@ class TurnCoordinator:
                         },
                     )
                     result = deferred_result
-            loop_checkpoint = dict(result.loop_checkpoint or {})
+            loop_checkpoint = {
+                **loop_checkpoint,
+                **dict(result.loop_checkpoint or {}),
+            }
             loop_checkpoint["artifacts"] = list(result.artifacts)
             self.store.save_agent_loop_checkpoint(
                 agent_loop,
@@ -2012,6 +2325,387 @@ def _dependency_order(
             resolved.add(row.task_id)
             remaining.remove(row)
     return ordered
+
+
+class _HarnessV3SidecarCapabilityInvoker:
+    """Project direct AgentLoop tool names through the Harness v3 host."""
+
+    def __init__(self, execution_host: Any, context_factory: Any, manifest: Any) -> None:
+        self.execution_host = execution_host
+        self.context_factory = context_factory
+        self.host = execution_host.capabilities
+        self.descriptors = {
+            item.name: item
+            for item in manifest.available
+            if getattr(item, "available", False)
+        }
+
+    def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        descriptor = self.descriptors.get(name)
+        if descriptor is None:
+            return {
+                "success": False,
+                "error": {
+                    "code": "TOOL_NOT_AVAILABLE",
+                    "message": "当前装配未授权该能力，本次未执行业务操作。",
+                    "retryable": False,
+                    "executed": False,
+                },
+            }
+
+        metadata = dict(getattr(descriptor, "metadata", {}) or {})
+        operation = str(metadata.get("operation") or "")
+        resource_id = str(
+            metadata.get("resource_id")
+            or metadata.get("tool_id")
+            or getattr(descriptor, "capability_id", "")
+            or ""
+        )
+        proxy_name, proxy_arguments = self._proxy_call(
+            descriptor,
+            operation,
+            resource_id,
+            arguments,
+        )
+        trace_id = f"sidecar-{time.time_ns()}"
+        result, receipt = self.execution_host.invoke_proxy(
+            proxy_name,
+            proxy_arguments,
+            self.context_factory(trace_id),
+        )
+        error = dict(result.error or {})
+        receipt_status = getattr(receipt, "status", None)
+        if receipt_status == "outcome_unknown" or error.get("code") in {
+            "OUTCOME_UNKNOWN",
+            "TOOL_CALL_OUTCOME_UNKNOWN",
+            "RESULT_UNKNOWN",
+        }:
+            return {
+                "success": False,
+                "outcome": "result_unknown",
+                "error": {
+                    **error,
+                    "code": "RESULT_UNKNOWN",
+                    "message": str(
+                        error.get("message")
+                        or "Capability result requires reconciliation."
+                    ),
+                },
+            }
+        return {
+            "success": bool(result.success),
+            "data": result.data,
+            "error": error or None,
+            "citations": list(result.citations or ()),
+            "artifacts": list(result.artifacts or ()),
+            "receipt": receipt.to_json() if receipt is not None else None,
+        }
+
+    @staticmethod
+    def _proxy_call(
+        descriptor: Any,
+        operation: str,
+        resource_id: str,
+        arguments: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        kind = str(getattr(descriptor, "kind", "") or "")
+        if operation == "knowledge.search/v1" or kind == "knowledge":
+            payload = dict(arguments)
+            knowledge_base_ids = list(
+                (getattr(descriptor, "metadata", {}) or {}).get(
+                    "knowledge_base_ids", []
+                )
+            )
+            if knowledge_base_ids and "knowledge_base_ids" not in payload:
+                payload["knowledge_base_ids"] = knowledge_base_ids
+            return "knowledge_search", payload
+        if operation == "general_skill.consume/v1" or kind == "general_skill":
+            return "general_skill_read", {
+                **arguments,
+                "skill_id": resource_id,
+                "query": str(arguments.get("query") or ""),
+            }
+        if operation == "sandbox.execute/v1":
+            return "sandbox_execute", {
+                "tool": str(getattr(descriptor, "name", "") or ""),
+                "arguments": dict(arguments),
+            }
+        if operation in {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"}:
+            return "tool_invoke", {
+                "tool_id": resource_id,
+                "arguments": dict(arguments),
+            }
+        return "capability_invoke", {
+            "operation": operation,
+            "resource_id": resource_id,
+            "arguments": dict(arguments),
+        }
+
+    def discover_artifacts(self) -> list[dict[str, Any]]:
+        return self.host.discover_artifacts(
+            self.context_factory(f"sidecar-artifacts-{time.time_ns()}")
+        )
+
+
+def _pilotdeck_sidecar_enabled() -> bool:
+    settings = get_settings()
+    return bool(
+        settings.pilotdeck_agent_loop_enabled
+        and str(settings.pilotdeck_agent_loop_command or "").strip()
+    )
+
+
+def _save_sidecar_checkpoint(
+    store: TaskFrameStore,
+    agent_loop: Any,
+    payload: dict[str, Any],
+    run_id: str,
+    current: dict[str, Any],
+) -> dict[str, Any]:
+    checkpoint = payload.get("checkpoint")
+    if not isinstance(checkpoint, dict):
+        checkpoint = payload
+    current.update(dict(checkpoint))
+    store.save_agent_loop_checkpoint(
+        agent_loop,
+        dict(current),
+        status="active",
+        last_run_id=run_id,
+    )
+    store.db.commit()
+    return {"accepted": True}
+
+
+def _pilotdeck_context_messages(
+    requirement: Any,
+    checkpoint: dict[str, Any],
+    attachment_context: dict[str, Any] | None,
+    prior_messages: Any,
+) -> list[dict[str, Any]]:
+    """Project StaffDeck's durable task context into canonical messages."""
+
+    if isinstance(prior_messages, list) and prior_messages:
+        messages = [dict(item) for item in prior_messages if isinstance(item, dict)]
+        current_step_id = _requirement_step_id(requirement)
+        prior_step_ids = {
+            step_id
+            for item in messages
+            for task_frame_id, step_id in [_canonical_requirement_boundary(item)]
+            if task_frame_id == requirement.task_frame_id and step_id
+        }
+        if current_step_id and any(
+            step_id != current_step_id for step_id in prior_step_ids
+        ):
+            messages = [
+                item
+                for item in messages
+                if _canonical_requirement_boundary(item)[0]
+                != requirement.task_frame_id
+            ]
+        has_task_boundary = any(
+            _canonical_requirement_boundary(item)
+            == (requirement.task_frame_id, current_step_id)
+            for item in messages
+        )
+        if not has_task_boundary:
+            messages.insert(
+                0,
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                requirement.model_dump(mode="json"),
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ],
+                },
+            )
+    else:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            requirement.model_dump(mode="json"),
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+            }
+        ]
+        transcript = checkpoint.get("transcript")
+        if isinstance(transcript, list):
+            for entry in transcript:
+                projected = _transcript_entry_to_canonical(entry)
+                if projected is not None:
+                    messages.append(projected)
+
+    if attachment_context and isinstance(attachment_context.get("messages"), list):
+        for raw in attachment_context["messages"]:
+            projected = _attachment_message_to_canonical(raw)
+            if projected is not None:
+                messages.append(projected)
+    return messages
+
+
+def _requirement_step_id(requirement: Any) -> str:
+    if getattr(requirement, "kind", None) != "sop":
+        return ""
+    sop_context = getattr(requirement, "sop_context", None)
+    if not isinstance(sop_context, dict):
+        return ""
+    step = sop_context.get("step")
+    if not isinstance(step, dict):
+        return ""
+    return str(step.get("node_id") or step.get("step_id") or "").strip()
+
+
+def _canonical_requirement_boundary(item: Any) -> tuple[str, str]:
+    if not isinstance(item, dict) or item.get("role") != "user":
+        return "", ""
+    content = item.get("content")
+    if not isinstance(content, list):
+        return "", ""
+    for part in content:
+        if not isinstance(part, dict) or part.get("type") != "text":
+            continue
+        text = part.get("text")
+        if not isinstance(text, str):
+            continue
+        try:
+            candidate = json.loads(text)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(candidate, dict):
+            continue
+        task_frame_id = str(candidate.get("task_frame_id") or "").strip()
+        sop_context = candidate.get("sop_context")
+        step = sop_context.get("step") if isinstance(sop_context, dict) else None
+        step_id = (
+            str(step.get("node_id") or step.get("step_id") or "").strip()
+            if isinstance(step, dict)
+            else ""
+        )
+        if task_frame_id:
+            return task_frame_id, step_id
+    return "", ""
+
+
+def _transcript_entry_to_canonical(entry: Any) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    role = str(entry.get("role") or "")
+    if role == "assistant" and entry.get("action") == "tool":
+        name = str(entry.get("tool_name") or "")
+        call_id = str(entry.get("tool_call_id") or "staffdeck-call")
+        if not name:
+            return None
+        return {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_call",
+                    "id": call_id,
+                    "name": name,
+                    "input": (
+                        entry.get("arguments")
+                        if isinstance(entry.get("arguments"), dict)
+                        else {}
+                    ),
+                }
+            ],
+        }
+    if role == "tool":
+        result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
+        data = result.get("data")
+        if data is None and result.get("error") is not None:
+            data = result.get("error")
+        text = (
+            data
+            if isinstance(data, str)
+            else json.dumps(data, ensure_ascii=False, default=str)
+        )
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "toolCallId": str(
+                        entry.get("tool_call_id") or "staffdeck-call"
+                    ),
+                    "content": [{"type": "text", "text": text}],
+                    "isError": not bool(result.get("success", True)),
+                }
+            ],
+        }
+    if role == "assistant":
+        text = entry.get("reply_fragment") or entry.get("text")
+        if text:
+            return {
+                "role": "assistant",
+                "content": [{"type": "text", "text": str(text)}],
+            }
+    return None
+
+
+def _attachment_message_to_canonical(message: Any) -> dict[str, Any] | None:
+    if not isinstance(message, dict):
+        return None
+    blocks: list[dict[str, Any]] = []
+    content = message.get("content")
+    if isinstance(content, str) and content:
+        blocks.append({"type": "text", "text": content})
+    images = message.get("images")
+    for image in images if isinstance(images, list) else []:
+        if not isinstance(image, dict):
+            continue
+        image_url = image.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, dict) else None
+        if not isinstance(url, str) or not url.startswith("data:") or ";base64," not in url:
+            continue
+        header, data = url.split(";base64,", 1)
+        mime = header.removeprefix("data:")
+        if mime and data:
+            detail = image_url.get("detail") if isinstance(image_url, dict) else None
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": "base64",
+                    "mimeType": mime,
+                    "data": data,
+                    **(
+                        {"detail": detail}
+                        if detail in {"auto", "low", "high"}
+                        else {}
+                    ),
+                }
+            )
+    return {"role": "user", "content": blocks} if blocks else None
+
+
+def _pilotdeck_context_metadata(
+    checkpoint: dict[str, Any],
+    *,
+    remaining_actions: int,
+) -> dict[str, Any]:
+    successful = int(checkpoint.get("successful_knowledge_searches") or 0)
+    return {
+        "iteration": int(checkpoint.get("iteration") or 1),
+        "remainingActions": int(remaining_actions),
+        "knowledgeSearchBudget": {
+            "maximumSuccessfulCalls": 2,
+            "successfulCalls": successful,
+            "remainingSuccessfulCalls": max(0, 2 - successful),
+        },
+        "recentTaskSummaries": list(
+            checkpoint.get("recent_task_summaries") or []
+        )[-8:],
+    }
 
 
 class HarnessV2Engine(TurnCoordinator):

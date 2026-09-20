@@ -43,6 +43,7 @@ skill_agent_loop.db
 backend/sop_agent_loop.db*
 backend/skill_agent_loop.db*
 backend/connector-locks/
+/tools/agent-loop-parity/artifacts/
 *.sqlite
 *.sqlite3
 *.db-shm

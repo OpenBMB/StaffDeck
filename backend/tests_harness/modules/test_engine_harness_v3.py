@@ -110,6 +110,49 @@ def test_manifest_engine_harness_v3(registry, module):
     assert d["enabled"] is True
 
 
+def test_sidecar_runtime_does_not_require_harness_v3_binary(
+    monkeypatch, settings
+) -> None:
+    monkeypatch.setattr(
+        settings, "pilotdeck_agent_loop_enabled", True, raising=False
+    )
+    monkeypatch.setattr(
+        settings, "pilotdeck_agent_loop_command", "node sidecar.js", raising=False
+    )
+    monkeypatch.setattr(settings, "harness_v3_root", "")
+    monkeypatch.setattr(engine_host, "get_settings_safe", lambda: settings)
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+    monkeypatch.setattr("app.core.turn_coordinator.get_settings", lambda: settings)
+
+    runtime = engine_host.get_runtime_for_turn(settings)
+
+    assert runtime.settings is settings
+    assert engine_host._runtime is None
+
+
+def test_sidecar_engine_keeps_local_model_phases(
+    monkeypatch, settings, fake_loop
+) -> None:
+    from app.core.response_generator import ResponseGenerator
+    from app.core.turn_planner import TurnPlanner
+
+    monkeypatch.setattr(
+        settings, "pilotdeck_agent_loop_enabled", True, raising=False
+    )
+    monkeypatch.setattr(
+        settings, "pilotdeck_agent_loop_command", "node sidecar.js", raising=False
+    )
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+    monkeypatch.setattr("app.core.turn_coordinator.get_settings", lambda: settings)
+    fake_loop.response_generator = ResponseGenerator()
+    runtime = engine_host.get_runtime_for_turn(settings)
+
+    engine = engine_host.HarnessV3Engine(fake_loop, runtime=runtime)
+
+    assert isinstance(engine.planner, TurnPlanner)
+    assert engine.response_generator is fake_loop.response_generator
+
+
 def test_manifest_engine_harness_v3_policy_actions_need_guarded_slot(settings):
     """seal() refuses an *active* engine.harness_v3 whose slot has no PEP-bound host."""
 
