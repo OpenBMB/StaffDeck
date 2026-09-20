@@ -9,6 +9,7 @@ from typing import Any
 
 _VOLATILE_KEYS = {
     "timestamp", "startedAt", "completedAt", "createdAt", "updatedAt",
+    "created_at", "updated_at",
     "messageId", "requestId", "streamId", "runId", "operationId", "idempotencyKey",
     "connectionGeneration", "moduleInstanceId", "processId", "pid",
 }
@@ -40,7 +41,7 @@ def canonicalize(value: Any, *, key: str | None = None) -> Any:
         }
     if isinstance(value, list):
         return [canonicalize(item) for item in value]
-    if isinstance(value, str) and key == "handoff_id" and value:
+    if isinstance(value, str) and key in {"handoff_id", "source_turn_id"} and value:
         return "<generated-id>"
     if isinstance(value, str) and key in {"blockId", "id"} and _VOLATILE_MODEL_BLOCK_ID.match(value):
         return f"<generated-model-block>:{value.rsplit(':', 2)[1]}:{value.rsplit(':', 1)[1]}"

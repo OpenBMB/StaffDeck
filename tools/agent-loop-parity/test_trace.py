@@ -118,6 +118,32 @@ class ConcurrentToolTraceTests(unittest.TestCase):
 
 
 class TimelineTraceTests(unittest.TestCase):
+    def test_generated_pending_task_source_turn_is_not_semantic(self) -> None:
+        native = [{
+            "kind": "session.state",
+            "scenarioId": "pending-task",
+            "q": "compare",
+            "sequence": 0,
+            "pendingTasks": [{
+                "task_id": "task-1",
+                "status": "pending",
+                "source_turn_id": "msg_aaaaaaaaaaaaaaaa",
+                "created_at": "2026-09-20T00:00:00",
+                "updated_at": "2026-09-20T00:00:01",
+            }],
+        }]
+        sidecar = [{
+            **native[0],
+            "pendingTasks": [{
+                "task_id": "task-1",
+                "status": "pending",
+                "source_turn_id": "msg_bbbbbbbbbbbbbbbb",
+                "created_at": "2026-09-20T01:00:00",
+                "updated_at": "2026-09-20T01:00:01",
+            }],
+        }]
+        self.assertEqual(compare_traces(native, sidecar), [])
+
     def test_generated_timeline_turn_id_is_not_semantic(self) -> None:
         native = [{
             "kind": "model.request",

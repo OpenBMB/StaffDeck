@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
+from app.core.harness_agent import HarnessExecutionFenced
 from app.core.pilotdeck_agent_loop_client import StaffDeckModuleError
 from app.llm import LLMClient
 
@@ -362,6 +363,25 @@ class StaffDeckPilotDeckModuleBridge:
                 )
             self._remaining_actions -= 1
         result = self.capability_invoker.invoke(name, arguments)
+        result_error = result.get("error") if isinstance(result, dict) else None
+        if (
+            isinstance(result, dict)
+            and (
+                result.get("outcome") == "result_unknown"
+                or (
+                    isinstance(result_error, dict)
+                    and str(result_error.get("code") or "") == "RESULT_UNKNOWN"
+                )
+            )
+        ):
+            raise HarnessExecutionFenced(
+                (
+                    str(result_error.get("message") or "")
+                    if isinstance(result_error, dict)
+                    else ""
+                )
+                or "Capability result requires reconciliation."
+            )
         if isinstance(result, dict) and result.get("type") in {"success", "error"}:
             return result
         if isinstance(result, dict) and result.get("success") is True:

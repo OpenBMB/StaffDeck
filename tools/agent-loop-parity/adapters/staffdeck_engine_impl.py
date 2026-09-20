@@ -519,7 +519,9 @@ def _terminal_payload(db: Session, response: Any) -> dict[str, Any]:
         dict(receipt.error_json or {}) if receipt is not None else {}
     )
     status = str(result.get("status") or "")
-    if receipt is not None and receipt.status in {"failed", "cancelled"}:
+    if receipt_error.get("code") == "RESULT_UNKNOWN":
+        status = "result_unknown"
+    elif receipt is not None and receipt.status in {"failed", "cancelled"}:
         status = receipt.status
     elif not status:
         status = "failed" if response.runtime_error_code else "completed"
@@ -636,11 +638,25 @@ def main(expected_mode: str | None = None) -> int:
     def deterministic_skills(_self: Any, *_args: Any, **_kwargs: Any) -> list[Skill]:
         return [skill] if skill is not None else []
 
-    def invoke_tool(
+    def invoke_external_tool(
         _self: Any,
+        _capability_id: str,
+        _metadata: dict[str, Any],
         name: str,
         arguments: dict[str, Any],
+        *,
+        call_id: str,
     ) -> dict[str, Any]:
+        sidecar_faults = (
+            scenario.get("faults", {}).get("sidecar", [])
+            if isinstance(scenario.get("faults"), dict)
+            else []
+        )
+        fault_stages = {
+            str(item.get("stage") or "")
+            for item in sidecar_faults
+            if isinstance(item, dict) and item.get("action") == "exit"
+        }
         denied = name in scenario.get("permission", {}).get("deny", [])
         recorder.add("permission.request", toolName=name, mode=scenario.get("permission", {}).get("mode", "default"), canPrompt=scenario.get("permission", {}).get("canPrompt", False))
         recorder.add("permission.decision", toolName=name, allowed=not denied)
@@ -656,6 +672,10 @@ def main(expected_mode: str | None = None) -> int:
         recorder.add("tool.call", name=name, arguments=arguments)
         recorder.add("tool.start", name=name)
         tool_started.set()
+        if "before_tool" in fault_stages:
+            return _result_unknown(
+                "Parity host dispatcher lost the operation before capability acknowledgement."
+            )
         step_timeout_seconds = (scenario.get("limits") or {}).get(
             "stepTimeoutSeconds"
         )
@@ -682,6 +702,10 @@ def main(expected_mode: str | None = None) -> int:
                 "operationDeadlineEpochMs": operation_deadline_epoch_ms,
             },
         )
+        if "after_tool" in fault_stages:
+            return _result_unknown(
+                "Parity host dispatcher lost the operation after capability acknowledgement."
+            )
         recorder.add("tool.finish", name=name, success=result.get("type") == "success", error=result.get("error"), sideEffectCount=(result.get("data") or {}).get("sideEffectCount"))
         recorder.add("tool.result", result=result, sideEffectCount=(result.get("data") or {}).get("sideEffectCount"))
         return {
@@ -777,7 +801,11 @@ def main(expected_mode: str | None = None) -> int:
                 patch.object(AgentLoop, "_list_published_skills", deterministic_skills)
             )
             stack.enter_context(
-                patch.object(HarnessCapabilityInvoker, "invoke", invoke_tool)
+                patch.object(
+                    HarnessCapabilityInvoker,
+                    "_invoke_external_tool",
+                    invoke_external_tool,
+                )
             )
             stack.enter_context(
                 patch.object(harness_agent_module, "LLMClient", ParityModelClient)
@@ -843,6 +871,18 @@ def main(expected_mode: str | None = None) -> int:
     )
     RUNTIME_DIR.cleanup()
     return 0
+
+
+def _result_unknown(message: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "outcome": "result_unknown",
+        "error": {
+            "code": "RESULT_UNKNOWN",
+            "message": message,
+            "retryable": False,
+        },
+    }
 
 
 if __name__ == "__main__":

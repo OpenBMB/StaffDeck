@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.core.harness_agent import HarnessExecutionFenced
 from app.core.task_request_compiler import TaskExecutionResult, TaskRequirement
 
 STAFFDECK_RESULT_CARRIER_PREFIX = "__STAFFDECK_TASK_RESULT__="
@@ -271,7 +272,13 @@ class PilotDeckAgentLoopClient:
                 if outcome == "cancelled":
                     raise PilotDeckAgentLoopError("CANCELLED", "PilotDeck AgentLoop was cancelled.")
                 if outcome == "result_unknown":
-                    raise PilotDeckAgentLoopError("RESULT_UNKNOWN", "PilotDeck result requires reconciliation.", result_unknown=True)
+                    error = message.get("error")
+                    detail = error.get("message") if isinstance(error, dict) else None
+                    raise PilotDeckAgentLoopError(
+                        str(message.get("code") or "RESULT_UNKNOWN"),
+                        str(detail or "PilotDeck result requires reconciliation."),
+                        result_unknown=True,
+                    )
                 if cancel_sent:
                     raise PilotDeckAgentLoopError(
                         "CANCELLED_AFTER_REQUEST",
@@ -364,6 +371,18 @@ class PilotDeckAgentLoopClient:
                 "outcome": "result_unknown" if exc.result_unknown else "failed",
                 "code": exc.code,
                 "error": {"message": str(exc)},
+            }
+        except HarnessExecutionFenced as exc:
+            return {
+                "kind": "response",
+                "messageId": self._next_id("module-error"),
+                "inReplyTo": str(request.get("messageId") or ""),
+                "requestId": str(request.get("requestId") or ""),
+                "ok": False,
+                "final": True,
+                "outcome": "result_unknown",
+                "code": "RESULT_UNKNOWN",
+                "error": {"code": "RESULT_UNKNOWN", "message": str(exc)},
             }
         except Exception as exc:  # noqa: BLE001 - preserve arbitrary host module failures
             return {

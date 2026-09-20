@@ -481,6 +481,10 @@ class HarnessTaskAgent:
                                 "message": str(exc),
                             },
                         }
+                    if _is_result_unknown_failure(result):
+                        raise HarnessExecutionFenced(
+                            str(result["error"].get("message") or "Capability result requires reconciliation.")
+                        )
                     if _is_non_retryable_failure(result):
                         non_retryable_action_signatures.add(action_signature)
             bounded_result = _bounded_capability_result(tool_name, result)
@@ -647,6 +651,13 @@ def _is_non_retryable_failure(result: object) -> bool:
         return False
     error = result.get("error")
     return isinstance(error, dict) and error.get("retryable") is False
+
+
+def _is_result_unknown_failure(result: object) -> bool:
+    if not isinstance(result, dict) or result.get("success") is not False:
+        return False
+    error = result.get("error")
+    return isinstance(error, dict) and error.get("code") == "RESULT_UNKNOWN"
 
 
 def _generate_harness_action_json(

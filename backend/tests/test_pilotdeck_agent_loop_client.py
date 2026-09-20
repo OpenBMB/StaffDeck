@@ -11,6 +11,7 @@ from app.core.pilotdeck_agent_loop_client import (
     PilotDeckExecutionContext,
     PilotDeckExecutionIdentity,
 )
+from app.core.harness_agent import HarnessExecutionFenced
 from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest, TaskRequirement
 
 SIDECAR = r'''
@@ -60,6 +61,39 @@ def test_sidecar_client_dispatches_host_module_call_and_decodes_result() -> None
     assert traces == ["agent.tool_result"]
 
 
+def test_sidecar_client_serializes_fenced_host_capability_as_result_unknown() -> None:
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", SIDECAR])
+
+    def bridge(_module: str, _payload: dict[str, object]) -> dict[str, object]:
+        raise HarnessExecutionFenced("capability acknowledgement was lost")
+
+    response = client._dispatch_module_call(
+        {
+            "messageId": "module-call",
+            "requestId": "module-request",
+            "module": "capability",
+            "payload": {"name": "write_file", "arguments": {}},
+        },
+        bridge,
+    )
+    client.close()
+
+    assert response == {
+        "kind": "response",
+        "messageId": "module-error-1",
+        "inReplyTo": "module-call",
+        "requestId": "module-request",
+        "ok": False,
+        "final": True,
+        "outcome": "result_unknown",
+        "code": "RESULT_UNKNOWN",
+        "error": {
+            "code": "RESULT_UNKNOWN",
+            "message": "capability acknowledgement was lost",
+        },
+    }
+
+
 def _identity() -> PilotDeckExecutionIdentity:
     return PilotDeckExecutionIdentity(
         tenant_id="tenant-1",
@@ -94,6 +128,27 @@ def test_client_rejects_failed_outcome_even_when_payload_looks_successful() -> N
         client.execute(_requirement(), identity=_identity())
     client.close()
     assert getattr(exc_info.value, "code", "") == "EXECUTE_FAILED"
+
+
+def test_client_preserves_result_unknown_terminal_error() -> None:
+    script = r'''
+import json, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("method") == "hello":
+        print(json.dumps({"kind":"response","messageId":"hello-res","inReplyTo":msg["messageId"],"ok":True,"connectionGeneration":"test-connection"}), flush=True)
+    elif msg.get("method") == "execute":
+        print(json.dumps({"kind":"response","messageId":"accepted","inReplyTo":msg["messageId"],"requestId":msg["requestId"],"ok":True,"streamId":"stream-1","cursor":0}), flush=True)
+        print(json.dumps({"kind":"event","messageId":"final-1","eventType":"agent.execute.result_unknown","streamId":"stream-1","sequence":0,"runId":msg["runId"],"operationId":msg["operationId"],"requestId":msg["requestId"],"final":True,"outcome":"result_unknown","code":"RESULT_UNKNOWN","error":{"code":"RESULT_UNKNOWN","message":"capability acknowledgement was lost"},"payload":{}}), flush=True)
+'''
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", script])
+    with pytest.raises(PilotDeckAgentLoopError) as exc_info:
+        client.execute(_requirement(), identity=_identity())
+    client.close()
+
+    assert exc_info.value.code == "RESULT_UNKNOWN"
+    assert str(exc_info.value) == "capability acknowledgement was lost"
+    assert exc_info.value.result_unknown is True
 
 
 def test_client_rejects_malformed_completed_payload() -> None:

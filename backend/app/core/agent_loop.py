@@ -21,7 +21,10 @@ from app.core.conversation_context import (
 )
 from app.core.conversation_projection import ConversationProjection
 from app.core.graph_rules import GraphRules
-from app.core.harness_agent import HarnessExecutionCancelled
+from app.core.harness_agent import (
+    HarnessExecutionCancelled,
+    HarnessExecutionFenced,
+)
 from app.core.harness_session_lock import HarnessSessionBusy
 from app.core.harness_turn_store import HarnessTurnConflict
 from app.core.harness_v2_engine import (
@@ -168,6 +171,7 @@ class AgentLoop:
         chat_session: ChatSession | None = None
         user_message_id: str | None = None
         step_result = StepAgentResult(action="reply")
+        runtime_error_code: str | None = None
         try:
             return engine.run(request)
         except (HarnessTurnConflict, HarnessSessionBusy) as exc:
@@ -224,6 +228,24 @@ class AgentLoop:
                 step_result=step_result,
                 session_state=public_session(chat_session),
             )
+        except HarnessExecutionFenced as exc:
+            chat_session = engine.session
+            user_message_id = engine.user_message_id
+            runtime_error_code = "RESULT_UNKNOWN"
+            engine.mark_interrupted(runtime_error_code, str(exc))
+            chat_session = chat_session or self._get_or_create_session(request)
+            self.events.record(
+                request.tenant_id,
+                chat_session.id,
+                "execution_result_unknown",
+                {"code": runtime_error_code, "message": str(exc)},
+            )
+            reply = format_runtime_failure_reply(
+                "执行结果未知",
+                exc,
+                runtime_error_code,
+                "外部操作可能已被接受；请先核对执行记录，再决定是否重试。",
+            )
         except (AgentLoopPreconditionError, SlashCommandError) as exc:
             chat_session = engine.session
             engine.mark_interrupted(exc.code, exc.message)
@@ -243,6 +265,7 @@ class AgentLoop:
             reply = format_runtime_failure_reply(
                 "模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc)
             )
+            runtime_error_code = "LLM_ERROR"
         except Exception as exc:
             chat_session = engine.session
             user_message_id = engine.user_message_id
@@ -260,6 +283,7 @@ class AgentLoop:
                 "HARNESS_V2_ERROR",
                 "请查看执行记录或服务日志定位具体原因。",
             )
+            runtime_error_code = "HARNESS_V2_ERROR"
         finally:
             terminal_record = getattr(engine, "turn_record", None)
             terminal_session = getattr(engine, "session", None)
@@ -291,6 +315,7 @@ class AgentLoop:
         return ChatTurnResponse(
             reply=reply,
             session_id=chat_session.id,
+            runtime_error_code=runtime_error_code,
             step_result=step_result,
             session_state=public_session(chat_session),
         )
