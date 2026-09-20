@@ -66,6 +66,7 @@ from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.service import KnowledgeService
+from app.skills.tool_authorization import current_sop_tool_authorization
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
 
@@ -1021,6 +1022,24 @@ class HarnessCapabilityInvoker:
                 retryable=exc.error.retryable,
                 details=dict(exc.error.details),
             )
+
+        sop_authorization = None
+        if self.active_skill is not None:
+            try:
+                sop_authorization = current_sop_tool_authorization(
+                    self.tenant_id,
+                    self.active_skill,
+                    self.active_step_id,
+                )
+            except ValueError:
+                return _failure("NOT_ALLOWED", "SOP 授权上下文不匹配。")
+            if not sop_authorization.permits_skill(tool):
+                return _failure("NOT_ALLOWED", "当前技能不允许调用该工具。")
+            if (
+                str(tool.capability_scope).replace("-", "_") == "sop_specific"
+                and not sop_authorization.explicitly_allows(tool)
+            ):
+                return _failure("NOT_ALLOWED", "当前 SOP 节点未授权该工具。")
         result = ToolExecutor(self.db).execute(
             self.tenant_id,
             ToolCall(name=source_tool_name, arguments=resolved_arguments),
@@ -1029,6 +1048,8 @@ class HarnessCapabilityInvoker:
             session_id=self.session.id,
             invocation_id=call_id,
             timeout_seconds_override=self._remaining_step_seconds(),
+            user_id=self.session.user_id,
+            sop_authorization=sop_authorization,
         )
         payload = result.model_dump(mode="json")
         # MCP Apps payloads belong to the host UI, not to the isolated model

@@ -20,6 +20,7 @@ from app.api import (
     knowledge_bases,
     memories,
     mock,
+    module_knowledge,
     model_configs,
     persona,
     scheduled_tasks,
@@ -168,6 +169,7 @@ app.include_router(tools.mcp_router, dependencies=[Depends(module_policy("mcp_se
 app.include_router(sessions.router)
 app.include_router(traces.router)
 app.include_router(mock.router)
+app.include_router(module_knowledge.router)
 app.include_router(a2a_router)
 if settings.harness_v3_enabled or settings.harness_admin_api_enabled:
     try:

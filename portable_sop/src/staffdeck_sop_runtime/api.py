@@ -16,6 +16,9 @@ PROTOCOL_VERSION = "2.0"
 MODULE_ID = "sop.runtime"
 CONTRACT = "sop.lifecycle/v2"
 OPERATIONS = ("prepare", "submit")
+DESCRIPTOR_VERSION = "1.0"
+IMPLEMENTATION_ID = "staffdeck.portable-sop"
+TRANSPORT = "sop-http-v2"
 
 
 class SopRequestEnvelope(BaseModel):
@@ -71,6 +74,13 @@ def create_app() -> FastAPI:
             "moduleId": MODULE_ID,
             "contract": CONTRACT,
             "operations": list(OPERATIONS),
+            "descriptorVersion": DESCRIPTOR_VERSION,
+            "implementationId": IMPLEMENTATION_ID,
+            "implementationVersion": "0.1.0",
+            "transport": TRANSPORT,
+            "capabilities": ["handoff", "external_wait"],
+            "state": {"ownership": "host", "schema": CONTRACT, "scope": "session"},
+            "requires": {"hostCapabilities": ["sop.host-resume/v1"]},
         }
 
     @app.post("/v1/sop/prepare")

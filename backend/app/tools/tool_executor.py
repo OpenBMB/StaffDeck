@@ -16,6 +16,7 @@ from app.agents.branching import visible_tool_rows
 from app.config import get_settings
 from app.db.models import ChatSession, ExternalBusinessTask, MCPServer, Tool, utc_now
 from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
+from app.skills.tool_authorization import SopToolAuthorization
 from app.tools.a2a_client import A2AClient, A2AClientError
 from app.tools.external_tasks import callback_token_hash, new_callback_token
 from app.tools.http_request import prepare_get_request
@@ -62,6 +63,8 @@ class ToolExecutor:
         resume_step_id: str | None = None,
         timeout_seconds_override: float | None = None,
         user_id: str | None = None,
+        *,
+        sop_authorization: SopToolAuthorization | None = None,
     ) -> ToolResult:
         with self.db.no_autoflush:
             tool = self.db.exec(
@@ -69,9 +72,29 @@ class ToolExecutor:
             ).first()
         if not tool:
             return self._error(tool_call.name, "NOT_FOUND", "工具不存在或未配置。")
-        denied = self.scope_error(tool, agent_id=agent_id, active_skill_id=active_skill_id)
+        # A nested SOP supplies a server-side node grant.  The legacy
+        # parent-only skill check remains the default for direct callers, but
+        # must not reject a validated child grant before it can be checked.
+        denied = self.scope_error(
+            tool,
+            agent_id=agent_id,
+            active_skill_id=None if sop_authorization is not None else active_skill_id,
+        )
         if denied is not None:
             return denied
+        if sop_authorization is not None:
+            if (
+                sop_authorization.tenant_id != tenant_id
+                or sop_authorization.parent_skill_id != active_skill_id
+            ):
+                return self._error(tool.name, "NOT_ALLOWED", "SOP 授权上下文不匹配。")
+            if not sop_authorization.permits_skill(tool):
+                return self._error(tool.name, "NOT_ALLOWED", "当前技能不允许调用该工具。")
+            if (
+                str(tool.capability_scope).replace("-", "_") == "sop_specific"
+                and not sop_authorization.explicitly_allows(tool)
+            ):
+                return self._error(tool.name, "NOT_ALLOWED", "当前 SOP 节点未授权该工具。")
 
         if (tool.tool_type or "http") == "mcp":
             return self._execute_mcp_tool(

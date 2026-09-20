@@ -49,12 +49,20 @@ def test_health_advertises_the_v2_sop_module_manifest():
     response = CLIENT.get("/healthz")
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert body == {
         "status": "ok",
         "protocolVersion": "2.0",
         "moduleId": "sop.runtime",
         "contract": "sop.lifecycle/v2",
         "operations": ["prepare", "submit"],
+        "descriptorVersion": "1.0",
+        "implementationId": "staffdeck.portable-sop",
+        "implementationVersion": "0.1.0",
+        "transport": "sop-http-v2",
+        "capabilities": ["handoff", "external_wait"],
+        "state": {"ownership": "host", "schema": "sop.lifecycle/v2", "scope": "session"},
+        "requires": {"hostCapabilities": ["sop.host-resume/v1"]},
     }
 
 
