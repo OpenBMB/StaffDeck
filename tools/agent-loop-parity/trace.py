@@ -41,7 +41,7 @@ def canonicalize(value: Any, *, key: str | None = None) -> Any:
         }
     if isinstance(value, list):
         return [canonicalize(item) for item in value]
-    if isinstance(value, str) and key in {"handoff_id", "source_turn_id"} and value:
+    if isinstance(value, str) and key in {"handoff_id", "source_turn_id", "sourceTurnId"} and value:
         return "<generated-id>"
     if isinstance(value, str) and key in {"blockId", "id"} and _VOLATILE_MODEL_BLOCK_ID.match(value):
         return f"<generated-model-block>:{value.rsplit(':', 2)[1]}:{value.rsplit(':', 1)[1]}"
@@ -95,6 +95,10 @@ _SEMANTIC_EVENT_FIELDS = {
     "checkpoint": {"status", "seedState", "messages", "activeStepId", "taskFrameId", "slots", "knowledgeBudget", "recoveryPoint", "sideEffectCount"},
     "taskframe": {"taskFrame", "status", "stepId", "nextStepId", "slots", "requiredCapabilities", "knowledgeBudget", "priorTaskResults"},
     "session.state": {"activeSkillId", "activeStepId", "pendingTasks", "awaitingInput", "handoff", "slots", "priorTaskResults"},
+    # Team records are a host-owned durable outcome of a TL delegation. They
+    # are not transport envelopes: a missing run/task/wake or a different
+    # assignee changes the externally observable execution path.
+    "team.state": {"runs", "tasks", "wakes"},
     "terminal": {"outcome", "code", "stopReason", "structuredResult", "output", "frameStatus", "runStatus", "taskFrame", "session"},
     "user.output": {"text"},
 }
@@ -307,6 +311,8 @@ def _record_value(records: list[dict[str, Any]], key: str) -> Any:
     taskframe = _last(records, "taskframe") or {}
     session = _last(records, "session.state") or {}
     checkpoint = _last(records, "checkpoint") or {}
+    team_state = _last(records, "team.state") or {}
+    team_tasks = team_state.get("tasks") if isinstance(team_state.get("tasks"), list) else []
     terminal_task_frame = terminal.get("taskFrame")
     if not isinstance(terminal_task_frame, dict):
         terminal_task_frame = {}
@@ -338,7 +344,7 @@ def _record_value(records: list[dict[str, Any]], key: str) -> Any:
         "knowledgeBudget": taskframe.get("knowledgeBudget") or task_frame_state.get("knowledgeBudget") or terminal_task_frame.get("knowledgeBudget") or checkpoint.get("knowledgeBudget"),
         "requiredCapabilities": taskframe.get("requiredCapabilities") or task_frame_state.get("requiredCapabilities") or terminal_task_frame.get("requiredCapabilities"),
         "priorTaskResults": taskframe.get("priorTaskResults") or session.get("priorTaskResults") or task_frame_state.get("priorTaskResults") or terminal_task_frame.get("priorTaskResults") or session_state.get("priorTaskResults"),
-        "executionTarget": taskframe.get("executionTarget") or session.get("executionTarget") or task_frame_state.get("executionTarget") or terminal_task_frame.get("executionTarget") or session_state.get("executionTarget"),
+        "executionTarget": taskframe.get("executionTarget") or session.get("executionTarget") or task_frame_state.get("executionTarget") or terminal_task_frame.get("executionTarget") or session_state.get("executionTarget") or ("team_member" if team_tasks else None),
         "forcedSopVersion": terminal.get("forcedSopVersion") or taskframe.get("forcedSopVersion") or session.get("forcedSopVersion") or task_frame_state.get("forcedSopVersion") or terminal_task_frame.get("forcedSopVersion") or session_state.get("forcedSopVersion"),
         "output": terminal.get("output"),
         "modelAttempts": sum(record.get("kind") == "model.request" for record in records),

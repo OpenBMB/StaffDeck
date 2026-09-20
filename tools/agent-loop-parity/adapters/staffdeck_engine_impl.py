@@ -54,6 +54,7 @@ from app.core.task_request_compiler import (
     CapabilityManifest,
 )
 from app.db.models import (
+    AgentProfile,
     ChatSession,
     HarnessAgentLoopRecord,
     HarnessRunRecord,
@@ -62,6 +63,11 @@ from app.db.models import (
     ModelConfig,
     Skill,
     Tenant,
+    Team,
+    TeamMember,
+    TeamRun,
+    TeamTask,
+    TeamWakeEvent,
     UIConfig,
 )
 from app.security.encryption import encrypt_secret
@@ -259,6 +265,7 @@ def _plan(scenario: dict[str, Any], skill: Skill | None) -> TurnPlan:
                 ),
             ],
         )
+    is_team_delegation = scenario.get("executionTarget") == "team_member"
     return TurnPlan(
         decision="start_new_task" if skill else "answer_only",
         selected_task_id=f"task-{scenario['scenarioId']}",
@@ -266,18 +273,17 @@ def _plan(scenario: dict[str, Any], skill: Skill | None) -> TurnPlan:
         task_frames=[
             PlannedTaskFrame(
                 task_id=f"task-{scenario['scenarioId']}",
-                kind="sop" if skill else "conversation",
+                # Remote TeamTask publication is intentionally a conversation
+                # frame. SOP frames stay owned by the leader's Harness.
+                kind="conversation" if is_team_delegation else ("sop" if skill else "conversation"),
                 decision="start_new_task" if skill else "answer_only",
-                target_skill_id=skill.skill_id if skill else None,
-                target_step_id=start_step_id or None,
+                target_skill_id=None if is_team_delegation else (skill.skill_id if skill else None),
+                target_step_id=None if is_team_delegation else (start_step_id or None),
                 user_intent=str(scenario["q"]),
                 requirements=[str(scenario["q"])],
                 slot_hints=dict(scenario.get("knownSlots") or {}),
-                execution_target=(
-                    "team_member"
-                    if scenario.get("executionTarget") == "team_member"
-                    else "self"
-                ),
+                execution_target="team_member" if is_team_delegation else "self",
+                assignee_agent_id="parity-team-member" if is_team_delegation else None,
                 source_message=str(scenario["q"]),
             )
         ],
@@ -830,6 +836,33 @@ def main(expected_mode: str | None = None) -> int:
             )
         )
         db.add(session)
+        if scenario.get("executionTarget") == "team_member":
+            # The Harness validates remote frames against a durable roster.
+            # Build that production boundary here rather than spoofing a
+            # team-task interaction mode with no Team/TeamMember records.
+            leader = AgentProfile(
+                id="parity-team-leader",
+                tenant_id="tenant-parity",
+                name="Parity Team Leader",
+            )
+            member = AgentProfile(
+                id="parity-team-member",
+                tenant_id="tenant-parity",
+                name="Parity Team Member",
+            )
+            team = Team(
+                id="parity-team",
+                tenant_id="tenant-parity",
+                name="Parity Team",
+                owner_user_id="user-parity",
+            )
+            db.add(leader)
+            db.add(member)
+            db.add(team)
+            db.add(TeamMember(team_id=team.id, agent_id=leader.id, role="leader"))
+            db.add(TeamMember(team_id=team.id, agent_id=member.id, role="member"))
+            session.team_id = team.id
+            session.agent_id = leader.id
         db.commit()
         known_slots = scenario.get("knownSlots")
         if isinstance(known_slots, dict):
@@ -842,7 +875,7 @@ def main(expected_mode: str | None = None) -> int:
         if scenario.get("category") == "scheduled":
             interaction_mode = "scheduled_task"
         elif scenario.get("executionTarget") == "team_member":
-            interaction_mode = "team_task"
+            interaction_mode = "team_tl"
         request = ChatTurnRequest(
             tenant_id="tenant-parity",
             session_id=session_id,
@@ -948,6 +981,31 @@ def main(expected_mode: str | None = None) -> int:
             awaitingInput=session.awaiting_input_json,
             handoff=session.status == "handoff",
         )
+        if scenario.get("executionTarget") == "team_member":
+            team_runs = list(db.exec(select(TeamRun).order_by(TeamRun.created_at)).all())
+            team_tasks = list(db.exec(select(TeamTask).order_by(TeamTask.created_at)).all())
+            wakes = list(db.exec(select(TeamWakeEvent).order_by(TeamWakeEvent.created_at)).all())
+            recorder.add(
+                "team.state",
+                runs=[
+                    {"status": row.status, "teamId": row.team_id, "tlSessionId": row.tl_session_id}
+                    for row in team_runs
+                ],
+                tasks=[
+                    {
+                        "status": row.status,
+                        "teamId": row.team_id,
+                        "runId": row.team_run_id,
+                        "assigneeAgentId": row.assignee_agent_id,
+                        "sourceTurnId": row.source_turn_id,
+                    }
+                    for row in team_tasks
+                ],
+                wakes=[
+                    {"status": row.status, "teamId": row.team_id, "targetAgentId": row.target_agent_id}
+                    for row in wakes
+                ],
+            )
         recorder.add(
             "terminal",
             **_terminal_payload(db, response),

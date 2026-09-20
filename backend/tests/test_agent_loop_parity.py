@@ -242,6 +242,26 @@ def test_semantic_projection_rejects_task_frame_transition_difference() -> None:
     assert comparison.semantic
 
 
+def test_semantic_projection_rejects_team_durable_state_difference() -> None:
+    left = [{
+        "kind": "team.state", "scenarioId": "team", "q": "q", "sequence": 0,
+        "runs": [{"status": "running", "teamId": "team", "tlSessionId": "session"}],
+        "tasks": [{"status": "pending", "teamId": "team", "assigneeAgentId": "member"}],
+        "wakes": [{"status": "pending", "teamId": "team", "targetAgentId": "member"}],
+    }]
+    right = [{
+        "kind": "team.state", "scenarioId": "team", "q": "q", "sequence": 0,
+        "runs": [{"status": "running", "teamId": "team", "tlSessionId": "session"}],
+        "tasks": [{"status": "pending", "teamId": "team", "assigneeAgentId": "other-member"}],
+        "wakes": [{"status": "pending", "teamId": "team", "targetAgentId": "member"}],
+    }]
+
+    comparison = compare_trace_details(left, right)
+
+    assert comparison.semantic
+    assert comparison.semantic[0].path == "trace[0].tasks[0].assigneeAgentId"
+
+
 def test_canonicalization_removes_transport_noise_but_preserves_semantics() -> None:
     value = {
         "messageId": "message-123456789",
@@ -550,7 +570,7 @@ def test_staffdeck_engine_uses_product_assembly_for_parity_inputs() -> None:
     assert "cancel_chat_turn(session_id, client_turn_id)" in engine
     assert "store.save_agent_loop_checkpoint(" in engine
     assert 'recorder.add("checkpoint"' in engine
-    assert 'recorder.add("terminal"' in engine
+    assert 'recorder.add(\n            "terminal",' in engine
     assert 'recorder.add("user.output"' in engine
     assert '"scenarioId": scenario["scenarioId"]' in engine
     assert 'scenario["scenarioId"] = "pure_text"' not in engine
