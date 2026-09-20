@@ -626,11 +626,15 @@ def main(expected_mode: str | None = None) -> int:
 
         def _generate(self, system_prompt: str, payload: Any) -> dict[str, Any]:
             messages = _model_messages(payload)
+            model_view = _semantic_model_view(payload, messages)
+            task = model_view.get("task") if isinstance(model_view, dict) else {}
+            sop_context = task.get("sop_context") if isinstance(task, dict) else {}
+            step = sop_context.get("step") if isinstance(sop_context, dict) else {}
             attempt = 1 + sum(record["kind"] == "model.request" for record in recorder.records)
             recorder.add(
                 "model.request",
                 attempt=attempt,
-                modelView=_semantic_model_view(payload, messages),
+                modelView=model_view,
                 request={
                     "systemPrompt": system_prompt,
                     "messages": messages,
@@ -647,6 +651,11 @@ def main(expected_mode: str | None = None) -> int:
                     "toolDelays": scenario.get("toolDelays", {}),
                     "faults": scenario.get("faults", {}),
                     "runKey": RUN_KEY,
+                    "taskStepId": (
+                        str(step.get("node_id") or step.get("step_id") or "")
+                        if isinstance(step, dict)
+                        else ""
+                    ),
                 },
             )
             message = response["choices"][0]["message"]

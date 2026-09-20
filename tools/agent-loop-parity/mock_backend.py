@@ -95,6 +95,7 @@ class MockHandler(BaseHTTPRequestHandler):
                 self._json(200, {"choices": []})
                 return
         messages = request.get("messages") if isinstance(request.get("messages"), list) else []
+        task_step_id = str(request.get("taskStepId") or "")
         q = str(request.get("q") or "") or _query_from_messages(messages)
         delays = request.get("delays") if isinstance(request.get("delays"), dict) else {}
         delay_ms = int(delays.get("modelMs") or 0)
@@ -174,6 +175,12 @@ class MockHandler(BaseHTTPRequestHandler):
         if scenario in {"sop_missing_required_slot", "sop_handoff_node", "sop_handoff_routing", "sop_blocked_transition"}:
             status = {"sop_missing_required_slot": "awaiting_user", "sop_handoff_node": "handoff", "sop_handoff_routing": "handoff", "sop_blocked_transition": "blocked"}[scenario]
             self._json(200, _completion(json.dumps({"action": "finish", "status": status, "reply_fragment": f"MOCK_{status.upper()}::{q}", "slot_updates": {}, "next_step_id": None}, ensure_ascii=False)))
+            return
+        if scenario == "sop_step_advance" and task_step_id == "collect":
+            self._json(200, _completion(json.dumps({"action": "finish", "status": "completed", "reply_fragment": f"MOCK_AFTER_TOOL[{scenario}]::{q}", "slot_updates": {}, "next_step_id": "review"}, ensure_ascii=False)))
+            return
+        if scenario == "sop_conditional_transition" and task_step_id == "check":
+            self._json(200, _completion(json.dumps({"action": "finish", "status": "completed", "reply_fragment": f"MOCK_AFTER_TOOL[{scenario}]::{q}", "slot_updates": {}, "next_step_id": "branch_a"}, ensure_ascii=False)))
             return
         self._json(200, _completion(f"MOCK_AFTER_TOOL[{scenario}]::{q}"))
 
