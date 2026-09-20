@@ -15,10 +15,10 @@ from app.db.models import new_id
 from app.session.attachment_store import sandbox_attachment_path
 from app.session.session_schema import ChatAttachmentRead
 
-
 MAX_EXTRACTED_TEXT_CHARS = 24_000
 MAX_PREVIEW_CHARS = 600
 IMAGE_DATA_URL_LIMIT_BYTES = 4 * 1024 * 1024
+MAX_CHAT_ATTACHMENTS = 8
 SUPPORTED_IMAGE_EXTENSIONS = {".gif", ".png", ".svg", ".jpg", ".jpeg", ".webp", ".bmp"}
 SUPPORTED_IMAGE_CONTENT_TYPES = {
     "image/gif",

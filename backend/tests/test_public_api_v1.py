@@ -154,6 +154,7 @@ def test_problem_details_and_openapi_contract(monkeypatch) -> None:
 
     schema = client.get("/openapi.json").json()
     expected = {
+        "/agents/{agent_id}/attachments",
         "/agents/{agent_id}/runs",
         "/agents/{agent_id}/runs:stream",
         "/runs/{run_id}/events",
