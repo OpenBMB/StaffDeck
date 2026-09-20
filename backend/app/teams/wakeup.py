@@ -755,10 +755,17 @@ def run_agent_turn(
         message_visibility=message_visibility,
     )
     result: ChatTurnResponse | None = None
+    stream_error: dict[str, object] | None = None
     for item in AgentLoop(db).handle_turn_stream(request):
         if item.get("event") in {"complete", "done"} and isinstance(item.get("data"), dict):
             result = ChatTurnResponse.model_validate(item["data"])
+        elif item.get("event") == "error" and isinstance(item.get("data"), dict):
+            stream_error = item["data"]
     if result is None:
+        if stream_error is not None:
+            code = str(stream_error.get("code") or "TEAM_AGENT_TURN_ERROR")
+            message = str(stream_error.get("message") or "团队成员执行未返回完整结果")
+            raise RuntimeError(f"团队成员执行失败 [{code}]: {message}")
         raise RuntimeError("团队唤醒执行未返回完整结果")
     outcome = _team_harness_outcome(
         db,

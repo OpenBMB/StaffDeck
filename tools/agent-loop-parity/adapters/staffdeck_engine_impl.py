@@ -71,6 +71,7 @@ from app.db.models import (
     UIConfig,
 )
 from app.security.encryption import encrypt_secret
+from app.teams.wakeup import execute_wake_event
 from app.session.session_schema import (
     ChatAttachmentRead,
     ChatTurnRequest,
@@ -685,7 +686,25 @@ def main(expected_mode: str | None = None) -> int:
         ) -> dict[str, Any]:
             return _actions_from_message(self._generate(system_prompt, payload))
 
-    def deterministic_plan(_self: Any, *_args: Any, **_kwargs: Any) -> TurnPlan:
+    def deterministic_plan(_self: Any, *_args: Any, **kwargs: Any) -> TurnPlan:
+        # The leader's initial turn publishes a remote TeamTask.  A durable
+        # task_assigned wake then invokes the actual member worker, whose
+        # plan executes that assigned task locally rather than recursively
+        # publishing another TeamTask.
+        if kwargs.get("interaction_mode") == "team_task":
+            return plan.model_copy(
+                update={
+                    "task_frames": [
+                        frame.model_copy(
+                            update={
+                                "execution_target": "self",
+                                "assignee_agent_id": None,
+                            }
+                        )
+                        for frame in plan.task_frames
+                    ]
+                }
+            )
         return plan.model_copy(deep=True)
 
     def deterministic_manifest(_self: Any, *_args: Any, **_kwargs: Any) -> CapabilityManifest:
@@ -942,6 +961,19 @@ def main(expected_mode: str | None = None) -> int:
                     )
                 )
             response = loop.handle_turn(request)
+            if scenario.get("executionTarget") == "team_member":
+                # Consume the durable task_assigned wake through the real
+                # member worker while the same deterministic provider and
+                # capability fault points remain in scope for both modes.
+                member_wakes = list(
+                    db.exec(
+                        select(TeamWakeEvent)
+                        .where(TeamWakeEvent.trigger_type == "task_assigned")
+                        .order_by(TeamWakeEvent.created_at)
+                    ).all()
+                )
+                for wake in member_wakes:
+                    execute_wake_event(db, wake)
 
         mock_state = post(f"{mock_url}/control/state", {"runKey": RUN_KEY})
         side_effect_counts = mock_state.get("sideEffects") if isinstance(mock_state, dict) else {}
@@ -1002,8 +1034,29 @@ def main(expected_mode: str | None = None) -> int:
                     for row in team_tasks
                 ],
                 wakes=[
-                    {"status": row.status, "teamId": row.team_id, "targetAgentId": row.target_agent_id}
+                    {
+                        "status": row.status,
+                        "teamId": row.team_id,
+                        "targetAgentId": row.target_agent_id,
+                        "error": row.error,
+                    }
                     for row in wakes
+                ],
+            )
+            member_sessions = [
+                row for row in db.exec(select(ChatSession).order_by(ChatSession.created_at)).all()
+                if row.team_id == "parity-team" and row.agent_id == "parity-team-member"
+            ]
+            recorder.add(
+                "team.member_execution",
+                sessions=[{"status": row.status, "agentId": row.agent_id} for row in member_sessions],
+                reports=[
+                    {
+                        "status": row.status,
+                        "summary": (row.report_json or {}).get("summary"),
+                        "needsInput": (row.report_json or {}).get("needs_input", False),
+                    }
+                    for row in team_tasks
                 ],
             )
         recorder.add(

@@ -262,6 +262,24 @@ def test_semantic_projection_rejects_team_durable_state_difference() -> None:
     assert comparison.semantic[0].path == "trace[0].tasks[0].assigneeAgentId"
 
 
+def test_semantic_projection_rejects_team_member_execution_difference() -> None:
+    left = [{
+        "kind": "team.member_execution", "scenarioId": "team", "q": "q", "sequence": 0,
+        "sessions": [{"status": "active", "agentId": "member"}],
+        "reports": [{"status": "done", "summary": "investigated", "needsInput": False}],
+    }]
+    right = [{
+        "kind": "team.member_execution", "scenarioId": "team", "q": "q", "sequence": 0,
+        "sessions": [{"status": "active", "agentId": "member"}],
+        "reports": [{"status": "escalated", "summary": None, "needsInput": False}],
+    }]
+
+    comparison = compare_trace_details(left, right)
+
+    assert comparison.semantic
+    assert comparison.semantic[0].path == "trace[0].reports[0].status"
+
+
 def test_canonicalization_removes_transport_noise_but_preserves_semantics() -> None:
     value = {
         "messageId": "message-123456789",

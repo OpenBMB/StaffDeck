@@ -99,6 +99,7 @@ _SEMANTIC_EVENT_FIELDS = {
     # are not transport envelopes: a missing run/task/wake or a different
     # assignee changes the externally observable execution path.
     "team.state": {"runs", "tasks", "wakes"},
+    "team.member_execution": {"sessions", "reports"},
     "terminal": {"outcome", "code", "stopReason", "structuredResult", "output", "frameStatus", "runStatus", "taskFrame", "session"},
     "user.output": {"text"},
 }
