@@ -11,9 +11,6 @@ if (!fs.existsSync(sessionModule)) throw new Error(`PilotDeck baseline build is 
 const { createAgentSession } = await import(pathToUrl(sessionModule));
 const { ToolRegistry } = await import(pathToUrl(path.join(root, "dist/src/tool/registry/ToolRegistry.js")));
 const { createDefaultPermissionContext } = await import(pathToUrl(path.join(root, "dist/src/permission/protocol/types.js")));
-const { parseAgentLoopSeedStateProjection } = await import(
-  pathToUrl(path.join(root, "dist/src/agent/modules/checkpoint/seedStateProjection.js")),
-);
 
 let sequence = 0;
 let modelAttempt = 0;
@@ -183,7 +180,7 @@ const initialState = historyMessages.length ? {
   status: "idle",
   abortController: new AbortController(),
 } : undefined;
-const seedState = parseAgentLoopSeedStateProjection(scenario.seedState);
+const seedState = parseSeedState(scenario.seedState);
 if (seedState) {
   push("checkpoint", { status: "seeded", seedState: serializeSeedState(seedState) });
 }
@@ -216,6 +213,36 @@ fs.writeFileSync(output, trace.map((item) => JSON.stringify(item)).join("\n") + 
 process.exit(trace.some((item) => item.kind === "terminal") ? 0 : 2);
 
 function pathToUrl(file) { return new URL(`file://${file}`).href; }
+function parseSeedState(value) {
+  if (value === undefined || value === null) return undefined;
+  if (!isPlainRecord(value)) throw new Error("Invalid parity seedState: expected an object.");
+  const seed = {};
+  if (value.allowedReadFiles !== undefined) {
+    if (!Array.isArray(value.allowedReadFiles) || value.allowedReadFiles.some((filePath) => typeof filePath !== "string")) {
+      throw new Error("Invalid parity seedState.allowedReadFiles.");
+    }
+    seed.allowedReadFiles = [...value.allowedReadFiles];
+  }
+  if (value.readFileState !== undefined) seed.readFileState = parseSeedEntries(value.readFileState, "readFileState", (entry) =>
+    typeof entry.mtimeMs === "number" && ["text", "image", "pdf", "notebook"].includes(entry.kind));
+  if (value.writeSnapshots !== undefined) seed.writeSnapshots = parseSeedEntries(value.writeSnapshots, "writeSnapshots", (entry) =>
+    typeof entry.absolutePath === "string" && typeof entry.mtimeMs === "number" && typeof entry.contentHash === "string");
+  return seed;
+}
+function parseSeedEntries(value, name, isValidEntry) {
+  if (!isPlainRecord(value)) throw new Error(`Invalid parity seedState.${name}.`);
+  const result = new Map();
+  for (const [filePath, entry] of Object.entries(value)) {
+    if (!isPlainRecord(entry) || !isValidEntry(entry)) throw new Error(`Invalid parity seedState.${name} entry: ${filePath}.`);
+    result.set(filePath, { ...entry });
+  }
+  return result;
+}
+function isPlainRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
 function serializeSeedState(seedState) {
   return {
     ...(seedState.allowedReadFiles ? { allowedReadFiles: [...seedState.allowedReadFiles] } : {}),
