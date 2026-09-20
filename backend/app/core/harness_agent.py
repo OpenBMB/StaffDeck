@@ -418,11 +418,12 @@ class HarnessTaskAgent:
                 )
                 continue
 
-            if (
+            knowledge_budget_exhausted = (
                 tool_name == "knowledge_search"
                 and successful_knowledge_searches
                 >= MAX_SUCCESSFUL_KNOWLEDGE_SEARCHES_PER_TASK
-            ):
+            )
+            if knowledge_budget_exhausted:
                 result = {
                     "success": False,
                     "error": {
@@ -557,6 +558,21 @@ class HarnessTaskAgent:
                         ),
                     },
                 )
+            if knowledge_budget_exhausted:
+                return finish(TaskExecutionResult(
+                    task_frame_id=requirement.task_frame_id,
+                    status="failed",
+                    reply_fragment=(
+                        "当前 TaskFrame 已完成两次有效知识检索，不能继续执行第三次。"
+                    ),
+                    citations=citations,
+                    evidence_results=evidence_results,
+                    capability_results=capability_results,
+                    artifacts=artifacts,
+                    task_summary="Harness 知识检索预算已耗尽。",
+                    action_count=iteration,
+                    error=dict(result["error"]),
+                ))
         return finish(TaskExecutionResult(
             task_frame_id=requirement.task_frame_id,
             status="action_budget",

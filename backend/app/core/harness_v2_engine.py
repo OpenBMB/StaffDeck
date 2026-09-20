@@ -992,6 +992,9 @@ class HarnessV2Engine:
                     model_client=LLMClient(model_config),
                     capability_invoker=invoker,
                     remaining_actions=remaining_actions,
+                    successful_knowledge_searches=int(
+                        loop_checkpoint.get("successful_knowledge_searches") or 0
+                    ),
                     checkpoint_sink=lambda payload, run_id=run.id: _save_sidecar_checkpoint(
                         self.store,
                         agent_loop,

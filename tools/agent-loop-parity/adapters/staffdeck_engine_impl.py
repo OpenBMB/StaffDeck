@@ -230,6 +230,35 @@ def _plan(scenario: dict[str, Any], skill: Skill | None) -> TurnPlan:
         if isinstance(content, dict)
         else ""
     )
+    if scenario["scenarioId"] == "sop_task_dependency" and skill is not None:
+        return TurnPlan(
+            decision="start_new_task",
+            selected_task_id="a",
+            user_intent=str(scenario["q"]),
+            task_frames=[
+                PlannedTaskFrame(
+                    task_id="a",
+                    kind="sop",
+                    decision="start_new_task",
+                    target_skill_id=skill.skill_id,
+                    target_step_id="a",
+                    user_intent=str(scenario["q"]),
+                    requirements=[str(scenario["q"])],
+                    source_message=str(scenario["q"]),
+                ),
+                PlannedTaskFrame(
+                    task_id="b",
+                    kind="sop",
+                    decision="start_new_task",
+                    target_skill_id=skill.skill_id,
+                    target_step_id="b",
+                    user_intent=str(scenario["q"]),
+                    requirements=[str(scenario["q"])],
+                    depends_on_task_ids=["a"],
+                    source_message=str(scenario["q"]),
+                ),
+            ],
+        )
     return TurnPlan(
         decision="start_new_task" if skill else "answer_only",
         selected_task_id=f"task-{scenario['scenarioId']}",
@@ -508,6 +537,11 @@ def _terminal_payload(db: Session, response: Any) -> dict[str, Any]:
             HarnessTaskFrameRecord.created_at.desc()
         )
     ).first()
+    loop = db.exec(
+        select(HarnessAgentLoopRecord).order_by(
+            HarnessAgentLoopRecord.created_at.desc()
+        )
+    ).first()
     session = db.exec(select(ChatSession)).first()
     result = dict(run.result_json or {}) if run is not None else {}
     if not result and frame is not None:
@@ -519,6 +553,12 @@ def _terminal_payload(db: Session, response: Any) -> dict[str, Any]:
         dict(receipt.error_json or {}) if receipt is not None else {}
     )
     status = str(result.get("status") or "")
+    checkpoint = dict(loop.checkpoint_json or {}) if loop is not None else {}
+    successful_knowledge_searches = int(
+        result.get("successful_knowledge_searches")
+        or checkpoint.get("successful_knowledge_searches")
+        or 0
+    )
     if receipt_error.get("code") == "RESULT_UNKNOWN":
         status = "result_unknown"
     elif receipt is not None and receipt.status in {"failed", "cancelled"}:
@@ -545,8 +585,8 @@ def _terminal_payload(db: Session, response: Any) -> dict[str, Any]:
             "slots": dict(frame.slots_json or {}) if frame is not None else {},
             "requiredCapabilities": list((frame.task_requirement_json or {}).get("required_capability_names") or []) if frame is not None else [],
             "knowledgeBudget": {
-                "successfulCalls": int(result.get("successful_knowledge_searches") or 0),
-                "remaining": max(0, 2 - int(result.get("successful_knowledge_searches") or 0)),
+                "successfulCalls": successful_knowledge_searches,
+                "remaining": max(0, 2 - successful_knowledge_searches),
             },
             "priorTaskResults": list((frame.task_requirement_json or {}).get("prior_task_results") or []) if frame is not None else [],
         },
@@ -578,6 +618,7 @@ def main(expected_mode: str | None = None) -> int:
     client_turn_id = f"turn-{scenario['scenarioId']}"
     limits = scenario.get("limits") if isinstance(scenario.get("limits"), dict) else {}
     tool_started = threading.Event()
+    applied_forced_sop_version: list[str] = []
 
     class ParityModelClient:
         def __init__(self, _config: Any) -> None:
@@ -637,6 +678,26 @@ def main(expected_mode: str | None = None) -> int:
 
     def deterministic_skills(_self: Any, *_args: Any, **_kwargs: Any) -> list[Skill]:
         return [skill] if skill is not None else []
+
+    original_apply_forced_sop_snapshot = (
+        harness_v2_engine_module._apply_forced_sop_snapshot
+    )
+
+    def observe_forced_sop_snapshot(
+        source_skills: list[Skill],
+        forced_sop_id: str | None,
+        snapshot: dict[str, Any] | None,
+    ) -> list[Skill]:
+        applied = original_apply_forced_sop_snapshot(
+            source_skills,
+            forced_sop_id,
+            snapshot,
+        )
+        target = str(forced_sop_id or "").strip()
+        pinned = next((item for item in applied if item.skill_id == target), None)
+        if pinned is not None:
+            applied_forced_sop_version[:] = [str(pinned.version)]
+        return applied
 
     def invoke_external_tool(
         _self: Any,
@@ -708,11 +769,24 @@ def main(expected_mode: str | None = None) -> int:
             )
         recorder.add("tool.finish", name=name, success=result.get("type") == "success", error=result.get("error"), sideEffectCount=(result.get("data") or {}).get("sideEffectCount"))
         recorder.add("tool.result", result=result, sideEffectCount=(result.get("data") or {}).get("sideEffectCount"))
-        return {
+        response: dict[str, Any] = {
             "success": result["type"] == "success",
             "data": result.get("data"),
             "error": result.get("error"),
         }
+        if name == "knowledge_search" and result.get("type") == "success":
+            data = result.get("data")
+            if isinstance(data, dict) and data.get("evidence"):
+                evidence = {
+                    "knowledge_base_id": next(
+                        iter(data.get("knowledgeBaseIds") or ["handbook"]),
+                        "handbook",
+                    ),
+                    "content": str(data["evidence"]),
+                }
+                response["data"] = {**data, "evidence_pack": [evidence]}
+                response["citations"] = [evidence]
+        return response
 
     database = create_engine(
         "sqlite://",
@@ -802,6 +876,13 @@ def main(expected_mode: str | None = None) -> int:
             )
             stack.enter_context(
                 patch.object(
+                    harness_v2_engine_module,
+                    "_apply_forced_sop_snapshot",
+                    observe_forced_sop_snapshot,
+                )
+            )
+            stack.enter_context(
+                patch.object(
                     HarnessCapabilityInvoker,
                     "_invoke_external_tool",
                     invoke_external_tool,
@@ -858,7 +939,15 @@ def main(expected_mode: str | None = None) -> int:
             awaitingInput=session.awaiting_input_json,
             handoff=session.status == "handoff",
         )
-        recorder.add("terminal", **_terminal_payload(db, response))
+        recorder.add(
+            "terminal",
+            **_terminal_payload(db, response),
+            forcedSopVersion=(
+                applied_forced_sop_version[-1]
+                if applied_forced_sop_version
+                else None
+            ),
+        )
         recorder.add("user.output", text=response.reply)
 
     if cancellation_thread is not None:

@@ -298,14 +298,19 @@ def _last(records: list[dict[str, Any]], kind: str) -> dict[str, Any] | None:
     return next((record for record in reversed(records) if record.get("kind") == kind), None)
 
 
+def _first_defined(*values: Any) -> Any:
+    return next((value for value in values if value is not None), None)
+
+
 def _record_value(records: list[dict[str, Any]], key: str) -> Any:
     terminal = _last(records, "terminal") or {}
     taskframe = _last(records, "taskframe") or {}
     session = _last(records, "session.state") or {}
     checkpoint = _last(records, "checkpoint") or {}
+    terminal_task_frame = terminal.get("taskFrame")
+    if not isinstance(terminal_task_frame, dict):
+        terminal_task_frame = {}
     task_frame_state = taskframe.get("taskFrame")
-    if not isinstance(task_frame_state, dict):
-        task_frame_state = terminal.get("taskFrame")
     if not isinstance(task_frame_state, dict):
         task_frame_state = {}
     session_state = terminal.get("session")
@@ -315,19 +320,26 @@ def _record_value(records: list[dict[str, Any]], key: str) -> Any:
         "terminalOutcome": terminal.get("outcome"),
         "errorCode": terminal.get("code"),
         "stopReason": terminal.get("stopReason"),
-        "frameStatus": terminal.get("frameStatus") or taskframe.get("status") or task_frame_state.get("status"),
+        "frameStatus": terminal.get("frameStatus") or taskframe.get("status") or task_frame_state.get("status") or terminal_task_frame.get("status"),
         "runStatus": terminal.get("runStatus"),
         "taskFrameStatus": taskframe.get("status") or task_frame_state.get("status"),
         "activeStepId": session.get("activeStepId") or session_state.get("activeStepId") or checkpoint.get("activeStepId"),
-        "nextStepId": taskframe.get("nextStepId") or task_frame_state.get("nextStepId"),
+        "nextStepId": taskframe.get("nextStepId") or task_frame_state.get("nextStepId") or terminal_task_frame.get("nextStepId"),
         "awaitingInput": session.get("awaitingInput") or session_state.get("awaitingInput"),
         "handoff": session.get("handoff") or session_state.get("handoff"),
-        "slots": session.get("slots") or taskframe.get("slots") or session_state.get("slots") or task_frame_state.get("slots") or checkpoint.get("slots"),
-        "knowledgeBudget": taskframe.get("knowledgeBudget") or task_frame_state.get("knowledgeBudget") or checkpoint.get("knowledgeBudget"),
-        "requiredCapabilities": taskframe.get("requiredCapabilities") or task_frame_state.get("requiredCapabilities"),
-        "priorTaskResults": taskframe.get("priorTaskResults") or session.get("priorTaskResults") or task_frame_state.get("priorTaskResults") or session_state.get("priorTaskResults"),
-        "executionTarget": taskframe.get("executionTarget") or session.get("executionTarget") or task_frame_state.get("executionTarget") or session_state.get("executionTarget"),
-        "forcedSopVersion": taskframe.get("forcedSopVersion") or session.get("forcedSopVersion") or task_frame_state.get("forcedSopVersion") or session_state.get("forcedSopVersion"),
+        "slots": _first_defined(
+            session.get("slots"),
+            taskframe.get("slots"),
+            session_state.get("slots"),
+            task_frame_state.get("slots"),
+            terminal_task_frame.get("slots"),
+            checkpoint.get("slots"),
+        ),
+        "knowledgeBudget": taskframe.get("knowledgeBudget") or task_frame_state.get("knowledgeBudget") or terminal_task_frame.get("knowledgeBudget") or checkpoint.get("knowledgeBudget"),
+        "requiredCapabilities": taskframe.get("requiredCapabilities") or task_frame_state.get("requiredCapabilities") or terminal_task_frame.get("requiredCapabilities"),
+        "priorTaskResults": taskframe.get("priorTaskResults") or session.get("priorTaskResults") or task_frame_state.get("priorTaskResults") or terminal_task_frame.get("priorTaskResults") or session_state.get("priorTaskResults"),
+        "executionTarget": taskframe.get("executionTarget") or session.get("executionTarget") or task_frame_state.get("executionTarget") or terminal_task_frame.get("executionTarget") or session_state.get("executionTarget"),
+        "forcedSopVersion": terminal.get("forcedSopVersion") or taskframe.get("forcedSopVersion") or session.get("forcedSopVersion") or task_frame_state.get("forcedSopVersion") or terminal_task_frame.get("forcedSopVersion") or session_state.get("forcedSopVersion"),
         "output": terminal.get("output"),
         "modelAttempts": sum(record.get("kind") == "model.request" for record in records),
         "pendingTasks": session.get("pendingTasks") or session_state.get("pendingTasks"),

@@ -309,6 +309,26 @@ class PilotDeckAgentLoopClient:
                             executed_capability_results,
                             requirement.required_capability_names,
                         )
+                    terminal_code = str(message.get("code") or module_failure_code)
+                    if terminal_code == "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED":
+                        error = message.get("error")
+                        detail = error.get("message") if isinstance(error, dict) else None
+                        return self._finalize_result(
+                            TaskExecutionResult(
+                                task_frame_id=requirement.task_frame_id,
+                                status="failed",
+                                reply_fragment="当前 TaskFrame 已完成两次有效知识检索，不能继续执行第三次。",
+                                action_count=0,
+                                error={
+                                    "code": terminal_code,
+                                    "message": str(detail or "StaffDeck knowledge-search budget exhausted."),
+                                },
+                            ),
+                            payload if isinstance(payload, dict) else {},
+                            checkpoint,
+                            executed_capability_results,
+                            requirement.required_capability_names,
+                        )
                     error = message.get("error")
                     detail = error.get("message") if isinstance(error, dict) else None
                     raise PilotDeckAgentLoopError(
@@ -593,7 +613,36 @@ class PilotDeckAgentLoopClient:
                 "code": "ACTION_BUDGET_EXHAUSTED",
                 "message": "StaffDeck action budget exhausted.",
             }
+        terminal_capability_error = next(
+            (
+                item.get("error")
+                for item in result.capability_results
+                if isinstance(item.get("error"), dict)
+                and item["error"].get("code") == "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED"
+            ),
+            None,
+        )
+        if result.status == "completed" and isinstance(terminal_capability_error, dict):
+            result.status = "failed"
+            result.reply_fragment = "当前 TaskFrame 已完成两次有效知识检索，不能继续执行第三次。"
+            result.error = dict(terminal_capability_error)
         merged = dict(checkpoint or {})
+        successful_knowledge_searches = int(
+            merged.get("successful_knowledge_searches") or 0
+        )
+        for capability_result in executed_capability_results:
+            if (
+                capability_result.get("tool_name") != "knowledge_search"
+                or capability_result.get("success") is not True
+                or not _has_usable_knowledge_evidence(capability_result)
+            ):
+                continue
+            successful_knowledge_searches += 1
+            data = capability_result.get("data")
+            if isinstance(data, dict) and data not in result.evidence_results:
+                result.evidence_results.append(dict(data))
+        if successful_knowledge_searches:
+            merged["successful_knowledge_searches"] = successful_knowledge_searches
         messages = payload.get("messages")
         if isinstance(messages, list):
             merged["agentLoopMessages"] = _checkpoint_messages(messages)
@@ -620,14 +669,30 @@ def _capability_result_from_module_exchange(
 ) -> dict[str, Any] | None:
     """Persist only the capability invocation observed in this execution."""
 
-    if str(request.get("module") or "") != "capability" or response.get("ok") is not True:
+    if str(request.get("module") or "") != "capability":
         return None
     request_payload = request.get("payload")
-    response_payload = response.get("payload")
-    if not isinstance(request_payload, Mapping) or not isinstance(response_payload, Mapping):
+    if not isinstance(request_payload, Mapping):
         return None
-    name = str(response_payload.get("toolName") or request_payload.get("name") or "").strip()
+    response_payload = response.get("payload")
+    name = str(
+        response_payload.get("toolName")
+        if isinstance(response_payload, Mapping)
+        else request_payload.get("name") or ""
+    ).strip()
     if not name:
+        return None
+    if response.get("ok") is not True:
+        raw_error = response.get("error")
+        error = dict(raw_error) if isinstance(raw_error, Mapping) else {}
+        error.setdefault("code", str(response.get("code") or "TOOL_EXECUTION_FAILED"))
+        return {
+            "tool_name": name,
+            "success": False,
+            "data": None,
+            "error": error,
+        }
+    if not isinstance(response_payload, Mapping):
         return None
     failure = response_payload.get("type") == "error"
     raw_error = response_payload.get("error")
@@ -637,6 +702,14 @@ def _capability_result_from_module_exchange(
         "data": response_payload.get("data"),
         "error": dict(raw_error) if isinstance(raw_error, Mapping) else None,
     }
+
+
+def _has_usable_knowledge_evidence(result: Mapping[str, Any]) -> bool:
+    data = result.get("data")
+    if not isinstance(data, Mapping):
+        return False
+    evidence = data.get("evidence_pack")
+    return isinstance(evidence, list) and any(isinstance(item, Mapping) for item in evidence)
 
 
 def _final_message_text(payload: Mapping[str, Any]) -> str:

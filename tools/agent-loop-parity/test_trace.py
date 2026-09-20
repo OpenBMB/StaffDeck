@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from trace import compare_traces
+from trace import compare_traces, validate_trace_expectations
 
 
 def lifecycle(kind: str, name: str, call_id: str, sequence: int, *, concurrency_safe: bool) -> dict[str, object]:
@@ -118,6 +118,66 @@ class ConcurrentToolTraceTests(unittest.TestCase):
 
 
 class TimelineTraceTests(unittest.TestCase):
+    def test_empty_slots_are_distinct_from_an_unrecorded_slot_state(self) -> None:
+        records = [{
+            "kind": "terminal",
+            "scenarioId": "empty-slots",
+            "q": "compare",
+            "sequence": 0,
+            "outcome": "completed",
+            "taskFrame": {"slots": {}},
+        }]
+        self.assertEqual(
+            validate_trace_expectations(
+                records,
+                {"expected": {"slots": {}}},
+                "staffdeck",
+            ),
+            [],
+        )
+
+    def test_terminal_forced_sop_version_is_an_oracle_value(self) -> None:
+        records = [{
+            "kind": "terminal",
+            "scenarioId": "scheduled-sop",
+            "q": "compare",
+            "sequence": 0,
+            "outcome": "completed",
+            "forcedSopVersion": "7",
+        }]
+        self.assertEqual(
+            validate_trace_expectations(
+                records,
+                {"expected": {"forcedSopVersion": "7"}},
+                "staffdeck",
+            ),
+            [],
+        )
+
+    def test_terminal_task_frame_budget_is_an_oracle_fallback(self) -> None:
+        records = [{
+            "kind": "taskframe",
+            "scenarioId": "knowledge-budget",
+            "q": "compare",
+            "sequence": 0,
+            "taskFrame": {"status": "completed"},
+        }, {
+            "kind": "terminal",
+            "scenarioId": "knowledge-budget",
+            "q": "compare",
+            "sequence": 1,
+            "outcome": "completed",
+            "taskFrame": {"knowledgeBudget": {"successfulCalls": 1, "remaining": 1}},
+        }]
+        self.assertEqual(
+            validate_trace_expectations(
+                records,
+                {"expected": {"knowledgeBudget": {"successfulCalls": 1, "remaining": 1}}},
+                "staffdeck",
+            ),
+            [],
+        )
+
     def test_generated_pending_task_source_turn_is_not_semantic(self) -> None:
         native = [{
             "kind": "session.state",

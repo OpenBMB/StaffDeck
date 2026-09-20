@@ -148,6 +148,23 @@ def test_action_budget_is_consumed_by_capability_actions() -> None:
     assert len(model.requests) == 1
 
 
+def test_knowledge_search_budget_is_enforced_by_the_host_bridge() -> None:
+    bridge = StaffDeckPilotDeckModuleBridge(
+        model_client=FakeModel({"reply_fragment": "ok"}),
+        capability_invoker=FakeInvoker({
+            "success": True,
+            "data": {"evidence_pack": [{"content": "evidence"}]},
+        }),
+        successful_knowledge_searches=1,
+    )
+
+    bridge.capability({"name": "knowledge_search", "arguments": {}})
+    with pytest.raises(StaffDeckModuleError, match="两次有效知识检索") as exc_info:
+        bridge.capability({"name": "knowledge_search", "arguments": {}})
+
+    assert exc_info.value.code == "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED"
+
+
 def test_model_projects_tool_history_with_name_and_json_result() -> None:
     model = FakeModel({"reply_fragment": "继续处理"})
     bridge = StaffDeckPilotDeckModuleBridge(

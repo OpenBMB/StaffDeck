@@ -11,6 +11,7 @@ from app.llm import LLMClient
 
 STAFFDECK_RESULT_CARRIER_PREFIX = "__STAFFDECK_TASK_RESULT__="
 STAFFDECK_RESULT_CARRIER_SUFFIX = "__END__"
+MAX_SUCCESSFUL_KNOWLEDGE_SEARCHES_PER_TASK = 2
 
 
 def _has_structured_result_fields(action: Mapping[str, Any]) -> bool:
@@ -68,12 +69,14 @@ class StaffDeckPilotDeckModuleBridge:
         permission_checker: Callable[[dict[str, Any]], Mapping[str, Any]] | None = None,
         checkpoint_sink: Callable[[dict[str, Any]], Mapping[str, Any] | None] | None = None,
         remaining_actions: int | None = None,
+        successful_knowledge_searches: int = 0,
     ) -> None:
         self.model_client = model_client
         self.capability_invoker = capability_invoker
         self.permission_checker = permission_checker
         self.checkpoint_sink = checkpoint_sink
         self._remaining_actions = remaining_actions
+        self._successful_knowledge_searches = max(0, successful_knowledge_searches)
 
     def __call__(self, module: str, payload: dict[str, Any]) -> Mapping[str, Any]:
         if module == "model":
@@ -351,6 +354,18 @@ class StaffDeckPilotDeckModuleBridge:
         arguments = payload.get("arguments")
         if not isinstance(arguments, dict):
             arguments = {}
+        if (
+            name == "knowledge_search"
+            and self._successful_knowledge_searches
+            >= MAX_SUCCESSFUL_KNOWLEDGE_SEARCHES_PER_TASK
+        ):
+            raise StaffDeckModuleError(
+                "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED",
+                (
+                    "当前 TaskFrame 已完成两次有效知识检索。请使用已有证据完成"
+                    "原始需求；不要扩展相邻主题或继续改写同义查询。"
+                ),
+            )
         # Harness action budgets count capability actions, not model requests.
         # Consume the slot at the same boundary as the legacy task agent so a
         # multi-action model response projects the next iteration's budget
@@ -385,6 +400,8 @@ class StaffDeckPilotDeckModuleBridge:
         if isinstance(result, dict) and result.get("type") in {"success", "error"}:
             return result
         if isinstance(result, dict) and result.get("success") is True:
+            if name == "knowledge_search" and _has_usable_knowledge_evidence(result):
+                self._successful_knowledge_searches += 1
             return {
                 "type": "success",
                 "toolCallId": tool_call_id,
@@ -437,6 +454,14 @@ class StaffDeckPilotDeckModuleBridge:
             return {"accepted": True}
         result = self.checkpoint_sink(payload)
         return dict(result or {"accepted": True})
+
+
+def _has_usable_knowledge_evidence(result: Mapping[str, Any]) -> bool:
+    data = result.get("data")
+    if not isinstance(data, Mapping):
+        return False
+    evidence = data.get("evidence_pack")
+    return isinstance(evidence, list) and any(isinstance(item, Mapping) for item in evidence)
 
 
 __all__ = ["StaffDeckPilotDeckModuleBridge"]

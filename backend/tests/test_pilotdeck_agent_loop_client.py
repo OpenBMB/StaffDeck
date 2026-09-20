@@ -12,7 +12,12 @@ from app.core.pilotdeck_agent_loop_client import (
     PilotDeckExecutionIdentity,
 )
 from app.core.harness_agent import HarnessExecutionFenced
-from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest, TaskRequirement
+from app.core.task_request_compiler import (
+    CapabilityDescriptor,
+    CapabilityManifest,
+    TaskExecutionResult,
+    TaskRequirement,
+)
 
 SIDECAR = r'''
 import json, sys
@@ -105,8 +110,9 @@ def _identity() -> PilotDeckExecutionIdentity:
     )
 
 
-def _client_script(final_payload: str, *, outcome: str = "completed", request_id_expr: str = 'msg["requestId"]', code: str | None = None) -> str:
+def _client_script(final_payload: str, *, outcome: str = "completed", request_id_expr: str = 'msg["requestId"]', code: str | None = None, error: dict[str, str] | None = None) -> str:
     code_field = f",\"code\":{code!r}" if code is not None else ""
+    error_field = f",\"error\":{json.dumps(error)}" if error is not None else ""
     return f'''
 import json, sys
 for line in sys.stdin:
@@ -115,7 +121,7 @@ for line in sys.stdin:
         print(json.dumps({{"kind":"response","messageId":"hello-res","inReplyTo":msg["messageId"],"ok":True,"connectionGeneration":"test-connection"}}), flush=True)
     elif msg.get("method") == "execute":
         print(json.dumps({{"kind":"response","messageId":"accepted","inReplyTo":msg["messageId"],"requestId":msg["requestId"],"ok":True,"streamId":"stream-1","cursor":0}}), flush=True)
-        print(json.dumps({{"kind":"event","messageId":"final-1","eventType":"agent.execute.completed","streamId":"stream-1","sequence":0,"runId":msg["runId"],"operationId":msg["operationId"],"requestId":{request_id_expr},"final":True,"outcome":{outcome!r}{code_field},"payload":{final_payload}}}), flush=True)
+        print(json.dumps({{"kind":"event","messageId":"final-1","eventType":"agent.execute.completed","streamId":"stream-1","sequence":0,"runId":msg["runId"],"operationId":msg["operationId"],"requestId":{request_id_expr},"final":True,"outcome":{outcome!r}{code_field}{error_field},"payload":{final_payload}}}), flush=True)
 '''
 
 
@@ -149,6 +155,76 @@ for line in sys.stdin:
     assert exc_info.value.code == "RESULT_UNKNOWN"
     assert str(exc_info.value) == "capability acknowledgement was lost"
     assert exc_info.value.result_unknown is True
+
+
+def test_sidecar_client_projects_knowledge_evidence_into_host_checkpoint() -> None:
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", SIDECAR])
+    result = client._finalize_result(
+        TaskExecutionResult(task_frame_id="frame-1", status="completed"),
+        {},
+        {"successful_knowledge_searches": 1},
+        [{
+            "tool_name": "knowledge_search",
+            "success": True,
+            "data": {
+                "evidence_pack": [{"knowledge_base_id": "handbook", "content": "evidence"}],
+            },
+            "error": None,
+        }],
+        [],
+    )
+    client.close()
+
+    assert result.loop_checkpoint["successful_knowledge_searches"] == 2
+    assert result.evidence_results == [{
+        "evidence_pack": [{"knowledge_base_id": "handbook", "content": "evidence"}],
+    }]
+
+
+def test_sidecar_client_preserves_a_terminal_knowledge_budget_failure() -> None:
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", SIDECAR])
+    result = client._finalize_result(
+        TaskExecutionResult(task_frame_id="frame-1", status="completed"),
+        {},
+        {},
+        [{
+            "tool_name": "knowledge_search",
+            "success": False,
+            "data": None,
+            "error": {
+                "code": "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED",
+                "message": "knowledge budget exhausted",
+            },
+        }],
+        [],
+    )
+    client.close()
+
+    assert result.status == "failed"
+    assert result.error == {
+        "code": "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED",
+        "message": "knowledge budget exhausted",
+    }
+
+
+def test_client_projects_terminal_knowledge_budget_failure_without_generic_wrapping() -> None:
+    client = PilotDeckAgentLoopClient([sys.executable, "-u", "-c", _client_script(
+        "{}",
+        outcome="failed",
+        code="KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED",
+        error={
+            "code": "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED",
+            "message": "third knowledge search was rejected",
+        },
+    )])
+    result = client.execute(_requirement(), identity=_identity())
+    client.close()
+
+    assert result.status == "failed"
+    assert result.error == {
+        "code": "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED",
+        "message": "third knowledge search was rejected",
+    }
 
 
 def test_client_rejects_malformed_completed_payload() -> None:

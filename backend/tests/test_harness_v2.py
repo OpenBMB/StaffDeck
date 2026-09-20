@@ -3799,6 +3799,11 @@ def test_harness_agent_limits_successful_knowledge_searches_to_two(
     assert result.capability_results[-1]["error"]["code"] == (
         "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED"
     )
+    assert result.status == "failed"
+    assert result.error == {
+        "code": "KNOWLEDGE_SEARCH_BUDGET_EXHAUSTED",
+        "message": "当前 TaskFrame 已完成两次有效知识检索。请使用已有证据完成原始需求；不要扩展相邻主题或继续改写同义查询。",
+    }
 
 
 def test_harness_agent_projects_only_validated_current_turn_images(

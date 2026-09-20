@@ -145,6 +145,13 @@ class MockHandler(BaseHTTPRequestHandler):
         if scenario == "sop_multi_action_budget":
             self._json(200, _tool_completion([("loop", {"q": q})]))
             return
+        if scenario == "sop_knowledge_budget_exhausted":
+            knowledge_results = sum(
+                1 for item in _walk(messages) if _is_tool_result(item)
+            )
+            if knowledge_results <= 2:
+                self._json(200, _tool_completion([("knowledge_search", {"q": q})]))
+                return
         if scenario in {"single_tool", "tool_error", "permission_denial", "max_turns", "permission_allow", "permission_ask_approve", "permission_ask_deny", "allowed_read_files", "denied_read_files", "cancel_during_tool", "deadline_during_tool", "sidecar_restart_before_effect", "sidecar_restart_after_effect", "duplicate_execute", "sop_single_step_complete", "sop_step_advance", "sop_conditional_transition", "sop_slot_update_and_resume", "sop_known_slot_reuse", "sop_required_capability_gate", "sop_required_capability_failure", "sop_required_knowledge_search", "sop_knowledge_budget_exhausted", "sop_checkpoint_resume", "sop_failed_step_recovery", "sop_team_task", "sop_cancel_during_tool", "sop_deadline_during_tool", "sop_unknown_requeue", "large_tool_result", "tool_retryable_error", "tool_non_retryable_error"} and not has_tool_result:
             tool = {
                 "single_tool": "lookup", "tool_error": "lookup_error", "permission_denial": "restricted", "max_turns": "loop",
