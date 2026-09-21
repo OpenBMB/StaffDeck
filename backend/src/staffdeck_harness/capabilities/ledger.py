@@ -31,7 +31,7 @@ from sqlmodel import Session, select
 
 from app.db.models import HarnessInvocationRecord, utc_now
 from staffdeck_harness.contracts.errors import OutcomeUnknown
-from staffdeck_harness.contracts.invocation import ModuleInvocation, ModuleResult, Receipt
+from staffdeck_harness.contracts.invocation import ModuleInvocation, ModuleResult, Receipt, normalize_result
 
 # Error codes the legacy invoker treats as "the provider never saw the request".
 NOT_SENT_CODES = frozenset(
@@ -135,6 +135,7 @@ class InvocationLedger:
     # -- lifecycle ------------------------------------------------------------
 
     def cache_projection(self, receipt: Receipt, result: ModuleResult) -> None:
+        result = normalize_result(result)
         row = self.db.get(HarnessInvocationRecord, receipt.ledger_id)
         if row is None or row.status != "completed":
             return
@@ -175,12 +176,15 @@ class InvocationLedger:
 
     def finish(self, entry: LedgerEntry, result: ModuleResult, *, cache_result: bool = True) -> Receipt:
         row = entry.row
+        # Normalize before persistence, but classify execution from the provider's
+        # original outcome. A bad output must never release an executed write claim.
+        safe_result = normalize_result(result)
         payload: dict[str, Any] = {
-            "success": result.success,
-            "data": result.data,
-            "error": result.error,
-            "citations": list(result.citations),
-            "artifacts": list(result.artifacts),
+            "success": safe_result.success,
+            "data": safe_result.data,
+            "error": safe_result.error,
+            "citations": list(safe_result.citations),
+            "artifacts": list(safe_result.artifacts),
         }
         if result.success:
             row.status = "completed"

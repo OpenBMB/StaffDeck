@@ -53,6 +53,7 @@ from staffdeck_harness.capabilities.host import ActivationSlot, CapabilityHost, 
 from staffdeck_harness.composition.compiler import CompositionSnapshot
 from staffdeck_harness.contracts.hooks import HookContext, HookDecision
 from staffdeck_harness.contracts.invocation import InvocationContext, ModuleInvocation, ModuleResult
+from staffdeck_harness.contracts.json_values import json_safe
 from staffdeck_harness.contracts.security import SecurityContext
 from staffdeck_harness.interactions.pipeline_host import InteractionPipelineHost, PipelineState
 from staffdeck_harness.security.profile import Guard
@@ -240,7 +241,7 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
         "out_of_scope": requirement.out_of_scope_task_intents,
         "prior_task_results": requirement.prior_task_results[-3:],
     }
-    parts.append("# 本步骤任务\n" + json.dumps(task, ensure_ascii=False, indent=1))
+    parts.append("# 本步骤任务\n" + json.dumps(json_safe(task, path="$.task"), ensure_ascii=False, indent=1, allow_nan=False))
     if attachments_text:
         parts.append("# 附件\n" + attachments_text)
     elif requirement.attachments:
@@ -253,7 +254,7 @@ def _step_prompt(requirement: TaskRequirement, state: PipelineState, decision_co
             key = str(d.get("attachment_id") or d.get("filename") or d.get("id") or "")
             summary[key] = {k: d.get(k) for k in ("filename", "kind", "content_type", "size", "workspace_relative_path", "sandbox_path", "preview", "note") if d.get(k) not in (None, "")}
         if summary:
-            parts.append("# 附件\n" + json.dumps(summary, ensure_ascii=False, indent=1))
+            parts.append("# 附件\n" + json.dumps(json_safe(summary, path="$.attachments"), ensure_ascii=False, indent=1, allow_nan=False))
     if requirement.source_user_message:
         parts.append("# 用户原话\n" + requirement.source_user_message)
     parts.append(

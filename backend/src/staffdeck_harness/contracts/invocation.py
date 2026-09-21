@@ -120,11 +120,8 @@ class Receipt:
 
     def to_json(self) -> dict[str, Any]:
         """The durable/model-facing form must not retain Python datetime objects."""
-        from dataclasses import asdict
-        value = asdict(self)
-        value["started_at"] = self.started_at.isoformat() if self.started_at else None
-        value["finished_at"] = self.finished_at.isoformat() if self.finished_at else None
-        return value
+        from .json_values import json_safe
+        return json_safe(self, path="$.receipt")
 
 
 @dataclass(frozen=True)
@@ -143,6 +140,28 @@ class ModuleResult:
     @classmethod
     def fail(cls, code: str, message: str, **kw: Any) -> "ModuleResult":
         return cls(success=False, error={"code": code, "message": message}, **kw)
+
+
+def normalize_result(result: ModuleResult) -> ModuleResult:
+    """Normalize the whole output contract, including plugin metadata and errors.
+
+    A conversion error describes output handling, not whether a write executed.
+    Callers must retain the original invocation ledger outcome/side-effect claim.
+    """
+    from .json_values import JsonValueError, json_safe
+    try:
+        value = json_safe(result, path="$.result")
+        return ModuleResult(
+            success=value["success"], data=value["data"], error=value["error"],
+            citations=tuple(value["citations"]), artifacts=tuple(value["artifacts"]),
+            extensions=value["extensions"],
+        )
+    except JsonValueError as exc:
+        return ModuleResult(success=False, error={
+            "code": "RESULT_NOT_JSON_SAFE", "message": exc.message,
+            "details": exc.details, "retryable": False,
+            "business_replay_allowed": False, "next_action": "fix_module_result",
+        })
 
 
 @dataclass(frozen=True)

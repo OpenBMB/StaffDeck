@@ -189,6 +189,7 @@ def project_external_result(db, task, result):
     from staffdeck_harness.modules.registry import peek_registry
     registry = db.info.get('staffdeck_registry') or peek_registry()
     if registry is None and not (task.status_config_json or {}).get('_runtime'):
-        return result
+        from staffdeck_harness.runtime.result_policy import project_result
+        return project_result(None, None, result)
     with task_activation(db, task) as activation:
         return activation[0].project_result(activation[1], result)
