@@ -622,7 +622,7 @@ def test_delete_agent_cleans_channel_mounts_and_repoints_default() -> None:
 
     client = _make_agents_client(engine)
     deleted = client.delete(
-        f"/api/enterprise/agents/agent_cw?tenant_id=tenant_demo",
+        "/api/enterprise/agents/agent_cw?tenant_id=tenant_demo",
         headers=_auth(users["owner"]),
     )
     assert deleted.status_code == 200
@@ -671,7 +671,7 @@ def test_delete_agent_last_mount_keeps_binding_agent() -> None:
 
     client = _make_agents_client(engine)
     deleted = client.delete(
-        f"/api/enterprise/agents/agent_cw?tenant_id=tenant_demo",
+        "/api/enterprise/agents/agent_cw?tenant_id=tenant_demo",
         headers=_auth(users["owner"]),
     )
     assert deleted.status_code == 200
