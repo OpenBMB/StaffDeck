@@ -100,6 +100,21 @@ class InvocationLedger:
         if not key:
             return None
         prior = self.find_prior(key)
+        if prior is None and invocation.legacy_side_effect_key() != key:
+            legacy = self.find_prior(invocation.legacy_side_effect_key())
+            if legacy is not None:
+                # Old keys may collide across tools. Only reuse a record whose
+                # durable resource identity is known; ambiguity must block writes.
+                binding = (legacy.approval_json or {}).get("binding_id")
+                if not binding and isinstance(legacy.arguments_json, dict):
+                    field = {"tool.invoke/v1": "tool_id", "mcp.invoke/v1": "tool_id",
+                             "a2a.invoke/v1": "tool_id", "general_skill.consume/v1": "skill_id"}.get(invocation.operation)
+                    binding = legacy.arguments_json.get(field) if field else None
+                if not binding:
+                    raise OutcomeUnknown("旧调用记录缺少资源身份，不能安全判断是否已执行；请先核对，不会自动重放。",
+                                         details={"reason": "LEGACY_RESOURCE_IDENTITY_UNKNOWN", "prior_invocation_id": legacy.id})
+                if binding == invocation.binding_id:
+                    prior = legacy
         if prior is None:
             return None
         if prior.status == "completed" and "success" in (prior.response_cache_json or {}):
@@ -120,7 +135,7 @@ class InvocationLedger:
                 invocation_id=invocation.invocation_id,
                 status="completed",
                 request_digest=prior.request_digest,
-                side_effect_key=key,
+                side_effect_key=prior.logical_action_key,
                 replayed_from=prior.id,
                 ledger_id=prior.id,
                 started_at=prior.started_at,

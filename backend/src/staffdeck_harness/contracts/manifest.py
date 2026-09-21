@@ -88,8 +88,8 @@ SLOT_FOR_OPERATION: dict[str, SlotName] = {
     "sop.execute/v1": SlotName.SOP_SLOT_CONTROL,
 }
 
-HookPoint = Literal["pre_step", "pre_tool", "post_tool", "turn_stopping"]
-HOOK_POINTS: tuple[HookPoint, ...] = ("pre_step", "pre_tool", "post_tool", "turn_stopping")
+HookPoint = Literal["pre_step", "pre_tool", "post_tool", "replay_tool", "turn_stopping"]
+HOOK_POINTS: tuple[HookPoint, ...] = ("pre_step", "pre_tool", "post_tool", "replay_tool", "turn_stopping")
 
 
 @dataclass(frozen=True)

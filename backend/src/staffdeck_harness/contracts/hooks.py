@@ -1,10 +1,16 @@
 """Hook envelope contracts for the InteractionPipelineHost.
 
-Hooks run at four fixed points around one Harness v3 step. Modules *contribute*
+Hooks run at fixed points around one Harness v3 step. Modules *contribute*
 handlers; they never own the plan. Every handler receives a ``HookContext``
 snapshot and returns a ``HookDecision``. Decisions are merged
 most-restrictive-first (deny > steer > modify > pass) exactly like the engine's own
 interception surface so a later handler cannot resurrect a denial.
+
+``post_tool`` processes a fresh result once. ``replay_tool`` is a separate,
+deny-only guard for current output eligibility; it must not transform results or
+repeat notifications/writes. Host still rechecks activation, pre_tool and PEP
+before any replay. Modules with dynamic output restrictions register that check
+at replay_tool as well as applying it to fresh results.
 """
 
 from __future__ import annotations

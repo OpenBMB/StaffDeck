@@ -36,6 +36,8 @@ class ExternalTaskCallback(BaseModel):
 
 
 def task_read(task: ExternalBusinessTask, db: Session) -> dict[str, Any]:
+    from app.tools.external_tasks import task_result_envelope
+    envelope = task_result_envelope(db, task)
     events = db.exec(
         select(ExternalBusinessTaskEvent)
         .where(ExternalBusinessTaskEvent.task_id == task.id)
@@ -49,6 +51,10 @@ def task_read(task: ExternalBusinessTask, db: Session) -> dict[str, Any]:
         "session_id": task.session_id,
         "status": task.status,
         "result": task.result_json or {},
+        "module_result": envelope,
+        "citations": envelope.get('citations') or [],
+        "artifacts": envelope.get('artifacts') or [],
+        "extensions": envelope.get('extensions') or {},
         "error": task.error_json or {},
         "poll_attempts": task.poll_attempts,
         "created_at": task.created_at.isoformat(),

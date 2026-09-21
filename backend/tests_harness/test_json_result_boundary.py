@@ -154,7 +154,7 @@ def test_async_projection_uses_shared_boundary(db, monkeypatch, active):
 def test_async_completion_persistence_and_sop_resume(db, monkeypatch, delivery, invalid):
     from sqlmodel import select
     from app.agents.branching import ensure_private_resource_binding
-    from app.db.models import ChatSession, ExternalBusinessTask, ExternalBusinessTaskEvent, HarnessTaskFrameRecord
+    from app.db.models import ChatSession, ExternalBusinessTask, ExternalBusinessTaskEvent, HarnessTaskFrameRecord, HarnessAgentLoopRecord
     from app.tools.external_tasks import apply_task_event, poll_due_external_tasks
     from app.tools.tool_executor import ToolResult
     from staffdeck_harness.composition.compiler import CompositionCompiler
@@ -176,7 +176,9 @@ def test_async_completion_persistence_and_sop_resume(db, monkeypatch, delivery, 
         observed.append(ctx.payload['data'])
         assert ctx.payload['data']['when'] == STAMP.isoformat()
         return HookDecision(kind='modify', replacement=ModuleResult.ok(
-            {'after': object() if invalid else STAMP}))
+            {'after': object() if invalid else STAMP},
+            citations=({'id': 'citation1', 'source_path': 'doc', 'excerpt': 'quoted'},),
+            artifacts=({'path': 'result.txt'},), extensions={'evidence': {'id': 'ev1'}, 'custom': 'approved'}))
     monkeypatch.setattr(registry, 'hooks', lambda *a, **kw: (
         HookContribution(point='post_tool', handler='test.json', critical=True),))
     monkeypatch.setattr(registry, 'hook_handlers', lambda *a, **kw: {'test.json': policy})
@@ -186,8 +188,11 @@ def test_async_completion_persistence_and_sop_resume(db, monkeypatch, delivery, 
         _ctx(), binding_id=tool.id, metadata={'proxy_name': 'tool_invoke'}))
     assert result.success
     task = db.get(ExternalBusinessTask, result.data['task_id'])
+    loop = HarnessAgentLoopRecord(id='json-loop', tenant_id='t1', session_id='s1', loop_key='sop1',
+        checkpoint_json={'task_frame_id': 'tf1', 'capability_results': [{'data': {'task_id': task.id}}]})
+    db.add(loop)
     frame = HarnessTaskFrameRecord(tenant_id='t1', session_id='s1', source_turn_id='turn1',
-        task_id='tf1', kind='sop', status='waiting_external_task',
+        task_id='tf1', kind='sop', status='waiting_external_task', agent_loop_id=loop.id,
         result_json={'structured_result': {'task_id': task.id}})
     db.add(frame)
     db.commit()
@@ -213,3 +218,20 @@ def test_async_completion_persistence_and_sop_resume(db, monkeypatch, delivery, 
         assert frame.status == 'ready_to_resume'
         assert frame.slots_json == {'after': STAMP.isoformat()}
         assert STAMP.isoformat() in prompt_for([frame.result_json], known_slots=frame.slots_json)
+        from app.api.external_business_tasks import task_read
+        from staffdeck_harness.runtime.execution_context import ExecutionContext
+        db.expire_all()
+        public = task_read(task, db)
+        assert public['module_result']['version'] == 1
+        assert public['result'] == {'after': STAMP.isoformat()}
+        assert public['artifacts'] == [{'path': 'result.txt'}]
+        assert public['extensions']['custom'] == 'approved'
+        assert public['citations'][0]['id'] == 'citation1'
+        restored = ExecutionContext.restore(TaskRequirement(task_frame_id='tf1', kind='sop', goal='resume'),
+            loop.checkpoint_json, tenant_id='t1', agent_id='a1', session_id='s1')
+        assert restored.artifacts == public['artifacts'] and restored.citations == public['citations']
+        assert restored.evidence == [{'id': 'ev1'}]
+        assert restored.capability_results[0]['extensions']['custom'] == 'approved'
+        apply_task_event(db, task, event_id='late', event_type='result', status='completed',
+            data={'result': {'unapproved': True}, 'module_result': {'version': 1, 'artifacts': [{'path': 'evil'}]}})
+        assert task_read(task, db)['module_result'] == public['module_result']

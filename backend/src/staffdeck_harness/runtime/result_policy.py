@@ -20,3 +20,20 @@ def project_result(run_hooks, invocation, result):
         replacement = normalize_result(decision.replacement)
         return normalize_result(replace(replacement, citations=tuple(normalize_knowledge_citations(replacement.citations))))
     return normalize_result(result)
+
+
+def check_replay(run_hooks, invocation, result):
+    """Approved cached output is immutable; replay guards can only pass or deny.
+
+    Activation, pre_tool and PEP are checked by Host before cache access. Dynamic
+    output eligibility belongs in replay_tool, not repeatable transformations.
+    """
+    safe = normalize_result(result)
+    if run_hooks is None:
+        return safe
+    decision = run_hooks('replay_tool', invocation, normalize_result(safe))
+    if decision.kind == 'deny':
+        return ModuleResult.fail('POST_TOOL_DENIED', decision.reason or 'cached result refused by policy')
+    if decision.kind != 'pass' or decision.replacement is not None:
+        return ModuleResult.fail('REPLAY_POLICY_INVALID', 'replay_tool must only pass or deny; cached results cannot be transformed again')
+    return safe

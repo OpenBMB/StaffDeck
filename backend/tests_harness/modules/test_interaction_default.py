@@ -175,6 +175,7 @@ def test_provider_interaction_default_handlers_mapping(registry, module):
         "pre_step": ["persona", "memory.recall", "sop.execution_slice"],
         "pre_tool": ["activation.allowlist", "capability.pep"],
         "post_tool": ["ledger.record", "citations.collect"],
+        "replay_tool": [],
         "turn_stopping": ["sop.output_supervisor", "handoff.detect"],
     }
     InteractionPipelineHost(plan, handlers)  # every planned handler resolves

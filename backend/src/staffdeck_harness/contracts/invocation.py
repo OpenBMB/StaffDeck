@@ -81,6 +81,13 @@ class ModuleInvocation:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def side_effect_key(self) -> str | None:
+        return self._side_effect_key(legacy=False)
+
+    def legacy_side_effect_key(self) -> str | None:
+        """Read-only lookup of pre-resource-scoped claims; never create new ones."""
+        return self._side_effect_key(legacy=True)
+
+    def _side_effect_key(self, *, legacy: bool) -> str | None:
         if not self.side_effecting or not self.replayable:
             return None
         ctx = self.context
@@ -94,16 +101,19 @@ class ModuleInvocation:
                 self.canonical_arguments(),
             ]
         )
-        if self._external_binding_key():
-            payload += "|" + self._external_binding_key()
+        binding = self._external_binding_key(legacy=legacy)
+        if binding:
+            payload += "|" + binding
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    def _external_binding_key(self) -> str:
+    def _external_binding_key(self, *, legacy: bool = False) -> str:
+        if not legacy:
+            return self.binding_id or ""
         # Preserve existing ledger keys for shipped proxies, whose resource is already an
         # argument. New generic operations carry it separately and must include it in identity.
-        legacy = {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1", "knowledge.search/v1",
+        legacy_operations = {"tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1", "knowledge.search/v1",
                   "general_skill.consume/v1", "sandbox.execute/v1", "artifact.publish/v1"}
-        return self.binding_id or "" if self.operation not in legacy else ""
+        return self.binding_id or "" if self.operation not in legacy_operations else ""
 
 
 @dataclass(frozen=True)
@@ -162,6 +172,12 @@ def normalize_result(result: ModuleResult) -> ModuleResult:
             "details": exc.details, "retryable": False,
             "business_replay_allowed": False, "next_action": "fix_module_result",
         })
+
+
+def result_envelope(result: ModuleResult) -> dict[str, Any]:
+    """Versioned complete approved result; persistence must not pick only data/error."""
+    from .json_values import json_safe
+    return {"version": 1, **json_safe(normalize_result(result))}
 
 
 @dataclass(frozen=True)

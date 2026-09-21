@@ -425,8 +425,12 @@ class CapabilityHost:
     def _postprocess(self, inv: ModuleInvocation, result: ModuleResult, receipt: Receipt) -> tuple[ModuleResult, Receipt]:
         # Output denial must not release the claim of an already-sent write.
         self.current_receipt = receipt
-        result = self.project_result(inv, result)
-        self._ledger.cache_projection(receipt, result)
+        if receipt.replayed_from:
+            from staffdeck_harness.runtime.result_policy import check_replay
+            result = check_replay(self._hooks if self.hooks is not None else None, inv, result)
+        else:
+            result = self.project_result(inv, result)
+            self._ledger.cache_projection(receipt, result)
         name = inv.operation
         descriptor = self._descriptors.get((inv.operation, inv.binding_id))
         if descriptor is not None:

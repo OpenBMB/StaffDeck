@@ -85,6 +85,9 @@ def apply_task_event(
     ).first()
     if existing is not None:
         return False
+    # Never accept a provider-supplied approval envelope as trusted metadata.
+    data = dict(data)
+    data.pop('module_result', None)
     from staffdeck_harness.modules.registry import peek_registry
     modular = bool((task.status_config_json or {}).get('_runtime') or db.info.get('staffdeck_registry') or peek_registry())
     next_status = normalize_status(status)
@@ -96,14 +99,15 @@ def apply_task_event(
     elif modular and (
             next_status in PERSISTED_TERMINAL_STATUSES or data.get('result') is not None or data.get('error') is not None):
         from staffdeck_harness.runtime.external_tasks import project_external_result
-        from staffdeck_harness.contracts.invocation import ModuleResult
+        from staffdeck_harness.contracts.invocation import ModuleResult, result_envelope
         from staffdeck_harness.contracts.errors import ModuleSdkError
         raw = ModuleResult(success=next_status not in {'failed', 'cancelled', 'expired', 'outcome_unknown'},
             data=data.get('result'), error=data.get('error'))
         try:
             projected = project_external_result(db, task, raw)
             data = {'result':projected.data, 'error':dict(projected.error or {}),
-                    'provider_status':next_status, 'result_reviewed':True}
+                    'provider_status':next_status, 'result_reviewed':True,
+                    'module_result':result_envelope(projected)}
             if raw.success and not projected.success:
                 result_denied = True
                 next_status = 'tracking_blocked'
@@ -147,6 +151,7 @@ def apply_task_event(
         task.result_json = {}
         task.status_config_json = {**dict(task.status_config_json or {}),
             '_tracking_blocked_from':task.status, '_result_blocked':result_denied}
+        task.status_config_json.pop('_approved_result_event', None)
     event = ExternalBusinessTaskEvent(
         tenant_id=task.tenant_id,
         task_id=task.id,
@@ -169,12 +174,21 @@ def apply_task_event(
         db.commit()
         return True
     task.status = next_status
+    if isinstance(data.get('module_result'), dict):
+        # The existing event JSON owns the envelope; configuration stores only a
+        # lookup pointer, avoiding new DB columns or changing legacy result_json.
+        task.status_config_json = {**dict(task.status_config_json or {}),
+                                   '_approved_result_event':event_id}
     result = data.get("result")
     error = data.get("error")
     if isinstance(result, dict):
         task.result_json = result
     elif result is not None:
         task.result_json = {"value": result}
+    elif data.get('result_reviewed') is True:
+        # A policy may deliberately remove prior/partial data. Do not keep an
+        # older body while publishing a newer approved empty envelope.
+        task.result_json = {}
     if isinstance(error, dict):
         task.error_json = error
     elif error is not None:
@@ -194,6 +208,28 @@ def apply_task_event(
     if task.status in PERSISTED_TERMINAL_STATUSES:
         _prepare_sop_resume(db, task)
     return True
+
+
+def task_result_envelope(db: Session, task: ExternalBusinessTask) -> dict:
+    from staffdeck_harness.contracts.invocation import ModuleResult, result_envelope
+    event_id = (task.status_config_json or {}).get('_approved_result_event')
+    if event_id:
+        event = db.exec(select(ExternalBusinessTaskEvent).where(
+            ExternalBusinessTaskEvent.tenant_id == task.tenant_id,
+            ExternalBusinessTaskEvent.task_id == task.id,
+            ExternalBusinessTaskEvent.event_id == event_id)).first()
+        envelope = (event.data_json or {}).get('module_result') if event else None
+        if isinstance(envelope, dict) and envelope.get('version') == 1:
+            return envelope
+    # Legacy tasks have only data/error. Never manufacture citations or artifacts.
+    return result_envelope(ModuleResult(success=task.status == 'completed',
+        data=dict(task.result_json or {}), error=dict(task.error_json or {}) or None))
+
+
+def _merge_result_items(existing, extra):
+    import json
+    return list({json.dumps(item, sort_keys=True, ensure_ascii=False): item
+                 for item in [*(existing or []), *(extra or [])]}.values())
 
 
 def _prepare_sop_resume(db: Session, task: ExternalBusinessTask) -> None:
@@ -223,16 +259,21 @@ def _prepare_sop_resume(db: Session, task: ExternalBusinessTask) -> None:
         # completion must not resume the node currently waiting on another task.
         return
     result = dict(task.result_json or {})
+    envelope = task_result_envelope(db, task)
+    prior = dict(frame.result_json or {})
     frame.result_json = {
-        **dict(frame.result_json or {}),
+        **prior,
         "external_task_id": task.external_task_id,
         "external_task_status": task.status,
         "external_task_result": result,
+        "external_task_module_result": envelope,
+        "citations": _merge_result_items(prior.get('citations'), envelope.get('citations')),
+        "artifacts": _merge_result_items(prior.get('artifacts'), envelope.get('artifacts')),
     }
     frame.slots_json = {**dict(frame.slots_json or {}), **result}
     if task.error_json:
         frame.error_json = dict(task.error_json)
-    update_external_task_checkpoint(db, frame, task)
+    update_external_task_checkpoint(db, frame, task, envelope=envelope)
     if frame.kind == "sop":
         frame.status = "ready_to_resume"
         if task.status == "completed" and task.resume_step_id:
@@ -251,12 +292,14 @@ def update_external_task_checkpoint(
     db: Session,
     frame: HarnessTaskFrameRecord,
     task: ExternalBusinessTask,
+    *, envelope: dict | None = None,
 ) -> None:
     if not frame.agent_loop_id:
         return
     loop = db.get(HarnessAgentLoopRecord, frame.agent_loop_id)
     if loop is None:
         return
+    envelope = envelope or task_result_envelope(db, task)
     task_result = {
         "success": task.status == "completed",
         "data": {
@@ -268,6 +311,9 @@ def update_external_task_checkpoint(
             "error": dict(task.error_json or {}),
         },
         "error": dict(task.error_json or {}) or None,
+        "citations": envelope.get('citations') or [],
+        "artifacts": envelope.get('artifacts') or [],
+        "extensions": envelope.get('extensions') or {},
     }
     checkpoint = dict(loop.checkpoint_json or {})
     # Native warm context no longer matches the completed receipt. Cold restore
@@ -304,8 +350,17 @@ def update_external_task_checkpoint(
             item["success"] = task_result["success"]
             item["data"] = task_result["data"]
             item["error"] = task_result["error"]
+            for field in ('citations', 'artifacts', 'extensions'):
+                item[field] = task_result[field]
             break
+    else:
+        capability_results.append({'tool_name': 'external_task_status', **task_result})
     checkpoint["capability_results"] = capability_results
+    checkpoint['citations'] = _merge_result_items(checkpoint.get('citations'), task_result['citations'])
+    checkpoint['artifacts'] = _merge_result_items(checkpoint.get('artifacts'), task_result['artifacts'])
+    evidence = task_result['extensions'].get('evidence')
+    if isinstance(evidence, dict):
+        checkpoint['evidence_results'] = _merge_result_items(checkpoint.get('evidence_results'), [evidence])
     checkpoint["external_task_result"] = task_result["data"]
     loop.checkpoint_json = checkpoint
     loop.updated_at = utc_now()
