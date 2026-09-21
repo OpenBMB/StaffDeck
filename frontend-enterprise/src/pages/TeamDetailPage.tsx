@@ -18,6 +18,7 @@ import {
 } from '@/components/ui';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
+import { saveBlob } from '@/lib/download';
 
 import { api, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
@@ -467,19 +468,16 @@ export default function TeamDetailPage({
     }
   }
 
-  function downloadTeamLog() {
+  async function downloadTeamLog() {
     if (!teamLog) return;
     const blob = new Blob([JSON.stringify(teamLog, null, 2)], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
     const safeName = (team?.name || teamId).replace(/[^\w\-\u4e00-\u9fff]+/g, '-');
-    anchor.href = url;
-    anchor.download = `staffdeck-team-log-${safeName || teamId}.json`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-    notify.success('群聊完整日志已下载');
+    try {
+      const outcome = await saveBlob(blob, `staffdeck-team-log-${safeName || teamId}.json`);
+      if (outcome.status !== 'cancelled') notify.success('群聊完整日志已下载');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '下载群聊完整日志失败');
+    }
   }
 
   async function addBoardEntry() {
