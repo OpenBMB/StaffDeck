@@ -3,11 +3,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app import paths
 from app.agents.branching import ensure_open_gallery_binding
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.models import (
     AgentProfile,
     GeneralSkill,
@@ -850,11 +851,141 @@ DEMO_TOOLS = (
     ORDER_ADD_TOOL,
     PRODUCT_PRICE_QUERY_TOOL,
 )
+DEMO_SKILL_CONTENTS = (
+    REFUND_SKILL,
+    EXCHANGE_SKILL,
+    PURCHASE_SKILL,
+    PRICE_COMPARE_SKILL,
+    GRAPH_VISUAL_DEMO_SKILL,
+)
+# 一次性初始化标记：写在 app_data_migrations 里，存在即不再补齐 demo 预置内容。
+DEMO_SEED_MARKER_ID = "20260922_staffdeck_demo_content_initialized"
+_APP_DATA_MIGRATIONS_DDL = (
+    "CREATE TABLE IF NOT EXISTS app_data_migrations ("
+    "id VARCHAR PRIMARY KEY, "
+    "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+)
 DEFAULT_PERSONA_PROMPT = (
     "你是面壁智能的智能客服，语气专业、清晰、友好。"
     "你需要先理解用户诉求，再基于已配置的技能和工具帮助用户完成业务办理。"
     "不要暴露内部路由、技能 ID、步骤 ID 或工具实现细节。"
 )
+
+
+def _demo_skill_contents() -> list[dict]:
+    """demo 技能卡内容（skill_id / name 等字段已归一化）。"""
+    return [_skill_content_graph(raw_content) for raw_content in DEMO_SKILL_CONTENTS]
+
+
+def _demo_seed_marker_present(session: Session) -> bool:
+    session.execute(text(_APP_DATA_MIGRATIONS_DDL))
+    row = session.execute(
+        text("SELECT 1 FROM app_data_migrations WHERE id = :id"),
+        {"id": DEMO_SEED_MARKER_ID},
+    ).first()
+    return row is not None
+
+
+def _mark_demo_seed_applied(session: Session) -> None:
+    if _demo_seed_marker_present(session):
+        return
+    session.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": DEMO_SEED_MARKER_ID},
+    )
+
+
+def _demo_seed_rows_present(session: Session) -> bool:
+    """该租户是否已经有技能 / 工具 / 工具集——有就说明这个库早已初始化过。
+
+    标记机制上线前的安装没有标记，只能靠数据反推。这里刻意看得宽一点：即使管理员把
+    demo 预置资源全删了，只要库里还有任意技能/工具/工具集（例如预置员工的技能），
+    就认定已初始化，只补标记、不重播，避免「删了又建回来」。
+    """
+    for model in (Skill, Tool, MCPServer, GeneralSkill):
+        if session.exec(select(model).where(model.tenant_id == "tenant_demo")).first():
+            return True
+    return False
+
+
+def _seed_demo_content_once(session: Session, settings: Settings) -> None:
+    """一次性播种 demo 预置内容（技能 / 工具 / MCP 工具集 / 天气通用技能）。
+
+    预置内容只做一次性初始化：首次播种后写入 DEMO_SEED_MARKER_ID 标记，之后启动直接
+    跳过。否则管理员删掉的预置技能、工具、MCP 工具集会按固定 ID 重新补齐（重启即复活）。
+    """
+    if _demo_seed_marker_present(session):
+        return
+    if _demo_seed_rows_present(session):
+        # 存量库（标记机制上线前的安装）：预置内容已在，只补标记、不重播，以免把管理员
+        # 此前删掉的资源又按固定 ID 建回来。
+        _mark_demo_seed_applied(session)
+        return
+    _seed_demo_skills(session)
+    _seed_demo_tools(session, settings)
+    _seed_mcp_servers(session)
+    _seed_weather_general_skill(session)
+    session.flush()
+    _publish_seeded_gallery_bindings(session)
+    _mark_demo_seed_applied(session)
+
+
+def _seed_demo_skills(session: Session) -> None:
+    for content in _demo_skill_contents():
+        existing = session.exec(
+            select(Skill).where(
+                Skill.tenant_id == "tenant_demo", Skill.skill_id == content["skill_id"]
+            )
+        ).first()
+        if not existing:
+            session.add(
+                Skill(
+                    tenant_id="tenant_demo",
+                    skill_id=content["skill_id"],
+                    version=content["version"],
+                    name=content["name"],
+                    business_domain=content["business_domain"],
+                    description=content["description"],
+                    content_json=content,
+                    status="published",
+                )
+            )
+        else:
+            _sync_demo_skill_if_stale(existing, content)
+
+
+def _seed_demo_tools(session: Session, settings: Settings) -> None:
+    for raw_config in DEMO_TOOLS:
+        tool_config = _tool_config_with_base_url(raw_config, settings.normalized_tool_base_url)
+        tool = session.exec(
+            select(Tool).where(Tool.tenant_id == "tenant_demo", Tool.name == tool_config["name"])
+        ).first()
+        if not tool:
+            session.add(Tool(tenant_id="tenant_demo", **tool_config))
+            continue
+        tool.bucket = tool_config.get("bucket") or tool.bucket or "未分桶"
+        tool.display_name = tool_config.get("display_name") or tool.display_name
+        tool.description = tool_config.get("description") or tool.description
+        tool.method = tool_config.get("method") or tool.method
+        tool.url = tool_config.get("url") or tool.url
+        tool.tool_type = tool_config.get("tool_type") or getattr(tool, "tool_type", None) or "http"
+        tool.headers_json = tool_config.get("headers_json") or tool.headers_json
+        tool.auth_json = tool_config.get("auth_json") or tool.auth_json
+        tool.config_json = tool_config.get("config_json") or tool.config_json
+        tool.input_schema = tool_config.get("input_schema") or tool.input_schema
+        tool.output_schema = tool_config.get("output_schema") or tool.output_schema
+        configured_skills = [
+            str(skill_id)
+            for skill_id in (tool_config.get("allowed_skills_json") or [])
+            if str(skill_id).strip()
+        ]
+        existing_skills = [
+            str(skill_id) for skill_id in (tool.allowed_skills_json or []) if str(skill_id).strip()
+        ]
+        tool.allowed_skills_json = list(dict.fromkeys([*configured_skills, *existing_skills]))
+        tool.enabled = bool(tool_config.get("enabled", tool.enabled))
+        tool.updated_at = utc_now()
+        session.add(tool)
 
 
 def _seed_mcp_servers(session: Session) -> None:
@@ -956,78 +1087,9 @@ def seed_demo_data(session: Session) -> None:
         session.add(admin_user)
 
     _ensure_seed_agents(session)
-
-    for raw_content in (
-        REFUND_SKILL,
-        EXCHANGE_SKILL,
-        PURCHASE_SKILL,
-        PRICE_COMPARE_SKILL,
-        GRAPH_VISUAL_DEMO_SKILL,
-    ):
-        content = _skill_content_graph(raw_content)
-        existing = session.exec(
-            select(Skill).where(
-                Skill.tenant_id == "tenant_demo", Skill.skill_id == content["skill_id"]
-            )
-        ).first()
-        if not existing:
-            session.add(
-                Skill(
-                    tenant_id="tenant_demo",
-                    skill_id=content["skill_id"],
-                    version=content["version"],
-                    name=content["name"],
-                    business_domain=content["business_domain"],
-                    description=content["description"],
-                    content_json=content,
-                    status="published",
-                )
-            )
-        else:
-            _sync_demo_skill_if_stale(existing, content)
-
-    for tool_config in DEMO_TOOLS:
-        tool_config = _tool_config_with_base_url(tool_config, settings.normalized_tool_base_url)
-        tool = session.exec(
-            select(Tool).where(Tool.tenant_id == "tenant_demo", Tool.name == tool_config["name"])
-        ).first()
-        if not tool:
-            session.add(Tool(tenant_id="tenant_demo", **tool_config))
-        else:
-            tool.bucket = tool_config.get("bucket") or tool.bucket or "未分桶"
-            tool.display_name = tool_config.get("display_name") or tool.display_name
-            tool.description = tool_config.get("description") or tool.description
-            tool.method = tool_config.get("method") or tool.method
-            tool.url = tool_config.get("url") or tool.url
-            tool.tool_type = (
-                tool_config.get("tool_type") or getattr(tool, "tool_type", None) or "http"
-            )
-            tool.headers_json = tool_config.get("headers_json") or tool.headers_json
-            tool.auth_json = tool_config.get("auth_json") or tool.auth_json
-            tool.config_json = tool_config.get("config_json") or tool.config_json
-            tool.input_schema = tool_config.get("input_schema") or tool.input_schema
-            tool.output_schema = tool_config.get("output_schema") or tool.output_schema
-            configured_skills = [
-                str(skill_id)
-                for skill_id in (tool_config.get("allowed_skills_json") or [])
-                if str(skill_id).strip()
-            ]
-            existing_skills = [
-                str(skill_id)
-                for skill_id in (tool.allowed_skills_json or [])
-                if str(skill_id).strip()
-            ]
-            tool.allowed_skills_json = list(
-                dict.fromkeys([*configured_skills, *existing_skills])
-            )
-            tool.enabled = bool(tool_config.get("enabled", tool.enabled))
-            tool.updated_at = utc_now()
-            session.add(tool)
-
-    _seed_mcp_servers(session)
-    _seed_weather_general_skill(session)
-    session.flush()
-    _publish_seeded_system_resources(session)
+    # 系统智能体归一化（归档遗留默认智能体等）不创建资源，保持每次启动都执行。
+    _normalize_seed_system_agents(session)
+    _seed_demo_content_once(session, settings)
     seed_staffdeck_admin_gallery(session)
 
     default_model = session.exec(
@@ -1057,27 +1119,31 @@ def seed_demo_data(session: Session) -> None:
     session.commit()
 
 
-def _publish_seeded_system_resources(session: Session) -> None:
-    tenant_id = "tenant_demo"
-    creator_metadata = _system_seed_metadata()
+def _normalize_seed_system_agents(session: Session) -> None:
+    """归一化系统智能体：整体智能体的属主元数据 + 归档历史遗留的默认智能体。
 
+    只做归一化、不创建任何资源，所以即使预置内容改成只初始化一次，它仍然每次启动都执行
+    ——存量库升级后遗留的默认智能体也能被归档。
+    """
+    tenant_id = "tenant_demo"
     overall = session.get(AgentProfile, f"agent_{tenant_id}_overall")
     if overall:
         overall.metadata_json = _system_seed_metadata(overall.metadata_json or {})
         session.add(overall)
-
     _archive_seed_default_agent(session, tenant_id)
 
-    seeded_skill_ids = {
-        str(content["skill_id"])
-        for content in (
-            REFUND_SKILL,
-            EXCHANGE_SKILL,
-            PURCHASE_SKILL,
-            PRICE_COMPARE_SKILL,
-            GRAPH_VISUAL_DEMO_SKILL,
-        )
-    }
+
+def _publish_seeded_system_resources(session: Session) -> None:
+    """发布预置系统资源：先归一化系统智能体，再把它们登记到开放广场。"""
+    _normalize_seed_system_agents(session)
+    _publish_seeded_gallery_bindings(session)
+
+
+def _publish_seeded_gallery_bindings(session: Session) -> None:
+    tenant_id = "tenant_demo"
+    creator_metadata = _system_seed_metadata()
+
+    seeded_skill_ids = {str(content["skill_id"]) for content in _demo_skill_contents()}
     for skill in session.exec(
         select(Skill).where(Skill.tenant_id == tenant_id, Skill.skill_id.in_(seeded_skill_ids))
     ).all():
