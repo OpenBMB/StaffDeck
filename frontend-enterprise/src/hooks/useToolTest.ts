@@ -1,90 +1,144 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, TENANT_ID } from '../api/client';
+import { getEnterpriseAuthSession } from '../auth';
 
+type Receipt = { success?: boolean; data?: { detached?: boolean; task_id?: string }; error?: unknown };
+type Task = { id: string; status: string; poll_attempts?: number; result?: unknown; error?: unknown };
 const terminal = new Set(['completed', 'failed', 'cancelled', 'expired', 'outcome_unknown', 'tracking_blocked']);
-type Receipt = { success?: boolean; data?: { accepted?: boolean; task_id?: string } };
-type Task = { id: string; status: string; result?: unknown; error?: unknown };
+function requestId() {
+  // randomUUID is unavailable on non-HTTPS deployments such as port 10086.
+  return globalThis.crypto?.randomUUID?.()
+    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+function persist(key: string, value: unknown) {
+  try {
+    if (value) sessionStorage.setItem(key, JSON.stringify(value));
+    else sessionStorage.removeItem(key);
+  } catch { /* Private mode/quota must not wedge the call button. */ }
+}
 
-/** Poll the same internal task ID. A failed GET must never become another POST. */
-export function useToolTest(toolId: string) {
-  const [result, setResult] = useState<unknown>(null);
-  const [status, setStatus] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [queryError, setQueryError] = useState('');
+export function useToolTest(toolId: string, agentQuery: string, pollSeconds = 5) {
+  const key = `staffdeck-tool-test:${TENANT_ID}:${getEnterpriseAuthSession()?.user.id || ''}:${toolId}`;
+  const [result, setResult] = useState('');
+  const [status, setStatus] = useState('等待调用');
   const [taskId, setTaskId] = useState<string | null>(null);
-  const lock = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
   const generation = useRef(0);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+  const controller = useRef<AbortController>();
+  const inFlight = useRef(false);
+  const submission = useRef<{ id: string; arguments: Record<string, unknown> }>();
+  const labels: Record<string, string> = {
+    queued: '本地排队中', submitting: '正在提交', accepted: '外部已受理', working: '执行中',
+    completed: '已完成', failed: '失败', cancelled: '已取消', expired: '已超时',
+    outcome_unknown: '提交结果待核实', tracking_blocked: '跟踪已暂停，请检查权限或模块',
+  };
 
-  useEffect(() => {
-    generation.current += 1;
-    lock.current = false;
-    setResult(null);
-    setStatus('');
-    setBusy(false);
-    setTaskId(null);
-    setQueryError('');
-    return () => { generation.current += 1; };
-  }, [toolId]);
+  function save(id: string | null) {
+    persist(key, id ? { taskId: id } : null);
+  }
 
-  useEffect(() => {
-    if (!taskId) return;
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const current = generation.current;
-    const active = () => !disposed && current === generation.current;
-    async function poll() {
-      try {
-        const query = new URLSearchParams({ tenant_id: TENANT_ID, tool_id: toolId });
-        const task = await api.get<Task>(`/api/enterprise/external-business-tasks/${encodeURIComponent(taskId!)}?${query}`);
-        if (!active()) return;
-        if (task.id !== taskId) throw new Error('任务状态与查询回执不一致');
-        setResult(task);
-        setStatus(task.status);
-        setQueryError('');
-        if (terminal.has(task.status)) {
-          lock.current = task.status === 'tracking_blocked';
-          setBusy(task.status === 'tracking_blocked');
-          setTaskId(null);
-          return;
-        }
-      } catch (error) {
-        if (!active()) return;
-        setQueryError(error instanceof Error ? error.message : '任务状态查询失败');
-      }
-      if (active()) timer = setTimeout(() => void poll(), 2000);
-    }
-    void poll();
-    return () => { disposed = true; clearTimeout(timer); };
-  }, [taskId, toolId]);
-
-  async function submit(path: string, argumentsJson: Record<string, unknown>) {
-    if (lock.current) return;
-    lock.current = true;
-    const current = generation.current;
-    setBusy(true);
-    setStatus('submitting');
-    setQueryError('');
+  async function poll(id: string, version: number) {
+    if (version !== generation.current) return;
+    const requestController = new AbortController();
+    controller.current = requestController;
+    const timeout = setTimeout(() => requestController.abort(), 30000);
     try {
-      const response = await api.post<Receipt>(path, { tenant_id: TENANT_ID, arguments: argumentsJson });
-      if (current !== generation.current) return;
-      setResult(response);
-      if (response.success && response.data?.accepted && response.data.task_id) {
-        setTaskId(response.data.task_id);
-        setStatus('queued');
+      const task = await api.getWithSignal<Task>(
+        `/api/enterprise/external-business-tasks/${encodeURIComponent(id)}?tenant_id=${TENANT_ID}&tool_id=${encodeURIComponent(toolId)}`,
+        requestController.signal,
+      );
+      if (version !== generation.current) return;
+      setResult(JSON.stringify(task, null, 2));
+      setError('');
+      setStatus(labels[task.status] || task.status);
+      if (terminal.has(task.status)) {
+        // Unknown outcome must not enable a one-click re-submission.
+        if (!['outcome_unknown', 'tracking_blocked'].includes(task.status)) {
+          setTaskId(null);
+          save(null);
+        }
+        setBusy(false);
       } else {
-        lock.current = false;
-        setBusy(false);
-        setStatus(response.success === false ? 'failed' : 'completed');
+        timer.current = setTimeout(() => void poll(id, version), Math.max(1, pollSeconds) * 1000);
       }
-    } catch (error) {
-      if (current === generation.current) {
-        lock.current = false;
-        setBusy(false);
-        setStatus('failed');
-      }
-      throw error;
+    } catch (e) {
+      if (version !== generation.current) return;
+      setError(`状态查询失败，任务不会重新提交：${e instanceof Error ? e.message : String(e)}`);
+      setStatus('状态查询中断');
+      setBusy(false);
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
-  return { result, status, busy, queryError, submit };
+  useEffect(() => {
+    const version = ++generation.current;
+    inFlight.current = false;
+    submission.current = undefined;
+    setResult(''); setStatus('等待调用'); setError(''); setBusy(false); setTaskId(null);
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(key) || 'null');
+      if (typeof saved?.taskId === 'string') {
+        setTaskId(saved.taskId);
+        setBusy(true);
+        void poll(saved.taskId, version);
+      } else if (saved?.submission?.id && saved?.submission?.arguments) {
+        submission.current = saved.submission;
+        setStatus('提交结果待确认');
+        setError('上次提交尚未确认。重试将使用相同请求标识和原参数，不会新建重复任务。');
+      }
+    } catch { persist(key, null); }
+    return () => {
+      ++generation.current;
+      clearTimeout(timer.current);
+      controller.current?.abort();
+    };
+  }, [key]);
+
+  async function submit(args: Record<string, unknown>) {
+    if (inFlight.current || taskId) return;
+    inFlight.current = true;
+    const version = generation.current;
+    submission.current ||= { id: requestId(), arguments: args };
+    persist(key, { submission: submission.current });
+    setBusy(true); setError(''); setStatus('正在提交');
+    const requestController = new AbortController();
+    controller.current = requestController;
+    const timeout = setTimeout(() => requestController.abort(), 30000);
+    try {
+      const receipt = await api.postWithSignal<Receipt>(
+        `/api/enterprise/tools/${toolId}/test${agentQuery ? `?${agentQuery.slice(1)}` : ''}`,
+        { tenant_id: TENANT_ID, arguments: submission.current.arguments, client_request_id: submission.current.id },
+        requestController.signal,
+      );
+      if (version !== generation.current) return;
+      setResult(JSON.stringify(receipt, null, 2));
+      submission.current = undefined;
+      const id = receipt.data?.detached ? receipt.data.task_id : undefined;
+      if (id) {
+        save(id); setTaskId(id); setStatus('本地排队中');
+        clearTimeout(timeout);
+        void poll(id, version);
+      } else {
+        save(null); setStatus(receipt.success === false ? '调用失败' : '已返回'); setBusy(false);
+      }
+    } catch (e) {
+      if (version !== generation.current) return;
+      setError(`提交结果未确认；重试会沿用原参数和请求标识：${e instanceof Error ? e.message : String(e)}`);
+      setStatus('提交结果待确认'); setBusy(false);
+    } finally {
+      clearTimeout(timeout);
+      if (version === generation.current) inFlight.current = false;
+    }
+  }
+
+  function retryStatus() {
+    if (!taskId || busy) return;
+    setBusy(true); setError('');
+    void poll(taskId, generation.current);
+  }
+  return { result, status, taskId, busy, error, submit, retryStatus,
+    parametersLocked: busy || Boolean(taskId) || Boolean(submission.current) };
 }

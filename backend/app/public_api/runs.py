@@ -19,6 +19,7 @@ from app.db.models import (
     APIClient,
     APICredential,
     APIJob,
+    APIJobEvent,
     AgentEvent,
     HarnessInvocationRecord,
     HarnessTaskFrameRecord,
@@ -503,7 +504,21 @@ def get_run(
     principal: PublicPrincipal = Depends(require_scopes("runs:read")),
     db: Session = Depends(get_session),
 ) -> dict:
-    return job_read(_owned_run(db, principal, run_id)).model_dump(mode="json")
+    row = _owned_run(db, principal, run_id)
+    result = job_read(row).model_dump(mode="json")
+    result["final_event_id"] = None
+    if row.status in {"succeeded", "failed", "cancelled"}:
+        # Terminal state and its final event commit together. Event publication
+        # is fenced after terminalization, so this is a stable delivery watermark.
+        final_sequence = db.exec(
+            select(APIJobEvent.sequence)
+            .where(APIJobEvent.job_id == row.id, APIJobEvent.public.is_(True))
+            .order_by(APIJobEvent.sequence.desc())
+            .limit(1)
+        ).first()
+        if final_sequence is not None:
+            result["final_event_id"] = str(final_sequence)
+    return result
 
 
 @router.get("/runs/{run_id}/result", response_model=dict)

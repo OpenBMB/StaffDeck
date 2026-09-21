@@ -116,6 +116,7 @@ class HarnessTaskAgent:
         # checkpoint made a later user turn inherit an obsolete failure even
         # after its inputs or external state had changed.
         non_retryable_action_signatures: set[str] = set()
+        failed_finish_without_attempt_blocked = False
         allowed_names = requirement.capability_manifest.allowed_names()
         from app.core.capability_recovery import CapabilityRecovery
 
@@ -402,6 +403,22 @@ class HarnessTaskAgent:
                             error={"code": "ACTION_BUDGET_EXHAUSTED"},
                         ))
                     continue
+                if action.status == "failed" and missing_capabilities and not failed_finish_without_attempt_blocked:
+                    attempted = {str(item.get("tool_name") or "") for item in capability_results if isinstance(item, dict)}
+                    unattempted = [name for name in missing_capabilities if not name.startswith("knowledge_search:") and name not in attempted]
+                    if unattempted:
+                        failed_finish_without_attempt_blocked = True
+                        transcript.extend([
+                            {"role": "assistant", "action": "finish", "status": "failed"},
+                            {"role": "tool", "tool_name": "harness_requirement_check", "result": {
+                                "success": False,
+                                "error": {"code": "REQUIRED_CAPABILITY_NOT_ATTEMPTED",
+                                    "message": "当前 SOP 节点的强制能力在本节点内尚未尝试调用，不能直接宣告失败：" + "、".join(unattempted) + "。请先实际调用，再依据其真实结果决定完成或失败。"},
+                            }},
+                        ])
+                        if trace_sink:
+                            trace_sink("harness_completion_blocked", {"iteration": iteration, "reason": "required_capability_not_attempted", "missing_capabilities": unattempted})
+                        continue
                 return finish(_finish_result(
                     requirement,
                     action,

@@ -61,11 +61,17 @@ def start_external_task_worker() -> None:
         _thread.start()
 
 
-def stop_external_task_worker() -> None:
+def stop_external_task_worker(timeout_seconds: float = 5.0) -> bool:
+    global _thread
     _stop_event.set()
     with _lifecycle_lock:
         dispatcher, thread = _dispatcher, _thread
     if dispatcher is not None:
         dispatcher.close()
     if thread is not None and thread is not threading.current_thread():
-        thread.join()
+        thread.join(timeout=max(0.0, timeout_seconds))
+    with _lifecycle_lock:
+        if _thread is not None and _thread.is_alive():
+            return False
+        _thread = None
+    return True

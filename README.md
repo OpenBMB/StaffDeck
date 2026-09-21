@@ -19,8 +19,9 @@
 </div>
 
 ## News
+- **2026-09-01**: We present v0.5.0 for faster and more stable execution.
 - **2026-08-18**: We present v0.4.0 for multi-staff cooperation and faster runing.
-- **2026-08-06**: We present  v0.3.0 for SOP editing and sandbox.
+- **2026-08-06**: We present v0.3.0 for SOP editing and sandbox.
 - **2026-08-03**: We present v0.2.0 for harnessv2 and IM system.
 - **2026-07-15**: StaffDeck is now open source! We welcome your feedback and support with a Star.
 
@@ -36,6 +37,11 @@ StaffDeck is an enterprise platform for building and managing digital employees.
 - 🔌 **Autonomous execution and continuous improvement**: Perform real business operations through HTTP APIs, MCP, and scheduled tasks, then close the improvement loop with long-term memory, complete traces, human takeover, user feedback, and feedback analysis.
 
 ## Desktop Downloads
+
+For integrations without modifying platform source, see the
+[Python SDK and CLI](sdk/python/README.md). It wraps the existing Open API v1
+for tools, SOPs, sessions and runs; the `staffdeck-api` command is separate from
+the desktop launcher below.
 
 Visit the [StaffDeck official website](https://staffdeck.openbmb.cn/) or download the latest desktop release directly:
 

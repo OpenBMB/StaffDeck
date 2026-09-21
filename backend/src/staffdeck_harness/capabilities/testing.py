@@ -13,12 +13,12 @@ from staffdeck_harness.contracts.sources import SourceContext
 from staffdeck_harness.security.profile import Guard
 
 
-def test_saved_tool(db, *, registry, profile, tenant_id, agent_id, user_id, tool_id, arguments):
+def test_saved_tool(db, *, registry, profile, tenant_id, agent_id, user_id, tool_id, arguments, invocation_id=None):
     """One authorized invocation, same catalog/schema/PEP/provider/ledger as conversation."""
     try:
         staff, identity = resolve_staff(registry, db, SourceContext(tenant_id, agent_id, user_id=user_id), profile)
         snapshot = CompositionCompiler().compile(staff, generation=registry.generation, strict=False)
-        identifier = new_id("tooltest")
+        identifier = invocation_id or new_id("tooltest")
         # Use the existing hidden execution-test channel and persistence, not a new test runner.
         session = ChatSession(id=new_id("session"), tenant_id=tenant_id, agent_id=staff.staff_id,
                               user_id=user_id, channel="skill_test", title="工具测试")

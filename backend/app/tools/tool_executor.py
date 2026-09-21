@@ -268,6 +268,36 @@ class ToolExecutor:
                 if existing.user_id != user_id or existing.request_json != arguments:
                     return self._error(tool.name, "IDEMPOTENCY_CONFLICT", "该调用标识已经用于其他请求，本次未执行。")
                 return self._detached_acceptance_result(tool, existing)
+        if session_id and task_frame_id:
+            existing = self.db.exec(
+                select(ExternalBusinessTask)
+                .where(
+                    ExternalBusinessTask.tenant_id == tool.tenant_id,
+                    ExternalBusinessTask.user_id == user_id,
+                    ExternalBusinessTask.session_id == session_id,
+                    ExternalBusinessTask.task_frame_id == task_frame_id,
+                    ExternalBusinessTask.tool_id == tool.id,
+                    ExternalBusinessTask.status.in_(
+                        [
+                            "queued",
+                            "submitting",
+                            "accepted",
+                            "working",
+                            "outcome_unknown",
+                            "tracking_blocked",
+                        ]
+                    ),
+                )
+                .order_by(ExternalBusinessTask.created_at.desc())
+            ).first()
+            if existing is not None:
+                if dict(existing.request_json or {}) != arguments:
+                    return self._error(
+                        tool.name,
+                        "EXTERNAL_TASK_ALREADY_PENDING",
+                        f"当前 TaskFrame 已有任务 {existing.id}；请先查询状态，不能重复提交。",
+                    )
+                return self._detached_acceptance_result(tool, existing)
         callback_token = new_callback_token()
         status_url = str(execution.get("status_url") or "").strip() or None
         poll_interval_seconds = max(

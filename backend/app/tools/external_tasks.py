@@ -372,20 +372,31 @@ def poll_due_external_tasks(db: Session, *, dispatch=None) -> int:
             },
         )
     queued = db.exec(
-        select(ExternalBusinessTask)
+        select(ExternalBusinessTask.id)
         .where(
             ExternalBusinessTask.status == "queued",
             ExternalBusinessTask.lease_owner.is_(None),
         )
+        .order_by(ExternalBusinessTask.created_at, ExternalBusinessTask.id)
         .limit(20)
     ).all()
     local_count = 0
-    for task in queued:
-        if dispatch is None:
-            _execute_local_task(db, task)
-            local_count += 1
-        elif dispatch(db, task.id, 'submit'):
-            local_count += 1
+    for task_id in queued:
+        try:
+            if dispatch is None:
+                task = db.get(ExternalBusinessTask, task_id)
+                if task is not None:
+                    _execute_local_task(db, task)
+                    local_count += 1
+            elif dispatch(db, task_id, 'submit'):
+                local_count += 1
+        except Exception:
+            db.rollback()
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "External task execution failed task=%s", task_id
+            )
     candidates = db.exec(
         select(ExternalBusinessTask).where(
             ExternalBusinessTask.status.in_(["accepted", "working"]),

@@ -39,6 +39,7 @@ from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManif
 from app.core.tool_replay_policy import ToolReplayPolicy
 from app.db.models import (
     ChatSession,
+    ExternalBusinessTask,
     GeneralSkill,
     HarnessInvocationRecord,
     ModelConfig,
@@ -522,6 +523,26 @@ class HarnessCapabilityInvoker:
             return self._search_capabilities(arguments)
         if name == "capability_describe":
             return self._describe_capabilities(arguments)
+        if name == "external_task_status":
+            task_id = str(arguments.get("task_id") or "").strip().lstrip("#")
+            if not task_id:
+                return _failure("INVALID_ARGUMENTS", "task_id 不能为空。")
+            task = self.db.exec(select(ExternalBusinessTask).where(
+                ExternalBusinessTask.id == task_id,
+                ExternalBusinessTask.tenant_id == self.tenant_id,
+                ExternalBusinessTask.user_id == self.session.user_id,
+            )).first()
+            if task is None:
+                return _failure("EXTERNAL_TASK_NOT_FOUND", "未找到属于当前用户的该任务。")
+            return {"success": True, "data": {"task_id": task.id, "status": task.status,
+                "provider_task_id": task.external_task_id, "poll_attempts": task.poll_attempts,
+                "updated_at": task.updated_at.isoformat(), "result": dict(task.result_json or {}),
+                "error": dict(task.error_json or {})}}
+        if name == "lark_cli":
+            from app.lark_cli.service import invoke_lark_cli
+            return invoke_lark_cli(self.db, tenant_id=self.tenant_id, session=self.session,
+                task_frame_id=self.task_frame_id, agent_id=self.agent_id, arguments=arguments,
+                active_skill=self.active_skill, active_step_id=self.active_step_id)
         if name == "list_published_deliverables":
             return self._list_published_deliverables(arguments)
         if name == "read_published_deliverable":
@@ -1557,9 +1578,21 @@ def _audit_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
             for token in ("content", "secret", "token", "password", "api_key")
         ):
             audited[str(key)] = "<redacted>"
+        elif isinstance(value, list):
+            audited[str(key)] = _redact_secret_flag_values(value)
         else:
             audited[str(key)] = value
     return audited
+
+
+def _redact_secret_flag_values(items: list[Any]) -> list[Any]:
+    redacted = list(items)
+    for index, token in enumerate(redacted[:-1]):
+        if not isinstance(token, str) or not token.startswith("-"):
+            continue
+        if any(part in token.lower() for part in ("secret", "token", "password")):
+            redacted[index + 1] = "<redacted>"
+    return redacted
 
 
 def _audit_result(result: dict[str, Any]) -> dict[str, Any]:

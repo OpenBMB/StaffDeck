@@ -54,12 +54,12 @@ class FakeExecutionHost:
         return self.result, self.receipt
 
 
-def _sidecar_manifest(*, kind="tool", operation="tool.invoke/v1"):
+def _sidecar_manifest(*, name="lookup", kind="tool", operation="tool.invoke/v1"):
     descriptor = type(
         "Descriptor",
         (),
         {
-            "name": "lookup",
+            "name": name,
             "kind": kind,
             "capability_id": "tool-1",
             "available": True,
@@ -111,6 +111,41 @@ def test_sidecar_capability_fails_closed_for_unknown_outcome() -> None:
     assert result["success"] is False
     assert result["outcome"] == "result_unknown"
     assert result["error"]["code"] == "RESULT_UNKNOWN"
+
+
+def test_sidecar_external_task_status_uses_execution_control_port() -> None:
+    execution_host = FakeExecutionHost(ModuleResult.ok({"status": "working"}))
+    invoker = _HarnessV3SidecarCapabilityInvoker(
+        execution_host,
+        lambda trace_id: {"trace_id": trace_id},
+        _sidecar_manifest(name="external_task_status", kind="internal", operation=""),
+    )
+
+    result = invoker.invoke("external_task_status", {"task_id": "task-1"})
+
+    assert result["success"] is True
+    assert execution_host.calls[0][0:2] == (
+        "external_task_status",
+        {"task_id": "task-1"},
+    )
+
+
+def test_sidecar_lark_cli_uses_trusted_internal_dispatch() -> None:
+    execution_host = FakeExecutionHost(ModuleResult.fail("UNEXPECTED", "not used"))
+    calls = []
+    invoker = _HarnessV3SidecarCapabilityInvoker(
+        execution_host,
+        lambda trace_id: {"trace_id": trace_id},
+        _sidecar_manifest(name="lark_cli", kind="internal", operation=""),
+        internal_invoker=lambda name, arguments: calls.append((name, arguments))
+        or {"success": True, "data": {"ok": True}},
+    )
+
+    result = invoker.invoke("lark_cli", {"args": ["auth", "status"]})
+
+    assert result == {"success": True, "data": {"ok": True}}
+    assert calls == [("lark_cli", {"args": ["auth", "status"]})]
+    assert execution_host.calls == []
 
 
 def test_sidecar_checkpoint_preserves_host_owned_state() -> None:

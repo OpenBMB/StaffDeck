@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, Request, Response
 from sqlmodel import Session, select
 
-from app.db import get_session
+from app.db import get_session as get_db_session
 from app.db.models import AgentProfile, ChatSession, ExternalSessionBinding, utc_now
 from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_scopes
 from app.public_api.errors import PublicAPIError
@@ -147,7 +147,7 @@ def create_session(
     request: Request,
     response: Response,
     principal: PublicPrincipal = Depends(require_scopes("sessions:write")),
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_db_session),
 ) -> dict:
     replay = replay_idempotent_response(db, principal, request, body.model_dump(mode="json"))
     if replay:
@@ -173,7 +173,7 @@ def list_sessions(
     agent_id: str,
     limit: int = 50,
     principal: PublicPrincipal = Depends(require_scopes("sessions:read")),
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_db_session),
 ) -> dict:
     ensure_public_agent(db, principal, agent_id)
     rows = db.exec(
@@ -206,7 +206,7 @@ def get_session(
     session_id: str,
     response: Response,
     principal: PublicPrincipal = Depends(require_scopes("sessions:read")),
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_db_session),
 ) -> dict:
     row, binding = owned_public_session(db, principal, agent_id, session_id)
     payload = _session_payload(row, binding)
@@ -222,7 +222,7 @@ def update_session(
     response: Response,
     if_match: str | None = Header(default=None, alias="If-Match"),
     principal: PublicPrincipal = Depends(require_scopes("sessions:write")),
-    db: Session = Depends(get_session),
+    db: Session = Depends(get_db_session),
 ) -> dict:
     row, binding = owned_public_session(db, principal, agent_id, session_id)
     current = _session_payload(row, binding)

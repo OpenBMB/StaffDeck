@@ -2431,8 +2431,12 @@ function ToolProbeCard({ values }: { values: ToolFormValues }) {
 
 function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; standalone?: boolean }) {
   const [testJson, setTestJson] = useState(() => JSON.stringify(exampleFromSchema(tool.input_schema), null, 2));
-  const testRun = useToolTest(tool.id);
-  const testResult = testRun.result === null ? '' : JSON.stringify(testRun.result, null, 2);
+  const testRun = useToolTest(
+    tool.id,
+    currentAgentQuery(),
+    tool.execution_policy?.poll_interval_seconds,
+  );
+  const testResult = testRun.result;
   const loading = testRun.busy;
 
   useEffect(() => {
@@ -2448,8 +2452,7 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
       return;
     }
     try {
-      const agentQuery = currentAgentQuery();
-      await testRun.submit(`/api/enterprise/tools/${tool.id}/test${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, argumentsJson);
+      await testRun.submit(argumentsJson);
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '调用失败');
     }
@@ -2466,7 +2469,7 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
         </span>
       )}
       extra={(
-        <UIButton disabled={loading} onClick={() => void test()} className={PRIMARY_BUTTON_CLASS}>
+        <UIButton disabled={loading || Boolean(testRun.taskId)} onClick={() => void test()} className={PRIMARY_BUTTON_CLASS}>
           <ExperimentOutlined />
           调用
         </UIButton>
@@ -2485,6 +2488,7 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
         <Textarea
           rows={8}
           className={MONO_INPUT_CLASS}
+          disabled={testRun.parametersLocked}
           value={testJson}
           onChange={(event) => setTestJson(event.target.value)}
         />
@@ -2492,11 +2496,17 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
       <div className="flex flex-col gap-[10px]">
         <div className="flex items-center justify-between gap-[10px]">
           <span className={SUBSECTION_TITLE_CLASS}>调用结果</span>
-          <StatusBadge tone={testRun.status === 'completed' ? 'green' : 'gray'}>
-            {testRun.status === 'tracking_blocked' ? '跟踪已暂停，请检查权限或模块；勿重复提交' : loading ? '任务进行中' : testRun.status === 'completed' ? '已完成' : testRun.status ? '任务已结束，请查看结果' : '等待调用'}
+          <StatusBadge tone={testRun.status === '已完成' || testRun.status === '已返回' ? 'green' : 'gray'}>
+            {loading ? testRun.status : testRun.status || '等待调用'}
           </StatusBadge>
         </div>
-        {testRun.queryError && <p role="status" className="text-[13px] text-amber-700">状态查询暂不可用，正在重试查询，不会重复提交：{testRun.queryError}</p>}
+        {testRun.error && <p role="status" className="text-[13px] text-amber-700">{testRun.error}</p>}
+        {testRun.taskId && !loading && (
+          <UIButton type="button" variant="outline" onClick={testRun.retryStatus}>
+            <RotateCcw />
+            重查状态
+          </UIButton>
+        )}
         {testResult ? (
           <CodeBlock className="max-h-[340px] whitespace-pre-wrap wrap-break-word" code={testResult} language="json" />
         ) : (

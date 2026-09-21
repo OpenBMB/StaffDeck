@@ -1008,6 +1008,7 @@ class TurnCoordinator:
         session: ChatSession,
         row: HarnessTaskFrameRecord,
         frame: Any,
+        active_skill: Skill | None,
         requirement: Any,
         manifest: Any,
         model_config: Any,
@@ -1172,6 +1173,17 @@ class TurnCoordinator:
                 execution_host,
                 invocation_context,
                 manifest,
+                internal_invoker=lambda name, arguments: _invoke_sidecar_internal_capability(
+                    name,
+                    arguments,
+                    db=host_db,
+                    tenant_id=turn.tenant_id,
+                    session=session,
+                    task_frame_id=requirement.task_frame_id,
+                    agent_id=turn.agent_id,
+                    active_skill=active_skill,
+                    active_step_id=step_id,
+                ),
             )
             settings = get_settings()
             client = PilotDeckAgentLoopClient(
@@ -1442,6 +1454,7 @@ class TurnCoordinator:
                     session=session,
                     row=row,
                     frame=frame,
+                    active_skill=active_skill,
                     requirement=requirement,
                     manifest=manifest,
                     model_config=model_config,
@@ -2327,13 +2340,34 @@ def _dependency_order(
     return ordered
 
 
+def _external_task_for_result(db: Any, frame: Any, result: Any) -> Any | None:
+    """Resolve only the detached receipt referenced by this frame result."""
+
+    data = result.structured_result if isinstance(result.structured_result, dict) else {}
+    task_id = str(data.get("task_id") or "").strip()
+    query = select(ExternalBusinessTask).where(
+        ExternalBusinessTask.tenant_id == frame.tenant_id,
+        ExternalBusinessTask.session_id == frame.session_id,
+        ExternalBusinessTask.task_frame_id == frame.task_id,
+    )
+    if task_id:
+        query = query.where(ExternalBusinessTask.id == task_id)
+    return db.exec(
+        query.order_by(
+            ExternalBusinessTask.created_at.desc(),
+            ExternalBusinessTask.id.desc(),
+        )
+    ).first()
+
+
 class _HarnessV3SidecarCapabilityInvoker:
     """Project direct AgentLoop tool names through the Harness v3 host."""
 
-    def __init__(self, execution_host: Any, context_factory: Any, manifest: Any) -> None:
+    def __init__(self, execution_host: Any, context_factory: Any, manifest: Any, internal_invoker: Any = None) -> None:
         self.execution_host = execution_host
         self.context_factory = context_factory
         self.host = execution_host.capabilities
+        self.internal_invoker = internal_invoker
         self.descriptors = {
             item.name: item
             for item in manifest.available
@@ -2352,6 +2386,18 @@ class _HarnessV3SidecarCapabilityInvoker:
                     "executed": False,
                 },
             }
+
+        if name == "lark_cli" and callable(self.internal_invoker):
+            return self.internal_invoker(name, dict(arguments))
+
+        if name == "external_task_status":
+            trace_id = f"sidecar-{time.time_ns()}"
+            result, receipt = self.execution_host.invoke_proxy(
+                name,
+                dict(arguments),
+                self.context_factory(trace_id),
+            )
+            return self._project_result(result, receipt)
 
         metadata = dict(getattr(descriptor, "metadata", {}) or {})
         operation = str(metadata.get("operation") or "")
@@ -2373,6 +2419,10 @@ class _HarnessV3SidecarCapabilityInvoker:
             proxy_arguments,
             self.context_factory(trace_id),
         )
+        return self._project_result(result, receipt)
+
+    @staticmethod
+    def _project_result(result: Any, receipt: Any) -> dict[str, Any]:
         error = dict(result.error or {})
         receipt_status = getattr(receipt, "status", None)
         if receipt_status == "outcome_unknown" or error.get("code") in {
@@ -2445,6 +2495,51 @@ class _HarnessV3SidecarCapabilityInvoker:
         return self.host.discover_artifacts(
             self.context_factory(f"sidecar-artifacts-{time.time_ns()}")
         )
+
+
+def _invoke_sidecar_internal_capability(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    db: Any,
+    tenant_id: str,
+    session: Any,
+    task_frame_id: str,
+    agent_id: str | None,
+    active_skill: Any | None,
+    active_step_id: str | None,
+) -> dict[str, Any]:
+    """Dispatch internal StaffDeck controls from the sidecar through their service module."""
+
+    if name != "lark_cli":
+        return {
+            "success": False,
+            "error": {
+                "code": "UNSUPPORTED_INTERNAL_CAPABILITY",
+                "message": "不支持的 Harness 内部能力。",
+                "retryable": False,
+                "executed": False,
+            },
+        }
+    from app.lark_cli.service import invoke_lark_cli
+
+    result = invoke_lark_cli(
+        db,
+        tenant_id=tenant_id,
+        session=session,
+        task_frame_id=task_frame_id,
+        agent_id=agent_id,
+        arguments=arguments,
+        active_skill=active_skill,
+        active_step_id=active_step_id,
+    )
+    return {
+        "success": bool(result.get("success")),
+        "data": result.get("data"),
+        "error": result.get("error"),
+        "citations": list(result.get("citations") or ()),
+        "artifacts": list(result.get("artifacts") or ()),
+    }
 
 
 def _pilotdeck_sidecar_enabled() -> bool:

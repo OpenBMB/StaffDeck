@@ -94,12 +94,17 @@ def test_staffdeck_seed_requires_every_bundled_fixture(tmp_path) -> None:
 def test_expanded_staffdeck_skills_match_runtime_schema() -> None:
     data = json.loads(staffdeck_seed.EXPANDED_FIXTURE_PATH.read_text(encoding="utf-8"))
 
-    for key in (
-        "skills",
-        "skill_versions",
-        "agent_skill_branches",
-        "agent_skill_branch_versions",
-    ):
+    # 每个预置员工一张卡；此外允许绑定到主种子员工的策划卡（如飞书审批提交）。
+    curated_extra_skill_ids = {"lark_approval_submit"}
+    for key in ("skills", "skill_versions"):
+        rows = data[key]
+        assert len(rows) == (
+            len(EXPECTED_EXPANDED_EMPLOYEE_PROFILES) + len(curated_extra_skill_ids)
+        )
+        assert curated_extra_skill_ids <= {row["skill_id"] for row in rows}
+        for row in rows:
+            SkillCard.model_validate(row["content_json"])
+    for key in ("agent_skill_branches", "agent_skill_branch_versions"):
         rows = data[key]
         assert len(rows) == len(EXPECTED_EXPANDED_EMPLOYEE_PROFILES)
         for row in rows:

@@ -114,6 +114,7 @@ function authHeader(): Record<string, string> {
 
 export const api = {
   get: <T>(path: string, options?: { signal?: AbortSignal }) => request<T>(path, options),
+  getWithSignal: <T>(path: string, signal: AbortSignal) => request<T>(path, { signal }),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
   postWithSignal: <T>(path: string, body: unknown, signal?: AbortSignal) =>
