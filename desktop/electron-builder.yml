@@ -1,0 +1,41 @@
+# StaffDeck 桌面壳打包配置（electron-builder）
+# 用法：cd desktop && npm run dist
+# 产物：desktop/dist/StaffDeck-Setup-<version>.exe
+appId: ai.staffdeck.desktop
+productName: StaffDeck
+copyright: Copyright © 2026 StaffDeck contributors
+
+directories:
+  output: dist
+  buildResources: resources
+
+# 打包时把打包好的后端一起带进安装包；后端由 main.js 在首次启动时拉起
+# （可通过 STAFFDECK_BACKEND 覆盖路径）
+files:
+  - main.js
+  - preload.js
+  - package.json
+
+extraResources:
+  # 可选：把 staffdeck 后端可执行文件放进 app 内，供 main.js 拉起
+  - from: ../packaging/out/staffdeck
+    to: backend
+    filter:
+      - "**/*"
+  # 托盘图标（main.js 的 getTrayIcon 从 resources/icon.png 加载）
+  - from: ../packaging/assets/staffdeck.png
+    to: icon.png
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: ../packaging/assets/staffdeck.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: StaffDeck

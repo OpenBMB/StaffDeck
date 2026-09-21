@@ -50,3 +50,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 packaging/assets/staffdeck.iconset/
+
+# Electron 桌面壳 —— 依赖与打包产物不进 git
+desktop/node_modules/
+desktop/dist/
+desktop/release/
+desktop/resources/
