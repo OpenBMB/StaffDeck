@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.agents import list_agents
@@ -48,11 +49,6 @@ EXPECTED_EXPANDED_EMPLOYEE_PROFILES = {
 }
 
 
-class _FlushOnlySession:
-    def flush(self) -> None:
-        pass
-
-
 def _seeded_session() -> Session:
     engine = create_engine("sqlite:///:memory:")
     SQLModel.metadata.create_all(engine)
@@ -83,7 +79,10 @@ def test_staffdeck_seed_reads_fixture_as_utf8(monkeypatch) -> None:
     monkeypatch.setattr(staffdeck_seed, "_publish_gallery_resources", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(staffdeck_seed, "_sync_seed_agents_to_current_admin", lambda *_args, **_kwargs: None)
 
-    staffdeck_seed.seed_staffdeck_admin_gallery(_FlushOnlySession())
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        staffdeck_seed.seed_staffdeck_admin_gallery(session)
 
 
 def test_staffdeck_seed_requires_every_bundled_fixture(tmp_path) -> None:
@@ -386,3 +385,98 @@ def test_staffdeck_seed_archives_legacy_default_agent() -> None:
         assert row.metadata_json.get("hidden_from_staffdeck") is True
         assert row.metadata_json.get("is_default_employee") is True
         assert "agent_tenant_demo_default" not in listed_ids
+
+
+def _agent_by_name(db: Session, name: str) -> AgentProfile | None:
+    return db.exec(
+        select(AgentProfile).where(
+            AgentProfile.tenant_id == "tenant_demo",
+            AgentProfile.name == name,
+        )
+    ).first()
+
+
+def _gallery_marker_count(db: Session) -> int:
+    rows = db.execute(
+        text("SELECT id FROM app_data_migrations WHERE id = :id"),
+        {"id": staffdeck_seed.GALLERY_SEED_MARKER_ID},
+    ).all()
+    return len(rows)
+
+
+def test_staffdeck_seed_marks_gallery_initialized_once() -> None:
+    with _seeded_session() as db:
+        assert _gallery_marker_count(db) == 1
+
+        seed_demo_data(db)
+        db.commit()
+
+        assert _gallery_marker_count(db) == 1
+
+
+def test_staffdeck_seed_does_not_recreate_deleted_agents_on_restart() -> None:
+    with _seeded_session() as db:
+        removed = _agent_by_name(db, "人事")
+        assert removed is not None
+        db.delete(removed)
+        db.commit()
+
+        seed_demo_data(db)
+        db.commit()
+
+        assert _agent_by_name(db, "人事") is None
+
+
+def test_staffdeck_seed_keeps_deletions_after_full_employee_cleanup() -> None:
+    with _seeded_session() as db:
+        for agent in db.exec(
+            select(AgentProfile).where(
+                AgentProfile.tenant_id == "tenant_demo",
+                AgentProfile.name.in_(sorted(staffdeck_seed.SELECTED_AGENT_NAMES)),
+            )
+        ).all():
+            db.delete(agent)
+        db.commit()
+
+        seed_demo_data(db)
+        db.commit()
+
+        remaining = db.exec(
+            select(AgentProfile).where(
+                AgentProfile.tenant_id == "tenant_demo",
+                AgentProfile.name.in_(sorted(staffdeck_seed.SELECTED_AGENT_NAMES)),
+            )
+        ).all()
+
+        assert remaining == []
+
+
+def test_staffdeck_seed_backfills_marker_without_reseeding_existing_library() -> None:
+    with _seeded_session() as db:
+        # 标记机制上线前的存量库：没有标记，预置数据已在。
+        db.execute(
+            text("DELETE FROM app_data_migrations WHERE id = :id"),
+            {"id": staffdeck_seed.GALLERY_SEED_MARKER_ID},
+        )
+        removed = _agent_by_name(db, "人事")
+        assert removed is not None
+        db.delete(removed)
+        db.commit()
+
+        seed_demo_data(db)
+        db.commit()
+
+        assert _agent_by_name(db, "人事") is None
+        assert _gallery_marker_count(db) == 1
+
+
+def test_staffdeck_seed_still_initializes_an_empty_database() -> None:
+    with _seeded_session() as db:
+        seeded_names = {
+            agent.name
+            for agent in db.exec(
+                select(AgentProfile).where(AgentProfile.tenant_id == "tenant_demo")
+            ).all()
+        }
+
+        assert staffdeck_seed.SELECTED_AGENT_NAMES <= seeded_names

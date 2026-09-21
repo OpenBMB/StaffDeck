@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
+from sqlalchemy import text
 from sqlmodel import Session, SQLModel, select
 
 from app.agents.branching import (
@@ -41,6 +42,13 @@ ADMIN_USER_ID = "admin"
 ADMIN_USERNAME = "admin"
 ADMIN_DISPLAY_NAME = "Administrator"
 SEED_SOURCE = "staffdeck_admin_gallery_seed"
+# 一次性初始化标记：写在 app_data_migrations 里，存在即不再补齐预置资源。
+GALLERY_SEED_MARKER_ID = "20260922_staffdeck_gallery_initialized"
+_APP_DATA_MIGRATIONS_DDL = (
+    "CREATE TABLE IF NOT EXISTS app_data_migrations ("
+    "id VARCHAR PRIMARY KEY, "
+    "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+)
 FIXTURE_PATH = Path(__file__).resolve().parent / "seed_fixtures" / "staffdeck_admin_gallery_seed.json"
 EXPANDED_FIXTURE_PATH = (
     Path(__file__).resolve().parent / "seed_fixtures" / "staffdeck_expanded_gallery_seed.json"
@@ -71,8 +79,19 @@ ModelT = TypeVar("ModelT", bound=SQLModel)
 
 
 def seed_staffdeck_admin_gallery(session: Session) -> None:
-    """Seed the curated StaffDeck gallery package as admin-owned resources."""
+    """Seed the curated StaffDeck gallery package as admin-owned resources.
 
+    预置资源只做一次性初始化：首次播种后写入 GALLERY_SEED_MARKER_ID 标记，之后启动
+    直接跳过。否则管理员删掉的预置员工会在下次启动时按固定 ID 重新补齐（重启即复活）。
+    """
+
+    if _gallery_seed_marker_present(session):
+        return
+    if _gallery_seed_rows_present(session):
+        # 存量库（标记机制上线前的安装）：预置数据已在，只补标记、不重播，
+        # 以免把管理员此前删掉的员工又按固定 ID 建回来。
+        _mark_gallery_seed_applied(session)
+        return
     data = _load_seed_fixtures((FIXTURE_PATH, EXPANDED_FIXTURE_PATH))
     if not data:
         return
@@ -116,6 +135,35 @@ def seed_staffdeck_admin_gallery(session: Session) -> None:
     session.flush()
     _publish_gallery_resources(session, id_maps)
     _sync_seed_agents_to_current_admin(session, id_maps)
+    _mark_gallery_seed_applied(session)
+
+
+def _gallery_seed_marker_present(session: Session) -> bool:
+    session.execute(text(_APP_DATA_MIGRATIONS_DDL))
+    row = session.execute(
+        text("SELECT 1 FROM app_data_migrations WHERE id = :id"),
+        {"id": GALLERY_SEED_MARKER_ID},
+    ).first()
+    return row is not None
+
+
+def _mark_gallery_seed_applied(session: Session) -> None:
+    if _gallery_seed_marker_present(session):
+        return
+    session.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:id)"),
+        {"id": GALLERY_SEED_MARKER_ID},
+    )
+
+
+def _gallery_seed_rows_present(session: Session) -> bool:
+    """Detect a library that already carries gallery rows seeded before the marker existed."""
+    for model in (AgentProfile, Skill, GeneralSkill, Tool, KnowledgeBase):
+        for row in session.exec(select(model)).all():
+            metadata = getattr(row, "metadata_json", None) or {}
+            if isinstance(metadata, dict) and metadata.get("seed_source") == SEED_SOURCE:
+                return True
+    return False
 
 
 def _load_seed_fixtures(paths: Iterable[Path]) -> JsonDict:
