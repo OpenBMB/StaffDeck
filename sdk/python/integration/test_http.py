@@ -83,6 +83,7 @@ def test_sdk_and_cli_over_http(live_api, monkeypatch, tmp_path):
         run_id = receipt["data"]["id"]
         assert sdk.runs.get(run_id).data["status"] == "queued"
         jobs.run_job(run_id)
+        assert sdk.runs.get(run_id).data["status"] == "succeeded"
         events = [json.loads(line) for line in cli("runs", "events", "--run-id", run_id).stdout.splitlines()]
         assert events[-1]["event"] == "run.succeeded"
         assert cli("runs", "events", "--run-id", run_id, "--last-event-id", events[-1]["id"]).stdout == ""
