@@ -337,7 +337,8 @@ describe('TeamDetailPage', () => {
       )).toBe(true);
       expect(createObjectURL).toHaveBeenCalledTimes(1);
       expect(click).toHaveBeenCalledTimes(1);
-      expect(revokeObjectURL).toHaveBeenCalledWith('blob:team-log');
+      // 立刻 revoke 会让桌面壳读不到 blob，下载动作因此必须延后释放。
+      expect(revokeObjectURL).not.toHaveBeenCalled();
     });
   });
 
