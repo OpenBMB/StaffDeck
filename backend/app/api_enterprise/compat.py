@@ -285,6 +285,13 @@ class BusinessContractMiddleware:
         from staffdeck_harness.runtime.frontend_management import dispatch, frontend_domain, shared_target
         if await dispatch(scope, receive, send, rel):
             return
+        query = dict(parse_qsl(scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True))
+        from fastapi import HTTPException
+        from app.api_enterprise.resource_contracts import resolve_common
+        try:
+            common = resolve_common(scope['method'], rel, query)
+        except HTTPException as exc:
+            return await JSONResponse({'detail': exc.detail}, exc.status_code)(scope, receive, send)
         # Enterprise-only resource contracts are owned by an installed provider.
         # An OSS deployment must not synthesize empty catalogs, permissions,
         # versions or lifecycles in their place.
@@ -292,10 +299,9 @@ class BusinessContractMiddleware:
         special = (domain in {'knowledge', 'skill', 'sop'} or rel.startswith('/api/organization')
                    or rel.startswith('/api/agent-tools/connectors')
                    or rel == '/api/admin/plaza-categories')
-        if special:
+        if special and common is None:
             return await JSONResponse({'detail': {'code': 'FEATURE_UNAVAILABLE', 'message': NOT_AVAILABLE}}, 501)(scope, receive, send)
-        query = dict(parse_qsl(scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True))
-        plan = resolve(scope["method"], rel, query)
+        plan = common or resolve(scope["method"], rel, query)
         runtime_path = shared_target(rel, scope['method'])
         if runtime_path:
             plan = Plan(target=runtime_path, tenant_in_body=scope['method'] in _JSON_METHODS)

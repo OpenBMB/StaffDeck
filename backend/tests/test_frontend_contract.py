@@ -38,8 +38,8 @@ def test_shared_chat_sse_still_finishes_after_body_rewrite():
     assert result.status_code == 200 and '"reply":"ok"' in result.text
 
 
-@pytest.mark.parametrize('path', ['/api/knowledge/v1/knowledge-bases/square', '/api/skills/skills?view=plaza',
-    '/api/admin/plaza-categories', '/api/organization/tree', '/api/agent-tools/connectors'])
+@pytest.mark.parametrize('path', ['/api/knowledge/v1/knowledge-bases/shared', '/api/skills/skills?view=shared',
+    '/api/admin/plaza-categories', '/api/organization/tree', '/api/agent-tools/connectors?view=shared'])
 def test_missing_enterprise_feature_is_explicit_not_empty_success(path):
     with TestClient(BusinessContractMiddleware(FastAPI())) as client:
         result = client.get(path)
