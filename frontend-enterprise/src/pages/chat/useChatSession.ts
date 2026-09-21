@@ -946,26 +946,48 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
 
   const upsertTraceLine = useCallback((turnId: string, line: TraceLine) => {
     const trace = getTurnTrace(turnId);
+    const now = Date.now();
     const nextLine = trace.completedAt && line.state === 'running'
       ? { ...line, state: 'completed' as const }
       : line;
     const index = trace.lines.findIndex((item) => item.id === line.id);
     if (index >= 0) {
+      const previous = trace.lines[index];
+      const merged = mergeTraceLine(previous, nextLine);
+      // 实时耗时：首次出现记起点；状态进入终态记终点（已有终点则保留）。
+      const startedAt = previous.startedAt ?? now;
+      const completedAt = merged.state !== 'running'
+        ? previous.completedAt ?? now
+        : previous.completedAt;
+      const durationMs = merged.durationMs ?? previous.durationMs
+        ?? (completedAt !== undefined ? Math.max(0, completedAt - startedAt) : undefined);
       trace.lines = [...trace.lines];
-      trace.lines[index] = mergeTraceLine(trace.lines[index], nextLine);
+      trace.lines[index] = { ...merged, startedAt, completedAt, durationMs };
     } else {
-      trace.lines = [...trace.lines, nextLine].slice(-80);
+      const startedAt = now;
+      const completedAt = nextLine.state !== 'running' ? now : undefined;
+      const durationMs = nextLine.durationMs
+        ?? (completedAt !== undefined ? Math.max(0, completedAt - startedAt) : undefined);
+      trace.lines = [...trace.lines, { ...nextLine, startedAt, completedAt, durationMs }].slice(-80);
     }
     notifyTrace();
   }, [getTurnTrace, notifyTrace]);
 
   const finishTrace = useCallback((turnId: string, failed = false) => {
     const trace = getTurnTrace(turnId);
-    trace.completedAt = Date.now();
-    trace.lines = trace.lines.map((line) => ({
-      ...line,
-      state: failed && line.state === 'running' ? 'failed' : line.state === 'running' ? 'completed' : line.state,
-    }));
+    const now = Date.now();
+    trace.completedAt = now;
+    trace.durationMs = trace.durationMs ?? Math.max(0, now - trace.startedAt);
+    trace.lines = trace.lines.map((line) => {
+      if (line.state !== 'running') return line;
+      const completedAt = line.completedAt ?? now;
+      return {
+        ...line,
+        state: (failed ? 'failed' : 'completed') as TraceLine['state'],
+        completedAt,
+        durationMs: line.durationMs ?? Math.max(0, completedAt - (line.startedAt ?? now)),
+      };
+    });
     notifyTrace();
   }, [getTurnTrace, notifyTrace]);
 
@@ -1305,11 +1327,13 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
             state: line.state,
             depth: typeof line.depth === 'number' ? line.depth : undefined,
             collapsible: Boolean(line.collapsible || line.code || line.output),
+            durationMs: typeof line.duration_ms === 'number' ? line.duration_ms : undefined,
           }));
           let mergedTrace = mergeTurnTraceSnapshot(turnTraceRef.current.get(row.turn_id), {
             lines: traceLines,
             startedAt: parseMessageTime(row.started_at) || Date.now(),
             completedAt: row.completed_at ? parseMessageTime(row.completed_at) : undefined,
+            durationMs: typeof row.duration_ms === 'number' ? row.duration_ms : undefined,
           });
           const activeStreamTurn = stream.loading && stream.turnId === row.turn_id;
           const recoverableRunningTrace = (

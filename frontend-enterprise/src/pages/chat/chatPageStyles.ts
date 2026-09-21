@@ -136,6 +136,10 @@ export const CHAT_TRACE_LINE_TEXT_CLASS = 'text-[13px] leading-[1.5] text-[#464c
 export const CHAT_TRACE_FLOW_TEXT_CLASS = 'sd1-trace-flow-text';
 export const CHAT_TRACE_LINE_TEXT_FAILED_CLASS = 'text-[#d20b0b]';
 export const CHAT_TRACE_LINE_DETAIL_CLASS = 'text-[12px] leading-[1.5] text-[#858b9c] wrap-anywhere';
+export const CHAT_TRACE_LINE_DURATION_CLASS =
+  'ml-[7px] inline-block align-baseline text-[11px] font-medium leading-[1.5] tabular-nums text-[#a2a8b8]';
+export const CHAT_TRACE_TOTAL_DURATION_CLASS =
+  'ml-[6px] whitespace-nowrap text-[11px] leading-[1.4] tabular-nums text-[#a2a8b8]';
 export const CHAT_TRACE_CODE_SUMMARY_CLASS =
   'cursor-pointer text-[12px] font-medium text-[#757f9c] hover:text-[#18181a]';
 export const CHAT_TRACE_CODE_DETAILS_CLASS = 'block min-w-0 max-w-full overflow-hidden';

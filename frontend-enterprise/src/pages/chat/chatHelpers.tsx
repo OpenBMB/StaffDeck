@@ -1368,6 +1368,15 @@ export function stepResultTraceLine(data: Record<string, unknown>): TraceLine {
   };
 }
 
+export function formatTraceDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds - minutes * 60);
+  return `${minutes}m ${String(rest).padStart(2, '0')}s`;
+}
+
 export function mergeTraceLine(existing: TraceLine, incoming: TraceLine): TraceLine {
   const keepExistingContent = incoming.provisional === true && existing.provisional !== true;
   const nextState =
@@ -1386,6 +1395,9 @@ export function mergeTraceLine(existing: TraceLine, incoming: TraceLine): TraceL
     outputTitle: incoming.outputTitle ?? existing.outputTitle,
     state: nextState,
     provisional: incoming.provisional === true && existing.provisional === true,
+    durationMs: incoming.durationMs ?? existing.durationMs,
+    startedAt: existing.startedAt ?? incoming.startedAt,
+    completedAt: incoming.completedAt ?? existing.completedAt,
   };
 }
 
@@ -1416,6 +1428,7 @@ export function mergeTurnTraceSnapshot(existing: TurnTrace | undefined, incoming
     lines: mergedLines.slice(-80),
     startedAt,
     completedAt: incoming.completedAt || existing.completedAt,
+    durationMs: incoming.durationMs ?? existing.durationMs,
   };
 }
 

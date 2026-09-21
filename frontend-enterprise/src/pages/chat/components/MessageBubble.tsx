@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+
 import EmployeeAvatar from '@/components/EmployeeAvatar';
 import StaffdeckIcon from '@/components/StaffdeckIcon';
 import IconThumbUp from '@/assets/icons/thumb-up.svg?react';
@@ -40,6 +42,8 @@ import {
   CHAT_QUEUED_MESSAGE_ITEM_CLASS,
   CHAT_QUEUED_STATUS_CLASS,
   CHAT_QUEUED_STATUS_ROW_CLASS,
+  CHAT_TRACE_FLOW_TEXT_CLASS,
+  CHAT_TRACE_TOTAL_DURATION_CLASS,
   chatBubbleClass,
   chatRowClass,
 } from '../chatPageStyles';
@@ -47,6 +51,7 @@ import {
   MarkdownMessage,
   attachmentTypeLabel,
   canRateMessage,
+  formatTraceDuration,
 } from '../chatHelpers';
 import type { TraceLine } from '../chatTypes';
 import type { UseChatSession } from '../useChatSession';
@@ -56,6 +61,12 @@ import KnowledgeCitationList from './KnowledgeCitationList';
 import ScheduledDraftCard from './ScheduledDraftCard';
 import SlashCommandChip from './SlashCommandChip';
 import { slashCommandMessage } from '../slashCommands';
+
+export type TurnTraceTiming = {
+  startedAt: number;
+  completedAt?: number;
+  durationMs?: number;
+};
 
 export type MessageRender = {
   traceTurnId: string;
@@ -71,6 +82,7 @@ export type MessageRender = {
   attachments: ChatAttachmentRead[];
   harnessArtifacts: HarnessWorkspaceArtifact[];
   statusOnly: boolean;
+  traceTiming?: TurnTraceTiming;
 };
 
 type MessageBubbleProps = {
@@ -89,6 +101,33 @@ function activeTeamProgress(item: ChatMessage): { phase: string; statusText: str
     ? progressRecord.status_text.trim()
     : '';
   return statusText ? { phase, statusText } : null;
+}
+
+/** 本轮整体耗时：未完成时实时跳动，完成后定格。 */
+function TurnDurationNote({ timing }: { timing: TurnTraceTiming }) {
+  const running = timing.completedAt === undefined && timing.durationMs === undefined;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  const durationMs = timing.durationMs
+    ?? (timing.completedAt !== undefined
+      ? Math.max(0, timing.completedAt - timing.startedAt)
+      : Math.max(0, now - timing.startedAt));
+  const label = formatTraceDuration(durationMs);
+  if (!label) return null;
+  return (
+    <span
+      className={cn(CHAT_TRACE_TOTAL_DURATION_CLASS, running && CHAT_TRACE_FLOW_TEXT_CLASS)}
+      data-i18n-ignore
+      title={running ? '本轮仍在执行，计时进行中' : '本轮执行的总耗时'}
+    >
+      总耗时 {label}
+    </span>
+  );
 }
 
 export default function MessageBubble({ chat, item, render }: MessageBubbleProps) {
@@ -114,6 +153,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
     attachments,
     harnessArtifacts,
     statusOnly,
+    traceTiming,
   } = render;
   const queuedMessage = item.role === 'user' && item.metadata?.queued === true;
   const sentSlashCommand = item.role === 'user'
@@ -283,6 +323,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
               >
                 <IconThumbDown width={15} height={15} />
               </button>
+              {traceTiming && <TurnDurationNote timing={traceTiming} />}
             </div>
           )}
           </div>

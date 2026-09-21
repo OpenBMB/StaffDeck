@@ -1,4 +1,4 @@
-import type { ComponentType, SVGProps } from 'react';
+import { useEffect, useState, type ComponentType, type SVGProps } from 'react';
 
 import CodeBlock from '@/components/CodeBlock';
 import StaffdeckIcon from '@/components/StaffdeckIcon';
@@ -24,6 +24,7 @@ import {
   CHAT_TRACE_LINE_CLASS,
   CHAT_TRACE_LINE_CONTENT_CLASS,
   CHAT_TRACE_LINE_DETAIL_CLASS,
+  CHAT_TRACE_LINE_DURATION_CLASS,
   CHAT_TRACE_LINE_TEXT_CLASS,
   CHAT_TRACE_LINE_TEXT_FAILED_CLASS,
   CHAT_TRACE_SUMMARY_CLASS,
@@ -31,7 +32,7 @@ import {
   CHAT_TRACE_SUMMARY_RUNNING_CLASS,
   CHAT_TRACE_WRAP_CLASS,
 } from '../chatPageStyles';
-import { traceLineIconName, traceSummaryIconName } from '../chatHelpers';
+import { formatTraceDuration, traceLineIconName, traceSummaryIconName } from '../chatHelpers';
 import type { CotTraceIconName, TraceLine } from '../chatTypes';
 import MCPAppView from './MCPAppView';
 
@@ -50,6 +51,45 @@ function CotTraceIcon({ name }: { name: CotTraceIconName }) {
   return (
     <span className={CHAT_TRACE_ICON_CLASS} aria-hidden="true">
       <Icon />
+    </span>
+  );
+}
+
+/** 步骤仍在执行时按固定间隔刷新“当前时刻”，用于实时耗时显示。 */
+function useTraceNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
+function lineDurationMs(line: TraceLine, now: number): number | undefined {
+  if (line.state === 'running') {
+    return line.startedAt !== undefined ? Math.max(0, now - line.startedAt) : undefined;
+  }
+  if (line.durationMs !== undefined) return line.durationMs;
+  if (line.startedAt !== undefined && line.completedAt !== undefined) {
+    return Math.max(0, line.completedAt - line.startedAt);
+  }
+  return undefined;
+}
+
+function TraceDurationBadge({ line }: { line: TraceLine }) {
+  const running = line.state === 'running' && line.startedAt !== undefined;
+  const now = useTraceNow(running);
+  const durationMs = lineDurationMs(line, now);
+  const label = durationMs !== undefined ? formatTraceDuration(durationMs) : '';
+  if (!label) return null;
+  return (
+    <span
+      className={cn(CHAT_TRACE_LINE_DURATION_CLASS, running && CHAT_TRACE_FLOW_TEXT_CLASS)}
+      data-i18n-ignore
+    >
+      {label}
     </span>
   );
 }
@@ -110,6 +150,7 @@ export default function ExecutionRecord({
                   )}
                 >
                   {t(line.text)}
+                  <TraceDurationBadge line={line} />
                 </span>
                 {line.detail && <span className={CHAT_TRACE_LINE_DETAIL_CLASS}>{t(line.detail)}</span>}
                 {line.code && (
