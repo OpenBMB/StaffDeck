@@ -341,7 +341,7 @@ export default function ConversationLogsTab() {
     {
       key: 'title',
       title: '对话任务',
-      width: 200,
+      width: 168,
       className: 'whitespace-normal text-[#18181a]',
       render: (row) => (
         <span className="line-clamp-1 wrap-break-word">
@@ -352,13 +352,13 @@ export default function ConversationLogsTab() {
     {
       key: 'agent',
       title: '数字员工',
-      width: 180,
+      width: 136,
       render: (row) => <span className="block truncate" title={agentLabel(row)}>{agentLabel(row)}</span>,
     },
     {
       key: 'source',
       title: '来源/用户',
-      width: 140,
+      width: 124,
       render: (row) => (
         <div className="flex min-w-0 flex-col items-start gap-[4px]">
           <ChannelBadge channel={row.channel} />
@@ -371,7 +371,7 @@ export default function ConversationLogsTab() {
     {
       key: 'status',
       title: '状态',
-      width: 120,
+      width: 92,
       render: (row) => (
         <div className="flex flex-wrap gap-[4px]">
           {row.downFeedback && <StatusBadge tone="red">差评</StatusBadge>}
@@ -383,7 +383,7 @@ export default function ConversationLogsTab() {
     {
       key: 'attribution',
       title: '问题归因',
-      width: 130,
+      width: 120,
       render: (row) => (
         <span>
           {row.downFeedback
@@ -395,6 +395,7 @@ export default function ConversationLogsTab() {
     {
       key: 'latest',
       title: '最近内容',
+      width: 168,
       className: 'whitespace-normal',
       render: (row) => (
         <span className="line-clamp-1 wrap-break-word">
@@ -409,13 +410,13 @@ export default function ConversationLogsTab() {
     {
       key: 'updated',
       title: '时间',
-      width: 170,
+      width: 154,
       render: (row) => formatDateTime(row.updated_at),
     },
     {
       key: 'actions',
       title: '操作',
-      width: 150,
+      width: 120,
       render: (row) => (
         <div className="flex items-center gap-[12px]">
           <UIButton
