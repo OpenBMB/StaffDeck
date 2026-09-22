@@ -2483,7 +2483,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => requestImport('folder')}>选择文件夹</DropdownMenuItem>
         {!isOverallAgent && (
           <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => requestAgentImport('plaza')}>
-            <UploadOutlined />
+            <Copy />
             从广场复制
           </DropdownMenuItem>
         )}
