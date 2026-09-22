@@ -46,3 +46,17 @@ def skill_card(api):
     from backend.tests.test_public_api_v1 import _skill_card
 
     return _skill_card()
+
+
+@pytest.fixture
+def knowledge_worker(api, monkeypatch):
+    from app.api import knowledge
+    from app.knowledge import service
+    from app.public_api import jobs
+
+    _, engine, _, sdk_factory = api
+    monkeypatch.setattr(jobs, "engine", engine)
+    monkeypatch.setattr(service, "engine", engine)
+    # Real Markdown parsing/indexing in the fixture DB; no configured models.
+    monkeypatch.setattr(knowledge, "enqueue_async_job", lambda kind, fn, *a, **kw: fn(*a))
+    return sdk_factory, jobs

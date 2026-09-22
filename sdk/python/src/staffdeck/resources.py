@@ -124,6 +124,24 @@ class SOPs(Resource):
     def list(self, agent_id: str) -> APIResponse:
         return self._client.request("GET", agent_path(agent_id, "sops"))
 
+    def generate(
+        self, agent_id: str, body: dict[str, Any], *, idempotency_key: str | None = None,
+    ) -> APIResponse:
+        """Return a job receipt. The result is a private draft, never a publication."""
+        return self._client.request(
+            "POST", agent_path(agent_id, "sops:generate"),
+            body=body, idempotency_key=idempotency_key,
+        )
+
+    def rewrite(
+        self, agent_id: str, sop_id: str, body: dict[str, Any],
+        *, idempotency_key: str | None = None,
+    ) -> APIResponse:
+        return self._client.request(
+            "POST", agent_path(agent_id, f"sops/{segment(sop_id)}:rewrite"),
+            body=body, idempotency_key=idempotency_key,
+        )
+
     def create(
         self, agent_id: str, content: dict[str, Any], *, idempotency_key: str | None = None,
     ) -> APIResponse:
@@ -178,5 +196,24 @@ class SOPs(Resource):
         return self._client.request(
             "POST", f"sops/{segment(sop_id)}/versions/{segment(version)}:rollback",
             params={"agent_id": agent_id},
+        )
+
+    def get_version(self, agent_id: str, sop_id: str, version: str) -> APIResponse:
+        return self._client.request(
+            "GET", f"sops/{segment(sop_id)}/versions/{segment(version)}",
+            params={"agent_id": agent_id},
+        )
+
+    def diff(
+        self, agent_id: str, sop_id: str, version: str, *, compare_to: str,
+    ) -> APIResponse:
+        return self._client.request(
+            "GET", f"sops/{segment(sop_id)}/versions/{segment(version)}/diff",
+            params={"agent_id": agent_id, "compare_to": compare_to},
+        )
+
+    def archive(self, agent_id: str, sop_id: str) -> APIResponse:
+        return self._client.request(
+            "POST", f"sops/{segment(sop_id)}:archive", params={"agent_id": agent_id},
         )
 

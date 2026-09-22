@@ -9,6 +9,7 @@ import re
 import sys
 from contextlib import closing
 from dataclasses import asdict
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -46,16 +47,37 @@ _COMMANDS = {
     },
     "sops": {
         "list": "agent_id", "create": "agent_id content idempotency_key?",
+        "generate": "agent_id body idempotency_key?",
+        "rewrite": "agent_id sop_id body idempotency_key?",
         "get_draft": "agent_id sop_id draft_id",
         "replace": "agent_id sop_id content draft_id if_match",
         "patch": "agent_id sop_id operations draft_id if_match",
         "validate": "agent_id sop_id draft_id", "publish": "agent_id sop_id draft_id",
         "versions": "agent_id sop_id", "rollback": "agent_id sop_id version",
+        "get_version": "agent_id sop_id version", "diff": "agent_id sop_id version compare_to",
+        "archive": "agent_id sop_id",
+    },
+    "knowledge_bases": {
+        "list": "agent_id", "create": "agent_id body",
+        "update": "agent_id knowledge_base_id body", "archive": "agent_id knowledge_base_id",
+        "search": "agent_id knowledge_base_id body",
+        "upsert_entries": "agent_id knowledge_base_id body idempotency_key?",
+        "upload_document": "agent_id knowledge_base_id file_path title?",
+        "documents": "agent_id knowledge_base_id",
+        "update_document": "agent_id knowledge_base_id document_id body",
+        "archive_document": "agent_id knowledge_base_id document_id",
+        "versions": "agent_id knowledge_base_id",
+        "rollback": "agent_id knowledge_base_id version",
+        "concepts": "agent_id knowledge_base_id",
     },
     "runs": {
         "create": "agent_id body idempotency_key?", "get": "run_id", "result": "run_id",
         "cancel": "run_id", "wait": "run_id timeout? poll_interval?",
         "events": "run_id last_event_id? max_reconnects?",
+    },
+    "jobs": {
+        "get": "job_id", "result": "job_id", "cancel": "job_id",
+        "wait": "job_id timeout? poll_interval?",
     },
 }
 _JSON_TYPES = {"body": dict, "content": dict, "operations": list, "resources": list}
@@ -82,6 +104,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--http-timeout", type=float, default=30.0, help="Per-request timeout seconds")
     parser.add_argument("--max-retries", type=int, default=2, help="GET retries only; writes are once")
     groups = parser.add_subparsers(dest="resource", required=True)
+    groups.add_parser("guide", help="Print the bundled SOP/knowledge coding-agent guide (Markdown)")
     for resource, commands in _COMMANDS.items():
         group = groups.add_parser(resource.replace("_", "-"))
         actions = group.add_subparsers(dest="action", required=True)
@@ -141,6 +164,9 @@ def _error(kind: str, message: str, **metadata: Any) -> None:
 def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
+        if args.resource == "guide":
+            print(files("staffdeck").joinpath("skills/staffdeck-cli/SKILL.md").read_text("utf-8"))
+            return 0
         key = os.environ.get("STAFFDECK_API_KEY", "").strip()
         if not key or not args.base_url:
             raise UsageError("Set STAFFDECK_API_KEY and STAFFDECK_BASE_URL (or --base-url).")
@@ -179,10 +205,15 @@ def main(argv: list[str] | None = None) -> int:
         _error("transport", str(exc))
         return 3
     except RunFailedError as exc:
-        _error("run_failed", str(exc), run_id=exc.run_id, status=exc.status)
+        if args.sdk_resource == "jobs":
+            _error("job_failed", "StaffDeck job did not succeed.",
+                   job_id=exc.run_id, status=exc.status)
+        else:
+            _error("run_failed", str(exc), run_id=exc.run_id, status=exc.status)
         return 4
     except WaitTimeout as exc:
-        _error("wait_timeout", str(exc), run_id=exc.run_id)
+        identifier = {"job_id" if args.sdk_resource == "jobs" else "run_id": exc.run_id}
+        _error("wait_timeout", str(exc), **identifier)
         return 5
     except StreamError as exc:
         _error("stream", str(exc), run_id=exc.run_id, last_event_id=exc.last_event_id)
