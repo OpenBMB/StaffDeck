@@ -56,8 +56,11 @@ const ALIGN_CLASS = {
   right: 'text-right',
 } as const;
 
+// `truncate` is load-bearing: under `table-fixed` a squeezed column keeps its
+// box but not its content, so without clipping the header text paints straight
+// over the next column instead of staying inside its own.
 const HEAD_CELL_CLASS =
-  'h-[36px] bg-[#f2f3f7] px-[16px] py-[12px] align-middle text-[12px] font-normal text-[#464c5e]';
+  'h-[36px] truncate bg-[#f2f3f7] px-[16px] py-[12px] align-middle text-[12px] font-normal text-[#464c5e]';
 const BODY_CELL_CLASS = 'px-[16px] py-[12px] align-middle text-[12px] text-[#858b9c]';
 const BODY_HEIGHT = {
   default: 'min-h-[64px]',
