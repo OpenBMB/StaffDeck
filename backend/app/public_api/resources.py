@@ -281,9 +281,23 @@ def update_knowledge_document(
         not document
         or document.tenant_id != principal.tenant_id
         or document.knowledge_base_id != knowledge_base_id
-        or document.knowledge_base_version_id != version.id
     ):
         raise PublicAPIError(404, "KNOWLEDGE_DOCUMENT_NOT_FOUND", "Knowledge document not found.")
+    if document.knowledge_base_version_id != version.id:
+        # Updates clone documents into a new head, leaving the old ID/timestamp
+        # intact. Recognize a stale read only within this employee's visible
+        # version history; another employee's private version remains a 404.
+        history = internal_knowledge_bases.list_knowledge_base_versions(
+            knowledge_base_id, principal.tenant_id, agent_id, db
+        )
+        if not any(item["id"] == document.knowledge_base_version_id for item in history):
+            raise PublicAPIError(
+                404, "KNOWLEDGE_DOCUMENT_NOT_FOUND", "Knowledge document not found."
+            )
+        raise PublicAPIError(
+            409, "KNOWLEDGE_DOCUMENT_CONFLICT",
+            "The knowledge base version has changed. Reload documents before editing.",
+        )
     request = KnowledgeDocumentUpdateRequest(tenant_id=principal.tenant_id, **body)
     return _dump(internal_knowledge.update_document(
         document_id, request, db, principal.actor_user, agent_id=agent_id

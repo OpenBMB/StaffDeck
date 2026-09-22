@@ -66,3 +66,7 @@ def test_cli_job_failure_identifiers(monkeypatch, capsys, error, exit_code, kind
     payload = json.loads(output.err)["error"]
     assert payload["kind"] == kind and payload["job_id"] == "job"
     assert "run_id" not in payload
+    if isinstance(error, WaitTimeout):
+        assert payload["message"] == (
+            "Timed out waiting for StaffDeck; the job was not cancelled."
+        )

@@ -112,7 +112,9 @@ idempotency_key=...)`; each entry has `title`, `content`, and optional
 `external_id`, `source_ref`, `metadata`. `external_id` does not guarantee overwrite
 of existing documents. Use `update_document` with `content_md` for replacement
 and `expected_updated_at` from `documents()` to reject stale edits (409).
-Document updates may return a new branch-local ID; retain it.
+Document updates may return a new branch-local ID; retain it. An ID from a previous
+visible version also returns 409: reload `documents()` for current IDs and timestamps
+before reconciling the edit. Missing or inaccessible documents still return 404.
 
 Uploads accept a local file path, send multipart data, and reject files above
 20 MiB before sending. They are sent once; the server does not guarantee upload
@@ -248,8 +250,8 @@ Successful payloads may contain business-sensitive data; protect output files.
 | 1 | API rejected the request (includes 401/403/409/412/428) |
 | 2 | Invalid arguments, configuration or JSON input |
 | 3 | Transport failure; a write may already have been applied |
-| 4 | `runs wait` observed failed/cancelled |
-| 5 | Local wait budget expired; remote run not cancelled |
+| 4 | `runs wait` / `jobs wait` observed failed/cancelled |
+| 5 | `runs wait` / `jobs wait` budget expired; remote run/job not cancelled |
 | 6 | Protocol or stream error; use the emitted cursor to resume |
 | 130 | Local Ctrl-C; remote run not cancelled |
 

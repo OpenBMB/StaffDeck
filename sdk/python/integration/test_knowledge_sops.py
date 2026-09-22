@@ -40,6 +40,16 @@ def test_knowledge_lifecycle(knowledge_worker, tmp_path):
                 "title": "stale", "expected_updated_at": document["updated_at"],
             })
         assert stale.value.status_code == 409
+        # A second caller still has the original ID and timestamp from documents().
+        assert edited["id"] != document_id
+        with pytest.raises(APIError) as stale_original:
+            sdk.knowledge_bases.update_document("agent_api", kb_id, document_id, {
+                "title": "stale original", "expected_updated_at": document["updated_at"],
+            })
+        assert stale_original.value.status_code == 409
+        assert stale_original.value.code == "KNOWLEDGE_DOCUMENT_CONFLICT"
+        current = sdk.knowledge_bases.documents("agent_api", kb_id).data["data"]
+        assert next(d for d in current if d["id"] == edited["id"])["title"] == "新报销制度"
         search = sdk.knowledge_bases.search("agent_api", kb_id, {"query": "报销"}).data
         assert search["citations"]
         assert sdk.knowledge_bases.concepts("agent_api", kb_id).data["data"]
@@ -59,7 +69,10 @@ def test_knowledge_lifecycle(knowledge_worker, tmp_path):
         assert sdk.knowledge_bases.archive("agent_api", kb_id).data["status"] == "archived"
 
 
-def test_knowledge_document_path_and_employee_boundaries(knowledge_worker):
+def test_knowledge_document_path_and_employee_boundaries(api, knowledge_worker):
+    from app.db.models import KnowledgeBaseVersion, KnowledgeDocument
+    from sqlmodel import Session
+
     sdk_factory, jobs = knowledge_worker
     with sdk_factory() as sdk:
         kb = sdk.knowledge_bases.create("agent_api", {"name": "private"}).data["id"]
@@ -79,6 +92,30 @@ def test_knowledge_document_path_and_employee_boundaries(knowledge_worker):
             })
         assert denied.value.status_code == 404
         assert sdk.knowledge_bases.documents("agent_api", kb).data["data"][0]["title"] == "private"
+        # A different employee's version of the same base must not be treated as
+        # this employee's stale document, even if the file name is identical.
+        with Session(api[1]) as db:
+            source = db.get(KnowledgeDocument, doc)
+            foreign_version = KnowledgeBaseVersion(
+                tenant_id="tenant_api", knowledge_base_id=kb, version="foreign.1", name="foreign",
+                metadata_json={"scope": "agent_private", "owner_agent_id": "agent_other"},
+            )
+            db.add(foreign_version)
+            foreign_doc = KnowledgeDocument(
+                tenant_id="tenant_api", knowledge_base_id=kb,
+                knowledge_base_version_id=foreign_version.id,
+                filename=source.filename, file_type=source.file_type,
+            )
+            db.add(foreign_doc)
+            db.commit()
+            foreign_id = foreign_doc.id
+            foreign_timestamp = foreign_doc.updated_at.isoformat()
+        with pytest.raises(APIError) as denied:
+            sdk.knowledge_bases.update_document("agent_api", kb, foreign_id, {
+                "title": "wrong", "expected_updated_at": foreign_timestamp,
+            })
+        assert denied.value.status_code == 404
+        assert denied.value.code == "KNOWLEDGE_DOCUMENT_NOT_FOUND"
 
 
 def test_sop_generate_rewrite_versions_and_archive(api, skill_card, monkeypatch):

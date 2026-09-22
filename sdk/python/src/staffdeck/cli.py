@@ -213,7 +213,11 @@ def main(argv: list[str] | None = None) -> int:
         return 4
     except WaitTimeout as exc:
         identifier = {"job_id" if args.sdk_resource == "jobs" else "run_id": exc.run_id}
-        _error("wait_timeout", str(exc), **identifier)
+        message = (
+            "Timed out waiting for StaffDeck; the job was not cancelled."
+            if args.sdk_resource == "jobs" else str(exc)
+        )
+        _error("wait_timeout", message, **identifier)
         return 5
     except StreamError as exc:
         _error("stream", str(exc), run_id=exc.run_id, last_event_id=exc.last_event_id)
