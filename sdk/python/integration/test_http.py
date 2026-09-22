@@ -50,6 +50,14 @@ def live_api(api):
             assert not thread.is_alive(), "Local fixture HTTP server did not stop"
 
 
+def test_live_api_uses_independent_connections(live_api):
+    _, _, engine = live_api
+    # Guard the fixture contract: request cleanup must not roll back a worker's
+    # transaction through a shared StaticPool connection.
+    with engine.connect() as first, engine.connect() as second:
+        assert first.connection.driver_connection is not second.connection.driver_connection
+
+
 def test_sdk_and_cli_over_http(live_api, monkeypatch, tmp_path):
     from app.public_api import jobs
 

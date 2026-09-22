@@ -14,7 +14,12 @@ def api(monkeypatch, tmp_path):
     monkeypatch.setenv("APP_SECRET", "sdk-integration-test-only")
     from backend.tests.test_public_api_v1 import _client, _tenant_key
 
-    server, engine, token = _client(monkeypatch)
+    # HTTP responses can arrive before the server's dependency cleanup finishes.
+    # A file-backed database lets overlapping sessions use separate connections;
+    # StaticPool's single in-memory connection would share their transactions.
+    server, engine, token = _client(
+        monkeypatch, database_url=f"sqlite:///{(tmp_path / 'api.sqlite').as_posix()}"
+    )
     key = _tenant_key(server, token, ["*"])
 
     def transport(request):

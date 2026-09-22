@@ -141,6 +141,11 @@ request is bounded by the remaining budget, but HTTPX timeouts apply separately
 to connect/read/write/pool operations, not a strict wall-clock deadline. Waiting
 does not retry an individual failed status request; callers can resume waiting
 on the same ID. For SSE, the HTTP read timeout is idle time, not total run time.
+Event streams share `StaffDeck(timeout=...)` / `--http-timeout` with ordinary
+requests. The server sends a keepalive roughly every 15 seconds, plus database
+query and scheduling time. Keep this timeout comfortably above that interval;
+the default is 30 seconds. A shorter timeout can interrupt a healthy idle stream
+and exhaust its reconnect budget, raising `StreamError` without cancelling the run.
 
 ## CLI for scripts
 

@@ -76,11 +76,11 @@ def _skill_card() -> dict:
     }
 
 
-def _client(monkeypatch):
+def _client(monkeypatch, *, database_url: str = "sqlite://"):
     engine = create_engine(
-        "sqlite://",
+        database_url,
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        **({"poolclass": StaticPool} if database_url == "sqlite://" else {}),
     )
     SQLModel.metadata.create_all(engine)
     with Session(engine) as db:
