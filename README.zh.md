@@ -40,6 +40,12 @@ StaffDeck是一套面向企业的数字员工构建与管理平台，帮助专�
 
 ## 客户端下载
 
+需要在不修改平台核心源码的前提下做二次开发，请参阅
+[Python SDK 与 CLI](sdk/python/README.md)：封装现有 Open API v1，支持工具接入、
+SOP 与知识库管理、会话与运行管理。Codex、PilotDeck（PD）等 coding agent
+可先运行 `staffdeck-api guide` 获取操作指南，再通过 CLI 操作。命令为 `staffdeck-api`，与下方桌面启动器的
+`staffdeck setup` 分开，不包含品牌配置或本地嵌入式 Agent 引擎。
+
 访问 [StaffDeck 官方网站](https://staffdeck.openbmb.cn/)，或直接下载最新桌面客户端：
 
 | 平台 | 架构 | 下载 |

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "staffdeck-sdk"
+version = "0.1.0"
+description = "Python client for the StaffDeck Open API v1"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-only"
+dependencies = ["httpx>=0.27,<0.29"]
+
+[project.scripts]
+staffdeck-api = "staffdeck.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5", "build>=1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+staffdeck = ["py.typed", "skills/staffdeck-cli/SKILL.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "../.."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint.isort]
+known-first-party = ["staffdeck"]
+
