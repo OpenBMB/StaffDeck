@@ -21,7 +21,7 @@ dev = ["pytest>=8", "ruff>=0.5", "build>=1"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-staffdeck = ["py.typed"]
+staffdeck = ["py.typed", "skills/staffdeck-cli/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

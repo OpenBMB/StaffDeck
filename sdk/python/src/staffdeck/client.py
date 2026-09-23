@@ -12,6 +12,8 @@ from urllib.parse import unquote
 import httpx
 
 from .errors import APIError, ProtocolError, TransportError
+from .jobs import Jobs
+from .knowledge import KnowledgeBases
 from .models import APIResponse
 from .resources import Agents, MCPServers, Sessions, SOPs, Tools
 from .runs import Runs
@@ -83,6 +85,8 @@ class StaffDeck:
         self.mcp_servers = MCPServers(self)
         self.sops = SOPs(self)
         self.runs = Runs(self)
+        self.knowledge_bases = KnowledgeBases(self)
+        self.jobs = Jobs(self)
 
     def __enter__(self) -> Self:
         return self
@@ -161,15 +165,24 @@ class StaffDeck:
         content_type: str = "application/json",
         timeout: float | None = None,
         retry: bool = True,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        form: dict[str, str] | None = None,
     ) -> APIResponse:
-        """Call a JSON API. Mutations are never automatically retried."""
+        """Call a JSON or multipart API. Mutations are never automatically retried."""
         method = method.upper()
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
             raise ValueError("Unsupported HTTP method.")
         path = self._path(path)
         if isinstance(body, dict) and "tenant_id" in body:
             raise ValueError("The public API derives tenant_id from the credential.")
-        headers = {"Content-Type": _header(content_type, "content_type")}
+        if files is not None or form is not None:
+            if method != "POST" or body is not None or not files:
+                raise ValueError("Multipart requests require POST, files and no JSON body.")
+            if form and "tenant_id" in form:
+                raise ValueError("The public API derives tenant_id from the credential.")
+        headers = {} if files is not None else {
+            "Content-Type": _header(content_type, "content_type"),
+        }
         if idempotency_key is not None:
             headers["Idempotency-Key"] = _header(idempotency_key, "idempotency_key")
             if len(idempotency_key) > 200:
@@ -181,7 +194,8 @@ class StaffDeck:
         for attempt in range(attempts + 1):
             try:
                 response = self._http.request(
-                    method, path, json=body, params=params, headers=headers, timeout=request_timeout
+                    method, path, json=body, params=params, headers=headers, timeout=request_timeout,
+                    files=files, data=form,
                 )
             except httpx.DecodingError:
                 raise ProtocolError("Invalid compressed response from StaffDeck.") from None

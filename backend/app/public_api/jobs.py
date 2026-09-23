@@ -24,7 +24,7 @@ from app.db.models import (
     new_id,
     utc_now,
 )
-from app.public_api.auth import PublicPrincipal, get_public_principal
+from app.public_api.auth import PublicPrincipal, enforce_agent_access, get_public_principal
 from app.public_api.errors import PublicAPIError
 from app.public_api.schemas import JobRead
 from app.public_api.runtime import enqueue, maintenance_sessions
@@ -518,6 +518,8 @@ def _owned_job(db: Session, principal: PublicPrincipal, job_id: str) -> APIJob:
         raise PublicAPIError(404, "JOB_NOT_FOUND", "Job not found.")
     if principal.agent_id and row.agent_id != principal.agent_id:
         raise PublicAPIError(404, "JOB_NOT_FOUND", "Job not found.")
+    if row.agent_id:
+        enforce_agent_access(principal, row.agent_id)
     return row
 
 

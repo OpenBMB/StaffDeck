@@ -13,7 +13,9 @@ from app.api import knowledge_bases as internal_knowledge_bases
 from app.api import scheduled_tasks as internal_scheduled_tasks
 from app.api import tools as internal_tools
 from app.db import get_session
-from app.db.models import APIJob, AgentResourceBinding, KnowledgeIngestJob, Tool, utc_now
+from app.db.models import (
+    APIJob, AgentResourceBinding, KnowledgeDocument, KnowledgeIngestJob, Tool, utc_now,
+)
 from app.general_skills.schema import GeneralSkillImportRequest, GeneralSkillRunRequest
 from app.knowledge.schema import (
     KnowledgeBaseCreateRequest,
@@ -146,6 +148,9 @@ def upsert_knowledge_entries(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id, write=True)
+    internal_knowledge_bases.get_knowledge_base(
+        knowledge_base_id, principal.tenant_id, agent_id, db
+    )
     replay = replay_idempotent_response(db, principal, request, body.model_dump(mode="json"))
     if replay:
         response.status_code = replay[0]
@@ -181,7 +186,10 @@ async def upload_knowledge_document(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id, write=True)
-    content = await file.read()
+    internal_knowledge_bases.get_knowledge_base(
+        knowledge_base_id, principal.tenant_id, agent_id, db
+    )
+    content = await file.read(20 * 1024 * 1024 + 1)
     if len(content) > 20 * 1024 * 1024:
         raise PublicAPIError(413, "DOCUMENT_TOO_LARGE", "Documents are limited to 20 MB.")
     job = create_job(
@@ -213,6 +221,7 @@ def list_knowledge_versions(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
     db: Session = Depends(get_session),
 ) -> dict:
+    enforce_agent_access(principal, agent_id)
     rows = internal_knowledge_bases.list_knowledge_base_versions(
         knowledge_base_id, principal.tenant_id, agent_id, db
     )
@@ -245,6 +254,7 @@ def list_knowledge_documents(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
     db: Session = Depends(get_session),
 ) -> dict:
+    enforce_agent_access(principal, agent_id)
     rows = internal_knowledge.list_documents(
         principal.tenant_id, knowledge_base_id, agent_id, False, db
     )
@@ -261,8 +271,37 @@ def update_knowledge_document(
     db: Session = Depends(get_session),
 ) -> dict:
     enforce_agent_access(principal, agent_id, write=True)
+    # The URL's base and employee must own the document version being edited.
+    # Internal update_document otherwise defaults to the open-gallery scope.
+    version = internal_knowledge_bases._visible_knowledge_version(
+        db, principal.tenant_id, knowledge_base_id, agent_id
+    )
+    document = db.get(KnowledgeDocument, document_id)
+    if (
+        not document
+        or document.tenant_id != principal.tenant_id
+        or document.knowledge_base_id != knowledge_base_id
+    ):
+        raise PublicAPIError(404, "KNOWLEDGE_DOCUMENT_NOT_FOUND", "Knowledge document not found.")
+    if document.knowledge_base_version_id != version.id:
+        # Updates clone documents into a new head, leaving the old ID/timestamp
+        # intact. Recognize a stale read only within this employee's visible
+        # version history; another employee's private version remains a 404.
+        history = internal_knowledge_bases.list_knowledge_base_versions(
+            knowledge_base_id, principal.tenant_id, agent_id, db
+        )
+        if not any(item["id"] == document.knowledge_base_version_id for item in history):
+            raise PublicAPIError(
+                404, "KNOWLEDGE_DOCUMENT_NOT_FOUND", "Knowledge document not found."
+            )
+        raise PublicAPIError(
+            409, "KNOWLEDGE_DOCUMENT_CONFLICT",
+            "The knowledge base version has changed. Reload documents before editing.",
+        )
     request = KnowledgeDocumentUpdateRequest(tenant_id=principal.tenant_id, **body)
-    return _dump(internal_knowledge.update_document(document_id, request, db, principal.actor_user))
+    return _dump(internal_knowledge.update_document(
+        document_id, request, db, principal.actor_user, agent_id=agent_id
+    ))
 
 
 @router.post("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}:archive", response_model=dict)
@@ -285,6 +324,7 @@ def list_knowledge_concepts(
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")),
     db: Session = Depends(get_session),
 ) -> dict:
+    enforce_agent_access(principal, agent_id)
     rows = internal_knowledge_bases.list_okf_concepts(
         knowledge_base_id, principal.tenant_id, agent_id, None, db
     )

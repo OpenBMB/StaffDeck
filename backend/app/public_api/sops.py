@@ -649,6 +649,7 @@ def diff_sop_version(
     principal: PublicPrincipal = Depends(require_scopes("sops:read")),
     db: Session = Depends(get_session),
 ) -> dict:
+    enforce_agent_access(principal, agent_id)
     before = _version_payload(db, principal, agent_id, sop_id, compare_to)
     after = _version_payload(db, principal, agent_id, sop_id, version)
     return {

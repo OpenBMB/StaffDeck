@@ -81,6 +81,18 @@ def test_file_input_and_defaults(factory, tmp_path):
     )
 
 
+def test_bundled_guide_needs_no_credentials_or_network(factory, monkeypatch, capsys):
+    monkeypatch.delenv("STAFFDECK_API_KEY")
+    monkeypatch.delenv("STAFFDECK_BASE_URL")
+    assert cli.main(["guide"]) == 0
+    factory.assert_not_called()
+    output = capsys.readouterr()
+    assert not output.err
+    assert "PilotDeck" in output.out and "Codex" in output.out
+    assert "knowledge-bases upload-document" in output.out
+    assert "jobs wait" in output.out and "sops publish" in output.out
+
+
 @pytest.mark.parametrize("args,text", [
     ([], ""),
     (["agents", "update", "--agent-id", "a", "--json", "-"], "{}"),

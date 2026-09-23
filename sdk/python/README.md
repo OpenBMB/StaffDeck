@@ -1,13 +1,14 @@
 # StaffDeck Python SDK and CLI
 
 Independent, synchronous HTTP client for the existing StaffDeck Open API v1.
-It lets partners integrate tools, configure SOPs and run digital employees without
+It lets partners integrate tools, manage SOPs and knowledge bases, and run digital employees without
 importing the backend, accessing its database or modifying its core source code.
 Python 3.11+ is required; the only runtime dependency is HTTPX 0.27–0.28.
 
 This is **not** the proposed embedded Agent engine SDK. It requires a running
 StaffDeck service. It does not introduce platform features, branding/theme APIs,
-new permissions, or compatibility with other products such as PD.
+or new permissions. Shell-capable coding agents such as Codex and PilotDeck (PD)
+can invoke the CLI; no product-specific plugin or embedded runtime is required.
 
 ## Install and authenticate
 
@@ -16,6 +17,7 @@ Install from the repository; no public package-index release is assumed:
 ```sh
 python -m pip install ./sdk/python
 staffdeck-api --help
+staffdeck-api guide
 # Equivalent entry point:
 python -m staffdeck --help
 ```
@@ -30,8 +32,8 @@ put the key in command arguments, source control or logs. Set
 does not read `.env` or persist credentials.
 
 Use an **account key with the necessary role permissions** for tool/SOP
-configuration. An employee-scoped key is runtime-only and cannot be used to
-manage tools or SOPs, even if a caller requests broader scopes. The server
+configuration and knowledge management. An employee-scoped key is runtime-only and cannot be used to
+manage tools, SOPs or knowledge, even if a caller requests broader scopes. The server
 remains authoritative for tenant, employee boundaries and current user rights;
 the SDK never elevates them. Do not send `tenant_id` in request bodies.
 
@@ -61,15 +63,71 @@ page; they do **not** silently fetch every resource.
 | `agents` | `list`, `get`, `create`, `update`, `capabilities`, `resources`, `set_resources` |
 | `tools` | `list`, `create`, `update`, `test` |
 | `mcp_servers` | `list`, `create`, `update`, `discover`, `sync` |
-| `sops` | `list`, `create`, `get_draft`, `replace`, `patch`, `validate`, `publish`, `versions`, `rollback` |
+| `sops` | `list`, `create`, `generate`, `rewrite`, `get_draft`, `replace`, `patch`, `validate`, `publish`, `versions`, `get_version`, `diff`, `rollback`, `archive` |
+| `knowledge_bases` | `list`, `create`, `update`, `archive`, `search`, `upsert_entries`, `upload_document`, `documents`, `update_document`, `archive_document`, `versions`, `rollback`, `concepts` |
 | `sessions` | `list`, `create`, `get`, `update` |
 | `runs` | `create`, `get`, `result`, `cancel`, `wait`, `events` |
+| `jobs` | `get`, `result`, `cancel`, `wait` |
 
 For other existing JSON endpoints, use `client.request("GET", "relative/path")`
 with `body`, `params`, `if_match` and `idempotency_key` as needed. There are no
-specialized generation/rewrite, knowledge, gallery, scheduler, artifact, or
+specialized gallery, scheduler, artifact, or
 credential-management clients in this first version. Consult the running
 server's `/api/v1/docs` and `/api/v1/openapi.json` for its actual contract.
+
+## Codex / PilotDeck usage
+
+Run `staffdeck-api guide` to print the bundled
+[coding-agent skill](src/staffdeck/skills/staffdeck-cli/SKILL.md), including input
+schemas/examples, resource discovery, SOP editing/publication, document ingestion,
+concurrency and error recovery. It works without credentials and is shipped in the
+wheel. Ask your coding agent to read it before performing authorized operations:
+
+> Read `staffdeck-api guide`. Use the configured StaffDeck account to list my
+> employees, then create a private SOP draft for the selected employee, import
+> the supplied policy document into its knowledge base and validate the SOP's
+> knowledge references. Wait for ingestion and report the IDs. Do not publish yet.
+
+For agents that load `SKILL.md`, the linked file can also be installed in their
+skill directory using that agent's documented installation mechanism. The CLI
+needs only shell access, the installed Python package and injected environment;
+there is no special PD protocol. The executable is `staffdeck-api`, not `sd`.
+`guide` prints local Markdown, unlike API commands' JSON output.
+
+## Knowledge and asynchronous jobs
+
+```python
+# Inside an open StaffDeck client; agent_id names an employee you can manage.
+kb = client.knowledge_bases.create(agent_id, {"name": "Travel policy"})
+kb_id = kb.data["id"]
+receipt = client.knowledge_bases.upload_document(agent_id, kb_id, "policy.md", title="Policy")
+job_id = receipt.data["id"]  # Persist before waiting; 202 is not completion.
+finished = client.jobs.wait(job_id, timeout=300)
+documents = finished.data["result"]["documents"]
+search = client.knowledge_bases.search(agent_id, kb_id, {"query": "Which expenses are covered?"})
+```
+
+Text ingestion uses `upsert_entries(agent_id, kb_id, {"entries": [...]},
+idempotency_key=...)`; each entry has `title`, `content`, and optional
+`external_id`, `source_ref`, `metadata`. `external_id` does not guarantee overwrite
+of existing documents. Use `update_document` with `content_md` for replacement
+and `expected_updated_at` from `documents()` to reject stale edits (409).
+Document updates may return a new branch-local ID; retain it. An ID from a previous
+visible version also returns 409: reload `documents()` for current IDs and timestamps
+before reconciling the edit. Missing or inaccessible documents still return 404.
+
+Uploads accept a local file path, send multipart data, and reject files above
+20 MiB before sending. They are sent once; the server does not guarantee upload
+idempotency. No retry key is exposed for uploads. Knowledge rollback changes the
+employee's version binding immediately; unlike SOP rollback, it is not a draft.
+
+SOP `generate`/`rewrite` and knowledge ingestion return **jobs**, not employee
+**runs**. Use `client.jobs` / `staffdeck-api jobs ... --job-id ID`. `jobs.result`
+returns the server envelope `{job, result, error}` even for failed jobs;
+`jobs.wait` raises on failure/cancellation and returns that envelope on success.
+It shares `RunFailedError` and `WaitTimeout` with runs (the legacy `run_id`
+attribute contains the job ID). CLI job errors use `job_id`, with exit codes 4/5.
+There is no job event-stream helper; poll `jobs get` or `jobs wait`.
 
 ## Tool → SOP → run example
 
@@ -141,6 +199,11 @@ request is bounded by the remaining budget, but HTTPX timeouts apply separately
 to connect/read/write/pool operations, not a strict wall-clock deadline. Waiting
 does not retry an individual failed status request; callers can resume waiting
 on the same ID. For SSE, the HTTP read timeout is idle time, not total run time.
+Event streams share `StaffDeck(timeout=...)` / `--http-timeout` with ordinary
+requests. The server sends a keepalive roughly every 15 seconds, plus database
+query and scheduling time. Keep this timeout comfortably above that interval;
+the default is 30 seconds. A shorter timeout can interrupt a healthy idle stream
+and exhaust its reconnect budget, raising `StreamError` without cancelling the run.
 
 ## CLI for scripts
 
@@ -187,8 +250,8 @@ Successful payloads may contain business-sensitive data; protect output files.
 | 1 | API rejected the request (includes 401/403/409/412/428) |
 | 2 | Invalid arguments, configuration or JSON input |
 | 3 | Transport failure; a write may already have been applied |
-| 4 | `runs wait` observed failed/cancelled |
-| 5 | Local wait budget expired; remote run not cancelled |
+| 4 | `runs wait` / `jobs wait` observed failed/cancelled |
+| 5 | `runs wait` / `jobs wait` budget expired; remote run/job not cancelled |
 | 6 | Protocol or stream error; use the emitted cursor to resume |
 | 130 | Local Ctrl-C; remote run not cancelled |
 
@@ -240,9 +303,12 @@ ULTRARAG_DOTENV=/dev/null DATABASE_URL=sqlite:// \
   python -m pytest backend/tests/test_public_api_v1.py backend/tests/test_public_api_sessions.py
 ```
 
-Integration fixtures use temporary in-memory SQLite, generated test credentials
-and deterministic worker handlers rather than paid/external LLMs. They do not
-prove production model/tool behavior. To test a clean wheel installation,
+Integration fixtures use temporary SQLite and generated test credentials.
+Knowledge tests exercise real Markdown parsing, indexing, search and editing
+without a configured model; SOP generation/rewrite stub the model response but
+execute real workers, draft storage and publication. TCP/subprocess tests exercise
+the shell workflow used by coding agents; they do not claim a tested Codex/PD
+release or prove production model/tool behavior. To test a clean wheel installation,
 install `sdk/python/dist/*.whl` in a separate virtualenv and set
 `STAFFDECK_TEST_PYTHON` to that environment's **absolute** Python path when
 running the integration suite. The subprocess then runs without source-path
