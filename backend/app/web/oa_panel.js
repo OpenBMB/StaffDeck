@@ -729,16 +729,13 @@
   attachRow.style.order = '9';
   body.appendChild(attachRow);
 
-  // 报销明细（出差报销：由发票解析自动生成，放在附件后面）
+  // 发票明细（出差报销）：与附件同区，一张发票一行（发票类型按该票税率，可改）
   var rowsBox = el('div', 'display:flex;flex-direction:column;gap:7px;');
-  var rowsHint = el('div', 'font-size:11px;color:#a3aaba;', '选择发票后自动按「类别 + 税率」生成');
-  var rowsWrap = el('div', 'display:flex;flex-direction:column;gap:7px;border:1px dashed #dfe3ec;border-radius:10px;background:#fafbfd;padding:9px;');
+  var rowsHint = el('div', 'font-size:11px;color:#a3aaba;', '选择发票后自动生成：一张发票一行');
+  var rowsWrap = el('div', 'display:none;flex-direction:column;gap:7px;');
   rowsWrap.appendChild(rowsHint);
   rowsWrap.appendChild(rowsBox);
-  var rowsSection = field('报销明细（自动生成，可改）', rowsWrap);
-  rowsSection.style.display = 'none';
-  rowsSection.style.order = '10';
-  body.appendChild(rowsSection);
+  attachBox.appendChild(rowsWrap);
   var panelRows = [];
 
   function isTripScenario() {
@@ -1078,11 +1075,12 @@
     var needsRelatedFlow = (scenario.fields || []).indexOf('related_flow') >= 0;
     relatedFlowRow.style.display = needsRelatedFlow ? 'flex' : 'none';
 
-    // 出差报：报销明细按发票解析生成；发票类型/是否全电子票/取整等交给明细行
+    // 出差报销：发票类型/明细与附件同区（一张发票一行，各自税率）；报销金额在最后
     var isTrip = !!scenario.line_items;
     invoiceRow.style.display = isTrip ? 'none' : 'flex';
     eticketRow.style.display = isTrip ? 'none' : 'flex';
-    rowsSection.style.display = isTrip ? 'flex' : 'none';
+    rowsWrap.style.display = isTrip ? 'flex' : 'none';
+    attachRow.firstChild.textContent = isTrip ? '发票附件与明细（一张发票一行，可改）' : '电子发票附件（挂到 OA「相关票据」区）';
     calcWrap.style.display = isTrip ? 'none' : 'flex';
     floorWrap.style.display = isTrip ? 'none' : 'flex';
     amountRow.firstChild.textContent = isTrip ? '报销金额（明细合计）' : '报销金额（默认值，可改）';
