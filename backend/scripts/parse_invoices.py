@@ -71,7 +71,7 @@ def main() -> int:
         for row in rows:
             print(
                 f"  {row['scene']:<6} 税率 {str(row['tax_rate']):<3} "
-                f"发票类型「{row['invoice_type']}」 金额 {row['amount']}（{row['count']} 张）"
+                f"发票类型「{row['invoice_type']}」 金额 {row['amount']}  ← {row['filename'][:32]}"
             )
     else:
         print("\n没有生成明细行（发票类别不在 境内住宿 / 境内机票 / 境内火车票 内）。")

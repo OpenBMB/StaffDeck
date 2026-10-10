@@ -722,7 +722,7 @@
       var item = el('div', 'border:1px solid #e3e7f1;border-radius:9px;background:#fff;padding:7px;display:flex;flex-direction:column;gap:6px;');
       var head = el('div', 'display:flex;align-items:center;gap:6px;');
       head.appendChild(el('span', 'font-size:11.5px;font-weight:600;color:#464c5e;', row.scene || row.category || '明细'));
-      head.appendChild(el('span', 'font-size:10px;color:#a3aaba;', '第 ' + (i + 1) + ' 行 · ' + (row.count || 1) + ' 张票'));
+      head.appendChild(el('span', 'font-size:10px;color:#a3aaba;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', row.filename || ('第 ' + (i + 1) + ' 行')));
       item.appendChild(head);
 
       var itype = el('input', INPUT);
@@ -762,7 +762,7 @@
       panelRows = (data.rows || []).map(function (r) {
         return {
           category: r.category, scene: r.scene, tax_rate: r.tax_rate,
-          invoice_type: r.invoice_type || '', amount: r.amount, count: r.count,
+          invoice_type: r.invoice_type || '', amount: r.amount, filename: r.filename,
           item_desc: r.item_desc || ((r.scene || '') + '费')
         };
       });

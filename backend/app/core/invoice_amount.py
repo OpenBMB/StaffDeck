@@ -186,14 +186,14 @@ def parse_invoice_uploads(
     rate_invoice_types: dict[str, str] | None = None,
     default_invoice_type: str = "",
 ) -> dict[str, Any]:
-    """解析发票（价税合计 + 税率 + 类别），并按「类别 + 税率」聚合成报销明细行。
+    """解析发票（价税合计 + 税率 + 类别），一张发票生成一行报销明细。
 
-    返回 {items, rows, total}：items 是逐张结果（供前端展示/纠错）；rows 是聚合行
-    （scene + 税率映射出的 invoice_type + 累计 amount）。解析失败只在 items 里标原因。
+    返回 {items, rows, total}：items 是逐张结果（供前端展示/纠错）；rows 是明细行
+    （每张发票 → scene + 税率映射的 invoice_type + 该票金额 + 文件名）。解析失败只在 items 里标原因。
     """
     rate_map = {str(k): v for k, v in (rate_invoice_types or {}).items()}
     items: list[dict[str, Any]] = []
-    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    rows: list[dict[str, Any]] = []
     total = Decimal("0")
     for filename, data in uploads:
         if not data:
@@ -211,25 +211,16 @@ def parse_invoice_uploads(
         items.append({"filename": filename, "amount": amount, "tax_rate": rate, "category": (category or {}).get("key"), "error": None})
         if category is None:
             continue
-        key = (category["key"], rate or "")
-        row = rows.get(key)
-        if row is None:
-            row = {
-                "category": category["key"],
-                "scene": category.get("scene") or category.get("key"),
-                "tax_rate": rate or "",
-                "invoice_type": rate_map.get(rate or "", default_invoice_type),
-                "amount": Decimal("0"),
-                "count": 0,
-            }
-            rows[key] = row
-        row["amount"] += Decimal(amount)
-        row["count"] += 1
-    return {
-        "items": items,
-        "rows": [{**row, "amount": f"{row['amount']:.2f}"} for row in rows.values()],
-        "total": f"{total:.2f}",
-    }
+        # 一张发票一行报销明细（不按类别合并；报销总额在 total / 面板金额）
+        rows.append({
+            "category": category["key"],
+            "scene": category.get("scene") or category.get("key"),
+            "tax_rate": rate or "",
+            "invoice_type": rate_map.get(rate or "", default_invoice_type),
+            "amount": f"{Decimal(amount):.2f}",
+            "filename": filename,
+        })
+    return {"items": items, "rows": rows, "total": f"{total:.2f}"}
 
 
 def sum_invoice_amounts(paths: list[str]) -> dict[str, Any]:

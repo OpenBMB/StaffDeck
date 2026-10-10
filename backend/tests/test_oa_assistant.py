@@ -117,7 +117,7 @@ def _patch_texts(monkeypatch, texts):
     monkeypatch.setattr(invoice_amount, "extract_invoice_text_bytes", lambda data: texts.get(data, ""))
 
 
-def test_parse_invoice_uploads_groups_by_category_and_rate(monkeypatch) -> None:
+def test_parse_invoice_uploads_classifies_each_invoice(monkeypatch) -> None:
     _patch_texts(monkeypatch, {
         b"stay6": "住宿服务 税率6% 价税合计（小写）¥1,280.00",
         b"stay3": "住宿服务 税率3% 价税合计（小写）¥300.00",
@@ -129,22 +129,23 @@ def test_parse_invoice_uploads_groups_by_category_and_rate(monkeypatch) -> None:
     )
     assert result["total"] == "2440.00"
     rows = {(r["category"], r["tax_rate"]): r for r in result["rows"]}
-    # 住宿 6% 与 3% 拆成两行（税率不同）
     assert rows[("stay", "6")]["amount"] == "1280.00"
     assert rows[("stay", "3")]["amount"] == "300.00"
     assert rows[("stay", "6")]["invoice_type"] == "6%"
     assert rows[("flight", "9")]["scene"] == "境内机票"
 
 
-def test_parse_invoice_uploads_same_rate_accumulates(monkeypatch) -> None:
+def test_parse_invoice_uploads_one_row_per_invoice(monkeypatch) -> None:
     _patch_texts(monkeypatch, {
         b"t1": "铁路电子客票 税率9% 价税合计（小写）¥200.00",
         b"t2": "铁路电子客票 税率9% 价税合计（小写）¥50.00",
     })
     result = invoice_amount.parse_invoice_uploads([("a.pdf", b"t1"), ("b.pdf", b"t2")], _CATEGORIES, _RATE_MAP, "")
-    assert len(result["rows"]) == 1
-    assert result["rows"][0]["amount"] == "250.00"
-    assert result["rows"][0]["count"] == 2
+    # 两张同税率火车票 → 两行明细（一张票一行），报销总额仍累计
+    assert len(result["rows"]) == 2
+    assert [r["amount"] for r in result["rows"]] == ["200.00", "50.00"]
+    assert {r["filename"] for r in result["rows"]} == {"a.pdf", "b.pdf"}
+    assert result["total"] == "250.00"
 
 
 def test_parse_invoice_uploads_rate_falls_back_to_tax_amount(monkeypatch) -> None:
