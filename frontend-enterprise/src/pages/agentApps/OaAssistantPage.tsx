@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bookmark, CheckCircle2, Copy, MousePointerClick, Puzzle } from 'lucide-react';
+import { useEffect, useMemo, useRef } from 'react';
+import { Bookmark, MousePointerClick, Puzzle, ShieldCheck } from 'lucide-react';
 
 import AppHeader from '@/components/AppHeader';
-import { Button as UIButton } from '@/components/ui/button';
-import { notify } from '@/components/ui/app-toast';
 import { API_BASE_URL } from '@/api/client';
 import type { EnterpriseAuthUser } from '@/auth';
 
@@ -22,7 +20,6 @@ export default function OaAssistantPage({
   currentUser?: EnterpriseAuthUser;
   onLogout?: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
   const linkRef = useRef<HTMLAnchorElement>(null);
 
   // 面板脚本要走用户浏览器可达的绝对地址：OA 页面里没有 StaffDeck 的相对路径上下文。
@@ -51,24 +48,13 @@ export default function OaAssistantPage({
     if (linkRef.current) linkRef.current.setAttribute('href', bookmarklet);
   }, [bookmarklet]);
 
-  const copyBookmarklet = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(bookmarklet);
-      setCopied(true);
-      notify.success('书签代码已复制');
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      notify.error('复制失败，请手动选中下方文本框复制');
-    }
-  }, [bookmarklet]);
-
   return (
     <div className="box-border min-h-full px-[48px] pb-[43px] pt-[20px] max-[900px]:px-[16px]">
       <AppHeader
         className="mb-[16px]"
         onLogout={onLogout}
         userName={currentUser?.username}
-        title="Agent 广场 · OA 单据助手"
+        title="Agent 广场 · OA 浏览器代填"
       />
 
       <div className="flex flex-col gap-[14px]">
@@ -98,31 +84,12 @@ export default function OaAssistantPage({
               <Puzzle className="size-[14px] text-[#757f9c]" />
               AI报销代填
             </a>
-            <UIButton
-              type="button"
-              variant="outline"
-              onClick={copyBookmarklet}
-              className="h-[36px] gap-[6px] rounded-[10px] border-[#e3e7f1] px-[14px] text-[12.5px] text-[#464c5e]"
-            >
-              {copied ? <CheckCircle2 className="size-[13px]" /> : <Copy className="size-[13px]" />}
-              复制书签代码
-            </UIButton>
           </div>
 
-          <details className="mt-[12px]">
-            <summary className="cursor-pointer text-[12px] text-[#757f9c]">拖不动？手动新建书签</summary>
-            <div className="mt-[8px] flex flex-col gap-[6px]">
-              <p className="text-[12px] leading-[1.8] text-[#858b9c]">
-                在书签栏右键「添加网页 / 添加书签」，名称填「AI报销代填」，网址粘贴下面这段：
-              </p>
-              <textarea
-                readOnly
-                value={bookmarklet}
-                onFocus={(e) => e.currentTarget.select()}
-                className="h-[90px] w-full resize-none rounded-[10px] border border-[#e3e7f1] bg-[#fafbfd] p-[8px] font-mono text-[11px] leading-[1.6] text-[#5b6274]"
-              />
-            </div>
-          </details>
+          <div className="mt-[12px] flex items-center gap-[8px] rounded-[10px] border border-[#bfded2] bg-[#eef7f3] px-[12px] py-[9px] text-[12.5px] font-medium text-[#0f6b4f]">
+            <ShieldCheck className="size-[15px] shrink-0" />
+            插件不保存个人数据，只用于任务执行。
+          </div>
         </section>
 
         {/* 使用 */}

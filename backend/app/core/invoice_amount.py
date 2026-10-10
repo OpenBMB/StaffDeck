@@ -52,8 +52,9 @@ _RATE_RE = re.compile(r"税率[^0-9%]{0,8}([0-9]{1,2}(?:\.[0-9]{1,2})?)\s*%")
 _TAX_RE = re.compile(r"税额[^0-9]{0,8}([0-9][0-9,]*(?:\.[0-9]{1,2})?)")
 # 兜底：票面出现的 ￥金额（铁路电子客票没有「价税合计」字样，只印「￥87.00」）
 _MONEY_RE = re.compile(r"[¥￥]\s*([0-9][0-9,]*\.[0-9]{2})")
-# 票面任意百分数（有的票不写「税率」也不给税额，只印一个 6%）
-_PCT_RE = re.compile(r"([0-9]{1,2}(?:\.[0-9]{1,2})?)\s*%")
+# 票面百分数（有的票不写「税率」也不给税额，只印一个 6%）。
+# 前面不能紧贴数字/小数点：否则「707.55 6%」会被贪婪成「56%」。
+_PCT_RE = re.compile(r"(?<![0-9.])([0-9]{1,2}(?:\.[0-9]{1,2})?)\s*%")
 # 可接受的税率档位：反推出来的税率只在这些档位附近才采纳（防止误取到别的数字）
 _PLAUSIBLE_RATES = (1, 3, 5, 6, 9, 10, 13)
 
@@ -170,9 +171,10 @@ def extract_tax_rate_text(text: str, total: str | None = None) -> str | None:
                     return _snap_rate(float(tax / base * 100))
         except (InvalidOperation, ValueError):
             return None
-    # 最后兑底：全票只有一个百分数且落在常见档位时就认它（住宿票常见「税率」缺字的情况）
+    # 最后兑底：全票只有一个百分数且落在常见档位时就认它
+    # （住宿/增值税发票常见：税率写在表格里，与金额相邻）
     percents = set()
-    for raw in _PCT_RE.findall(compact):
+    for raw in _PCT_RE.findall(text):
         snapped = _norm_rate(raw)
         if not snapped:
             continue

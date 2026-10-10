@@ -179,6 +179,15 @@ def test_tax_rate_falls_back_to_lone_percent() -> None:
     assert invoice_amount.extract_tax_rate_text("住宿服务 6% 税额 13% ¥100", "100.00") is None
 
 
+def test_tax_rate_from_invoice_table_row() -> None:
+    # 真实增值税发票：税率写在表格里，与金额相邻（不能被贪婪成 56%）
+    text = (
+        "项目名称 规格型号 单 位 数 量 单 价 金 额 税率/征收率 税 额 "
+        "*生产生活服务*住宿 707.55 6% 42.45 价税合计（小写）¥750.00"
+    )
+    assert invoice_amount.extract_tax_rate_text(text, "750.00") == "6"
+
+
 def test_category_default_tax_rate_used_when_invoice_has_none(monkeypatch) -> None:
     _patch_texts(monkeypatch, {b"t": "电子发票（铁路电子客票） ￥87.00"})
     categories = [{"key": "train", "scene": "境内火车票", "default_tax_rate": "9", "keywords": ["铁路"]}]

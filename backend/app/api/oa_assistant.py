@@ -38,6 +38,7 @@ CORS_HEADERS = {"Access-Control-Allow-Origin": "*"}
 # backend/app/api/oa_assistant.py -> backend/config/oa_assistant.json
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "oa_assistant.json"
 _PANEL_JS = Path(__file__).resolve().parent.parent / "web" / "oa_panel.js"
+_RECORDER_JS = Path(__file__).resolve().parent.parent / "web" / "oa_recorder.js"
 
 
 def _load_config() -> dict[str, Any]:
@@ -70,6 +71,14 @@ def panel_script() -> Response:
         f"window.__SD_OA_CONFIG__ = {json.dumps(config, ensure_ascii=False)};\n"
     )
     return _js_response(header + _PANEL_JS.read_text(encoding="utf-8"))
+
+
+@router.get("/recorder.js")
+def recorder_script() -> Response:
+    """下发页面录制器（公开，排查定位器用）；用户在 OA 页控制台加载后操作并 dump。"""
+    if not _RECORDER_JS.exists():
+        return _js_response("/* StaffDeck: 录制器缺失（backend/app/web/oa_recorder.js） */", 500)
+    return _js_response(_RECORDER_JS.read_text(encoding="utf-8"))
 
 
 @router.post("/report")

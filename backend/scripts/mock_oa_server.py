@@ -59,19 +59,27 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
 </style></head>
 <body>
 <table>
-  <tr><td class="lb">报销类型</td><td><div class="ant-select" data-fieldmark="field6970" data-options="差旅费用|公务限额费用"></div></td>
+  <tr><td class="lb">报销类型</td><td><div class="ant-select" data-fieldmark="field6970" data-options="差旅费用|日常费用|公务限额费用"></div></td>
       <td class="lb">公司名称</td><td><div class="ant-select" data-fieldmark="field6969" data-options="上海复星旅游管理有限公司|珠海市横琴复星旅文旅游发展有限公司"></div></td></tr>
   <tr><td class="lb">是否含超标</td><td><div class="ant-select" data-fieldmark="field7014" data-options="是|否"></div></td>
       <td class="lb">是否差旅/业务招待报销</td><td><div class="ant-select" data-fieldmark="field6974" data-options="是|否"></div></td></tr>
   <tr><td class="lb">报销事由</td><td colspan="3"><input id="field6946"></td></tr>
   <tr><td class="lb">实际出差天数</td><td><input id="tripdays"></td><td></td><td></td></tr>
   <tr><td class="lb">相关流程</td><td colspan="3"><div class="ant-select" data-options="出差申请-0918 上海行|出差申请-0925 北京行|日常费用报销"></div></td></tr>
-  <tr><td class="lb">是否全电子发票</td><td><div class="ant-select" data-fieldmark="field29328" data-options="是|否"></div></td>
-      <td class="lb">相关票据</td><td><div data-fieldmark="field6951"><input type="file" multiple></div></td></tr>
-  <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_0" data-options="境内住宿|境内机票|境内火车票"></div></td>
-      <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_0" data-options="9%|6%|3%|13%"></div></td></tr>
+  <tr><td class="lb">相关票据</td><td><div data-fieldmark="field6951"><input type="file" multiple></div></td>
+      <td class="lb">其他参考资料</td><td><div data-fieldmark="field6973"><input type="file" multiple></div></td></tr>
+  <tr><td class="lb">是否全电子发票</td><td><div class="ant-select" data-fieldmark="field29328" data-options="是|否"></div></td><td></td><td></td></tr>
+  <tr><td class="lb">费用承担部门</td><td><div class="ant-select" data-fieldmark="field7012" data-options="核定费用承担部门|核定"></div></td><td></td><td></td></tr>
+  <tr><td class="lb">收款单位名称</td><td><div class="ant-select" data-options="上海测试科技有限公司|某某网络有限公司|上海测试"></div></td><td></td><td></td></tr>
+  <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_0" data-options="通讯费用|飞机|火车汽车船|IT服务外包|相关票据|境内住宿|境内机票|境内火车票"></div></td>
+      <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td></tr>
   <tr><td class="lb">事项描述</td><td><input id="field6920_0"></td>
       <td class="lb">金额</td><td><input id="field6932_0"></td></tr>
+  <!-- 境内公司付款（workflow 56）明细：fieldmark 直用 -->
+  <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_0" data-options="IT服务外包|普通发票|相关票据"></div></td>
+      <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6826_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td></tr>
+  <tr><td class="lb">事项描述</td><td><input id="field6821_0"></td>
+      <td class="lb">金额</td><td><input id="field6829_0"></td></tr>
 </table>
 <a href="#" id="addrow">＋ 新增</a>
 <button class="ant-btn">保 存</button>
@@ -118,12 +126,18 @@ document.getElementById('addrow').addEventListener('click', function(e){
   var i = rowCount++;
   var table = document.querySelector('table');
   var tr1 = document.createElement('tr');
-  tr1.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_'+i+'" data-options="境内住宿|境内机票|境内火车票"></div></td>'
-    + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_'+i+'" data-options="9%|6%|3%|13%"></div></td>';
+  tr1.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_'+i+'" data-options="IT服务外包|相关票据|境内住宿|境内机票|境内火车票"></div></td>'
+    + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_'+i+'" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td>';
   var tr2 = document.createElement('tr');
   tr2.innerHTML = '<td class="lb">事项描述</td><td><input id="field6920_'+i+'"></td><td class="lb">金额</td><td><input id="field6932_'+i+'"></td>';
-  table.appendChild(tr1); table.appendChild(tr2);
+  var tr3 = document.createElement('tr');
+  tr3.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_'+i+'" data-options="IT服务外包|普通发票"></div></td>'
+    + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6826_'+i+'" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td>';
+  var tr4 = document.createElement('tr');
+  tr4.innerHTML = '<td class="lb">事项描述</td><td><input id="field6821_'+i+'"></td><td class="lb">金额</td><td><input id="field6829_'+i+'"></td>';
+  table.appendChild(tr1); table.appendChild(tr2); table.appendChild(tr3); table.appendChild(tr4);
   Array.prototype.forEach.call(tr1.querySelectorAll('.ant-select'), setupSelect);
+  Array.prototype.forEach.call(tr3.querySelectorAll('.ant-select'), setupSelect);
 });
 document.querySelector('button.ant-btn').addEventListener('click', function(){
   document.getElementById('saved').textContent = '已点击保存（mock）';

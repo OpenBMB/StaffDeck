@@ -9,7 +9,7 @@
     "scenario.fields = 字段 key 数组（顺序即执行顺序，联动字段如「报销类型」必须排在依赖它的字段前面）。",
     "scenario.scene = 报销场景固定值（如通讯费用）；scenario.scene_options = 报销场景多选一（如交通报销的飞机 / 火车·汽车·船），面板渲染成二选一，选中值作为 scene 字段的值。",
     "scenario.notices = 面板顶部提示（如「相关流程」需手动选择、报销明细暂不支持代填）。",
-    "scenario.line_items = 多行报销明细：面板按发票解析结果生成行，引擎按 row_fields 的 selector（含 {i} 行号）逐行填；行数不够时先点 add_row_selector 的「新增」按 initial_rows 补齐。",
+    "scenario.line_items = 多行报销明细：面板按发票解析结果生成行（统一规则——同一「报销场景 + 税率」合并为一行并累计金额，否则各一行；group_by='invoice' 才是一张发票一行），引擎按 row_fields 的 selector（含 {i} 行号）逐行填；行数不够时先点 add_row_selector 的「新增」按 initial_rows 补齐。scene_value 固定行的报销场景。",
     "invoice_parse = 发票解析规则：categories 按关键词把发票归到报销场景；tax_rate_invoice_types 按票面税率映射 OA 发票类型搜索词。",
     "scenario.field_overrides = 场景特有覆盖：可改 value / search_value / clear_first，或写 { \"enabled\": false } 让该场景整字段跳过（如出差报销不改费用承担部门）。",
     "新增场景流程：在 OA 里打开目标表单 → 用浏览器开发者工具或临时脚本确认字段容器 → 把新字段补进 field_library（已存在的直接复用）→ 新增 scenario 条目。字段定义尽量复用，只有场景差异写在场景里。",
@@ -31,7 +31,7 @@
     "invoice_types": [
       { "value": "普通发票", "label": "普通发票 税率0%", "tax_rate": "0" },
       { "value": "电子普通发票", "label": "电子普通发票 税额13%", "tax_rate": "13" },
-      { "value": "增值税发票 6%", "label": "增值税发票 6%", "tax_rate": "6" }
+      { "value": "增值税普通发票", "label": "增值税普通发票 6%", "tax_rate": "6" }
     ],
     "default_all_e_ticket": true,
     "auto_save_default": false,
@@ -73,6 +73,14 @@
       "selector": "div[data-fieldmark=\"field6969\"]",
       "mode": "select",
       "from": "company_name"
+    },
+    "payee_name": {
+      "label": "收款单位名称",
+      "selector": "__TODO__",
+      "by_label": "收款单位名称",
+      "mode": "select",
+      "from": "payee_name",
+      "_note": "面板文本输入，引擎在 OA 联想组件里搜索并选中全称（与公司名称同款处理）"
     },
     "scene": {
       "label": "报销场景",
@@ -135,6 +143,30 @@
       "mode": "select",
       "from": "related_flow",
       "_note": "OA「相关流程」是流程检索组件：面板按关键词（如 0918）检索后选中；selector 未抓到时按标签「相关流程」兜底找 select 容器"
+    },
+    "business_entertainment": {
+      "label": "是否业务招待费用",
+      "selector": "__TODO__",
+      "by_label": "是否业务招待费用",
+      "mode": "select",
+      "value": "否",
+      "_note": "自动填「否」，不显示在面板表单"
+    },
+    "admin_expense": {
+      "label": "是否行政类费用",
+      "selector": "__TODO__",
+      "by_label": "是否行政类费用",
+      "mode": "select",
+      "value": "否",
+      "_note": "自动填「否」，不显示在面板表单"
+    },
+    "other_refs": {
+      "label": "其他参考资料",
+      "selector": "div[data-fieldmark=\"field6973\"]",
+      "mode": "file",
+      "multi": true,
+      "from": "other_ref_files",
+      "_note": "面板额外附件区直接搬进该容器内的 input[type=file]（多选）"
     },
     "item_desc": {
       "label": "明细-事项描述",
@@ -218,13 +250,14 @@
       ],
       "line_items": {
         "initial_rows": 1,
-        "add_row_selector": "a:has-text(\"新增\")",
+        "add_row_selector": "[title*='添加'], [title*='新增'], a[class*='add'], i[class*='add'], span[class*='add'], a:has-text('添加'), a:has-text('新增')",
+        "group_by": "tax_rate",
         "item_desc_template": "{scene}费",
         "row_fields": {
-          "scene": { "label": "报销场景", "selector": "div[data-fieldmark=\"field6926_{i}\"]", "mode": "select" },
-          "invoice_type": { "label": "发票类型", "selector": "div[data-fieldmark=\"field6925_{i}\"]", "mode": "select" },
-          "item_desc": { "label": "事项描述", "selector": "#field6920_{i}", "mode": "input" },
-          "amount": { "label": "金额", "selector": "#field6932_{i}", "mode": "input" }
+          "scene": { "label": "报销场景", "selector": "div[data-fieldmark=\"field6926_{i}\"]", "mode": "select", "by_label": "报销场景" },
+          "invoice_type": { "label": "发票类型", "selector": "div[data-fieldmark=\"field6925_{i}\"]", "mode": "select", "by_label": "发票类型" },
+          "item_desc": { "label": "事项描述", "selector": "#field6920_{i}", "mode": "input", "by_label": "事项描述" },
+          "amount": { "label": "金额", "selector": "#field6932_{i}", "mode": "input", "by_label": "发票金额" }
         }
       },
       "fields": [
@@ -246,6 +279,59 @@
         "expense_type": { "value": "差旅费用" },
         "travel_entertainment": { "value": "是" },
         "cost_department": { "enabled": false },
+        "item_desc": { "enabled": false },
+        "invoice_type": { "enabled": false },
+        "amount": { "enabled": false }
+      }
+    },
+    {
+      "id": "company_payment",
+      "name": "境内公司付款",
+      "enabled": true,
+      "url": "https://oa.fosunholiday.com/spa/workflow/static4form/index.html?_rdm=1791766427519#/main/workflow/req?iscreate=1&workflowid=56&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0&menuIds=1,12&menuPathIds=1,12&preloadkey=1791766427519&timestamp=1791766427519&_key=gczdmd",
+      "reason_prefill": "",
+      "notices": [
+        "「收款单位」需在 OA 页面自行补全。",
+        "报销明细由上传的票据生成：税率相同合并为一行、不同则新增一行。"
+      ],
+      "line_items": {
+        "initial_rows": 1,
+        "add_row_selector": "[title*='添加'], [title*='新增'], a[class*='add'], i[class*='add'], span[class*='add'], a:has-text('添加'), a:has-text('新增')",
+        "group_by": "tax_rate",
+        "scene_value": "IT服务外包",
+        "shared_item_desc": false,
+        "row_fields": {
+          "scene": { "label": "报销场景", "selector": "div[data-fieldmark=\"field6827_{i}\"]", "mode": "select", "by_label": "报销场景" },
+          "invoice_type": { "label": "发票类型", "selector": "div[data-fieldmark=\"field6826_{i}\"]", "mode": "select", "by_label": "发票类型" },
+          "item_desc": { "label": "事项描述", "selector": "#field6821_{i}", "mode": "input", "by_label": "事项描述" },
+          "amount": { "label": "金额", "selector": "#field6829_{i}", "mode": "input", "by_label": "发票金额" }
+        }
+      },
+      "fields": [
+        "expense_type",
+        "tax_exceeded",
+        "business_entertainment",
+        "admin_expense",
+        "reason",
+        "company_name",
+        "payee_name",
+        "e_ticket",
+        "attachment",
+        "other_refs",
+        "item_desc",
+        "invoice_type",
+        "amount"
+      ],
+      "field_overrides": {
+        "expense_type": { "value": "日常费用", "selector": "__TODO__", "by_label": "报销类型" },
+        "tax_exceeded": { "value": "否", "selector": "__TODO__", "by_label": "超标" },
+        "business_entertainment": { "value": "否" },
+        "admin_expense": { "value": "否" },
+        "reason": { "selector": "__TODO__", "by_label": "报销事由" },
+        "company_name": { "selector": "__TODO__", "by_label": "公司名称" },
+        "e_ticket": { "selector": "__TODO__", "by_label": "全电子" },
+        "attachment": { "selector": "__TODO__", "by_label": "相关票据" },
+        "other_refs": { "selector": "__TODO__", "by_label": "其他参考资料" },
         "item_desc": { "enabled": false },
         "invoice_type": { "enabled": false },
         "amount": { "enabled": false }
