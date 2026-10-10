@@ -30,7 +30,8 @@
     "company_names": ["上海复星旅游管理有限公司", "珠海市横琴复星旅文旅游发展有限公司"],
     "invoice_types": [
       { "value": "普通发票", "label": "普通发票 税率0%" },
-      { "value": "电子普通发票", "label": "电子普通发票 税额13%" }
+      { "value": "电子普通发票", "label": "电子普通发票 税额13%" },
+      { "value": "增值税发票 6%", "label": "增值税发票 6%" }
     ],
     "default_all_e_ticket": true,
     "auto_save_default": false,
