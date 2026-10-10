@@ -561,6 +561,14 @@
   scenarioRow.style.order = '1';
   body.appendChild(scenarioRow);
 
+  // 报销类型（场景固定值时只读展示；真正写入 OA 由 field_overrides 驱动）
+  var expenseTypeInput = el('input', INPUT);
+  expenseTypeInput.readOnly = true;
+  var expenseTypeRow = field('报销类型', expenseTypeInput);
+  expenseTypeRow.style.order = '1';
+  expenseTypeRow.style.display = 'none';
+  body.appendChild(expenseTypeRow);
+
   // 场景提示（如「相关流程」需手动选择、报销明细暂不支持代填）
   var noticeBox = el('div', 'display:none;flex-direction:column;gap:3px;border:1px solid #f0dca8;background:#fffaef;color:#8a4b00;border-radius:9px;padding:7px 9px;font-size:11px;line-height:1.65;');
   noticeBox.style.order = '3';
@@ -1024,6 +1032,16 @@
       sceneSegRow.style.display = 'flex';
     } else {
       sceneSegRow.style.display = 'none';
+    }
+
+    // 报销类型：场景固定值（如出差报销=差旅费用）就只读展示
+    var expenseOverride = (scenario.field_overrides && scenario.field_overrides.expense_type) || {};
+    var expenseFixed = expenseOverride.value || '';
+    if (expenseFixed) {
+      expenseTypeInput.value = expenseFixed;
+      expenseTypeRow.style.display = 'flex';
+    } else {
+      expenseTypeRow.style.display = 'none';
     }
 
     var needsTripDays = (scenario.fields || []).indexOf('trip_days') >= 0;
