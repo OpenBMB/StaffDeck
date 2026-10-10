@@ -64,8 +64,8 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
   <tr><td class="lb">是否含超标</td><td><div class="ant-select" data-fieldmark="field7014" data-options="是|否"></div></td>
       <td class="lb">是否差旅/业务招待报销</td><td><div class="ant-select" data-fieldmark="field6974" data-options="是|否"></div></td></tr>
   <tr><td class="lb">报销事由</td><td colspan="3"><input id="field6946"></td></tr>
-  <tr><td class="lb">实际出差天数</td><td><input id="tripdays"></td>
-      <td class="lb">相关流程</td><td>（手动选择）</td></tr>
+  <tr><td class="lb">实际出差天数</td><td><input id="tripdays"></td><td></td><td></td></tr>
+  <tr><td class="lb">相关流程</td><td colspan="3"><div class="ant-select" data-options="出差申请-0918 上海行|出差申请-0925 北京行|日常费用报销"></div></td></tr>
   <tr><td class="lb">是否全电子发票</td><td><div class="ant-select" data-fieldmark="field29328" data-options="是|否"></div></td>
       <td class="lb">相关票据</td><td><div data-fieldmark="field6951"><input type="file" multiple></div></td></tr>
   <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_0" data-options="境内住宿|境内机票|境内火车票"></div></td>

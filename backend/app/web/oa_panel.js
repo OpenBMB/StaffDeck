@@ -177,15 +177,26 @@
     return fallback;
   }
 
+  /** 从任一子节点上回到「select 容器」（ant-select / wea-select / wea-browser）。 */
+  function selectContainerOf(node) {
+    if (!node) return node;
+    if (node.closest) {
+      var box = node.closest('.ant-select, .wea-select, .wea-browser');
+      if (box) return box;
+    }
+    return node;
+  }
+
   /**
-   * selector 未配置时的兜底：按页面可见的标签文本找输入框。
+   * selector 未配置时的兜底：按页面可见的标签文本找控件。
    *  ① placeholder / aria-label / <label for> 命中标签；
    *  ② 整行（tr）文本包含标签，且行内只有一个可见输入（e-cology 表格表单的常见结构）。
-   * 找不到返回 null（由调用方标「待配置」）。
+   * mode=select 时优先返回 select 容器（供 fillSelect 使用）。找不到返回 null。
    */
-  function findByLabelText(labelText) {
+  function findByLabelText(labelText, mode) {
     var want = normText(labelText);
     if (!want) return null;
+    var isSelect = mode === 'select';
     var docs = collectDocs();
     for (var d = 0; d < docs.length; d++) {
       var doc = docs[d];
@@ -195,17 +206,17 @@
         var type = (el.getAttribute('type') || '').toLowerCase();
         if (type === 'hidden' || !isVisible(el)) continue;
         var hint = normText(el.getAttribute('placeholder')) + normText(el.getAttribute('aria-label'));
-        if (hint && hint.indexOf(want) >= 0) return el;
+        if (hint && hint.indexOf(want) >= 0) return isSelect ? selectContainerOf(el) : el;
         if (el.id) {
           var lab = null;
           try {
             var esc = (window.CSS && window.CSS.escape) ? window.CSS.escape(el.id) : el.id;
             lab = doc.querySelector('label[for="' + esc + '"]');
           } catch (e) { lab = null; }
-          if (lab && normText(lab.textContent).indexOf(want) >= 0) return el;
+          if (lab && normText(lab.textContent).indexOf(want) >= 0) return isSelect ? selectContainerOf(el) : el;
         }
       }
-      // 整行兑底：取包含标签的最短一行，返回其中唯一可见输入
+      // 整行兑底：取包含标签的最短一行，返回其中的控件
       var rows = doc.querySelectorAll('tr');
       var best = null;
       var bestLen = Infinity;
@@ -215,9 +226,18 @@
         if (text.length < bestLen) { best = rows[r]; bestLen = text.length; }
       }
       if (best) {
+        if (isSelect) {
+          var box = best.querySelector('.ant-select, .wea-select, .wea-browser');
+          if (box) return box;
+        }
         var cands = best.querySelectorAll('input:not([type=hidden]):not([readonly]), textarea:not([readonly])');
         for (var c = 0; c < cands.length; c++) {
-          if (isVisible(cands[c])) return cands[c];
+          if (!isVisible(cands[c])) continue;
+          return isSelect ? selectContainerOf(cands[c]) : cands[c];
+        }
+        if (isSelect) {
+          var anyBox = best.querySelector('.ant-select, .wea-select, .wea-browser');
+          if (anyBox) return anyBox;
         }
       }
     }
@@ -433,7 +453,7 @@
     var node;
     if (!selector || selector === TODO) {
       var matchLabel = spec.by_label ? (typeof spec.by_label === 'string' ? spec.by_label : label) : '';
-      node = matchLabel ? findByLabelText(matchLabel) : null;
+      node = matchLabel ? findByLabelText(matchLabel, mode) : null;
       if (!node) {
         return { field: label, status: 'todo', detail: matchLabel ? ('未按标签「' + matchLabel + '」定位到输入框') : '定位器待配置' };
       }
@@ -597,6 +617,14 @@
   tripDaysRow.style.display = 'none';
   tripDaysRow.style.order = '5';
   body.appendChild(tripDaysRow);
+
+  // 相关流程（出差报销：填流程关键字 → 面板在 OA 里检索并选中）
+  var relatedFlowInput = el('input', INPUT);
+  relatedFlowInput.placeholder = '输入出差流程关键字检索，如 0918';
+  var relatedFlowRow = field('相关流程', relatedFlowInput);
+  relatedFlowRow.style.display = 'none';
+  relatedFlowRow.style.order = '5';
+  body.appendChild(relatedFlowRow);
 
   // 公司名称
   var companySelect = el('select', INPUT);
@@ -1047,6 +1075,9 @@
     var needsTripDays = (scenario.fields || []).indexOf('trip_days') >= 0;
     tripDaysRow.style.display = needsTripDays ? 'flex' : 'none';
 
+    var needsRelatedFlow = (scenario.fields || []).indexOf('related_flow') >= 0;
+    relatedFlowRow.style.display = needsRelatedFlow ? 'flex' : 'none';
+
     // 出差报：报销明细按发票解析生成；发票类型/是否全电子票/取整等交给明细行
     var isTrip = !!scenario.line_items;
     invoiceRow.style.display = isTrip ? 'none' : 'flex';
@@ -1181,6 +1212,7 @@
       reason: String(reasonInput.value || '').trim(),
       scene: sceneValue,
       trip_days: String(tripDaysInput.value || '').trim(),
+      related_flow: String(relatedFlowInput.value || '').trim(),
       company_name: companySelect.value,
       invoice_type: invoiceSelect.value,
       all_e_ticket: eTicket,
@@ -1193,6 +1225,9 @@
 
     if ((scenario.fields || []).indexOf('trip_days') >= 0 && !values.trip_days) {
       logLine('未填写出差天数：该项会跳过，请在 OA 页面手动补。', 'warn');
+    }
+    if ((scenario.fields || []).indexOf('related_flow') >= 0 && !values.related_flow) {
+      logLine('未填写相关流程关键字：该项会跳过，请在 OA 页面手动选择流程。', 'warn');
     }
 
     var fields = resolveFields(scenario);

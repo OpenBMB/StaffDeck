@@ -126,6 +126,14 @@
       "from": "trip_days",
       "_note": "对应 OA「实际出差天数」。selector 未抓到时按页面标签文本兜底定位；抓到准确 selector 后填进 selector 即可优先用它"
     },
+    "related_flow": {
+      "label": "相关流程",
+      "selector": "__TODO__",
+      "by_label": "相关流程",
+      "mode": "select",
+      "from": "related_flow",
+      "_note": "OA「相关流程」是流程检索组件：面板按关键词（如 0918）检索后选中；selector 未抓到时按标签「相关流程」兜底找 select 容器"
+    },
     "item_desc": {
       "label": "明细-事项描述",
       "selector": "#field6920_0",
@@ -203,8 +211,8 @@
       "enabled": true,
       "reason_prefill": "出差费用报销",
       "notices": [
-        "「相关流程」需要在 OA 页面手动选择。",
-        "报销明细由发票自动解析生成（境内住宿 / 境内机票 / 境内火车票）；金额按行累计，不取整。"
+        "「相关流程」填流程关键字（如 0918），面板会检索并选中。",
+        "报销明细由发票自动解析生成（境内住宿 / 境内机票 / 境内火车票）；一张发票一行，金额按行累计，不取整。"
       ],
       "line_items": {
         "initial_rows": 1,
@@ -223,6 +231,7 @@
         "travel_entertainment",
         "reason",
         "trip_days",
+        "related_flow",
         "company_name",
         "cost_department",
         "e_ticket",
