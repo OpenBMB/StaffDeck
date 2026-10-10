@@ -748,6 +748,16 @@
     if (isTripScenario()) amountInput.value = sum.toFixed(2);
   }
 
+  /** 按票面税率预选发票类型（同税率可能有电子/普通/增值多个，面板只做预选，用户可改）。 */
+  function matchInvoiceType(rate) {
+    if (rate === undefined || rate === null || rate === '') return '';
+    var opts = PANEL_CFG.invoice_types || [];
+    for (var i = 0; i < opts.length; i++) {
+      if (String(opts[i].tax_rate || '') === String(rate)) return opts[i].value;
+    }
+    return '';
+  }
+
   function renderRows() {
     rowsBox.textContent = '';
     rowsHint.style.display = panelRows.length ? 'none' : 'block';
@@ -758,10 +768,22 @@
       head.appendChild(el('span', 'font-size:10px;color:#a3aaba;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', row.filename || ('第 ' + (i + 1) + ' 行')));
       item.appendChild(head);
 
-      var itype = el('input', INPUT);
-      itype.value = row.invoice_type || '';
-      itype.placeholder = '发票类型（按税率匹配，可改）';
-      itype.addEventListener('input', function () { row.invoice_type = itype.value; });
+      // 发票类型：下拉（选项来自 panel.invoice_types；按该票税率预选，用户可改）
+      var itype = el('select', INPUT);
+      var blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = '请选择发票类型';
+      itype.appendChild(blank);
+      (PANEL_CFG.invoice_types || []).forEach(function (o) {
+        var opt = document.createElement('option');
+        opt.value = o.value;
+        opt.textContent = o.label || o.value;
+        itype.appendChild(opt);
+      });
+      var known = (PANEL_CFG.invoice_types || []).some(function (o) { return o.value === row.invoice_type; });
+      itype.value = known ? row.invoice_type : matchInvoiceType(row.tax_rate);
+      row.invoice_type = itype.value;
+      itype.addEventListener('change', function () { row.invoice_type = itype.value; });
       item.appendChild(field('发票类型', itype));
 
       var grid = el('div', 'display:grid;grid-template-columns:1fr 108px;gap:6px;');
@@ -1294,7 +1316,12 @@
   window.__SD_OA_PANEL__ = {
     toggle: function () { card.style.display = card.style.display === 'none' ? 'flex' : 'none'; },
     open: function () { card.style.display = 'flex'; },
-    close: function () { card.style.display = 'none'; }
+    close: function () { card.style.display = 'none'; },
+    // 卸载旧面板：书签每次带 ?t= 重新加载本文件前先调它，保证拿到的是最新面板
+    destroy: function () {
+      try { if (host.parentNode) host.parentNode.removeChild(host); } catch (e) {}
+      try { window.__SD_OA_PANEL__ = null; } catch (e) {}
+    },
   };
 
   logLine('面板已就绪（配置版本 ' + (CFG.version || '?') + '）。', 'dim');

@@ -29,9 +29,9 @@
     "default_amount": "100.00",
     "company_names": ["上海复星旅游管理有限公司", "珠海市横琴复星旅文旅游发展有限公司"],
     "invoice_types": [
-      { "value": "普通发票", "label": "普通发票 税率0%" },
-      { "value": "电子普通发票", "label": "电子普通发票 税额13%" },
-      { "value": "增值税发票 6%", "label": "增值税发票 6%" }
+      { "value": "普通发票", "label": "普通发票 税率0%", "tax_rate": "0" },
+      { "value": "电子普通发票", "label": "电子普通发票 税额13%", "tax_rate": "13" },
+      { "value": "增值税发票 6%", "label": "增值税发票 6%", "tax_rate": "6" }
     ],
     "default_all_e_ticket": true,
     "auto_save_default": false,
@@ -57,6 +57,7 @@
       "3": "3%",
       "1": "1%"
     },
+    "_invoice_types_note": "发票类型下拉的选项在 panel.invoice_types（value=发给 OA 的搜索词，label=显示，tax_rate=用于按票面税率自动预选）。同一税率可能有电子/普通/增值多个选项，面板只做预选，用户可改。",
     "default_invoice_type": ""
   },
   "field_library": {
@@ -212,7 +213,7 @@
       "enabled": true,
       "reason_prefill": "出差费用报销",
       "notices": [
-        "报销明细由发票自动解析生成（境内住宿 / 境内机票 / 境内火车票）；一张发票一行，金额按行累计，不取整。",
+        "报销明细由发票自动解析生成（境内住宿 / 境内机票）；一张发票一行，金额按行累计，不取整。",
         "火车票仅支持附件上传，暂时无法解析金额。"
       ],
       "line_items": {

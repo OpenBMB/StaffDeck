@@ -172,6 +172,13 @@ def test_tax_rate_rejects_implausible_fallback() -> None:
     assert invoice_amount.extract_tax_rate_text("价税合计（小写）¥252.12 税额 95.00", "252.12") is None
 
 
+def test_tax_rate_falls_back_to_lone_percent() -> None:
+    # 住宿票常见只印一个「6%」，既没有「税率」字样也没给税额
+    assert invoice_amount.extract_tax_rate_text("住宿服务 6% 价税合计（小写）¥1280.00", "1280.00") == "6"
+    # 多个百分数就不猜
+    assert invoice_amount.extract_tax_rate_text("住宿服务 6% 税额 13% ¥100", "100.00") is None
+
+
 def test_category_default_tax_rate_used_when_invoice_has_none(monkeypatch) -> None:
     _patch_texts(monkeypatch, {b"t": "电子发票（铁路电子客票） ￥87.00"})
     categories = [{"key": "train", "scene": "境内火车票", "default_tax_rate": "9", "keywords": ["铁路"]}]

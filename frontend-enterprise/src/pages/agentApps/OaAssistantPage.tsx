@@ -31,14 +31,16 @@ export default function OaAssistantPage({
     [],
   );
 
-  // 书签本体：小 loader，尽量短；真正的逻辑在 panel.js 里，升级不用用户重装书签。
+  // 书签本体：小 loader。每次点击都先卸载旧面板、带 cache-buster 重新加载，
+  // 保证面板代码/config 更新后不用手动刷新 OA 页面。
   const bookmarklet = useMemo(
     () =>
       'javascript:(function(){' +
-      'if(window.__SD_OA_PANEL__){window.__SD_OA_PANEL__.toggle();return;}' +
+      `var u=${JSON.stringify(panelUrl)};` +
+      'if(window.__SD_OA_PANEL__&&window.__SD_OA_PANEL__.destroy){window.__SD_OA_PANEL__.destroy();}' +
       'var s=document.createElement("script");' +
-      `s.src=${JSON.stringify(panelUrl)};` +
-      's.onerror=function(){alert("StaffDeck 代填脚本加载失败：可能被 OA 页面 CSP 拦截，或网络不可达。");};' +
+      's.src=u+((u.indexOf("?")<0)?"?":"&")+"t="+Date.now();' +
+      's.onerror=function(){alert("AI报销代填脚本加载失败：可能被 OA 页面 CSP 拦截，或网络不可达。");};' +
       'document.documentElement.appendChild(s);' +
       '})();',
     [panelUrl],
