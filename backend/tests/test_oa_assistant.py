@@ -14,6 +14,7 @@ from fastapi import UploadFile
 from starlette.requests import Request
 
 from app.api import oa_assistant
+from app.core import invoice_amount
 
 
 def _upload(name: str, data: bytes) -> UploadFile:
@@ -62,7 +63,9 @@ def _invoice_body(response) -> dict:
 def test_invoice_amounts_empty() -> None:
     response = asyncio.run(oa_assistant.invoice_amounts(files=[]))
     assert response.status_code == 200
-    assert _invoice_body(response)["total"] == "0.00"
+    body = _invoice_body(response)
+    assert body["total"] == "0.00"
+    assert body["rows"] == []
 
 
 def test_invoice_amounts_rejects_non_pdf_extension() -> None:
@@ -81,14 +84,78 @@ def test_invoice_amounts_rejects_bad_header() -> None:
 def test_invoice_amounts_happy_path_sets_cors(monkeypatch) -> None:
     captured = {}
 
-    def fake(uploads):
+    def fake(uploads, **kwargs):
         captured["uploads"] = uploads
-        return {"items": [{"filename": "a.pdf", "amount": "12.00", "error": None}], "total": "12.00"}
+        return {
+            "items": [{"filename": "a.pdf", "amount": "12.00", "error": None}],
+            "rows": [{"category": "stay", "scene": "境内住宿", "amount": "12.00"}],
+            "total": "12.00",
+        }
 
-    monkeypatch.setattr(oa_assistant, "sum_invoice_amounts_from_uploads", fake)
+    monkeypatch.setattr(oa_assistant, "parse_invoice_uploads", fake)
     response = asyncio.run(oa_assistant.invoice_amounts(files=[_upload("a.pdf", b"%PDF-1.4 stub")]))
     assert response.status_code == 200
-    assert _invoice_body(response)["total"] == "12.00"
+    body = _invoice_body(response)
+    assert body["total"] == "12.00"
+    assert body["rows"][0]["scene"] == "境内住宿"
     assert captured["uploads"] == [("a.pdf", b"%PDF-1.4 stub")]
     # OA 页面跨域调用需要 CORS 头
     assert response.headers["access-control-allow-origin"] == "*"
+
+
+# ── 发票解析：分类 + 税率分组（monkeypatch 掉 PDF 文本提取） ──
+
+_CATEGORIES = [
+    {"key": "stay", "scene": "境内住宿", "keywords": ["住宿"]},
+    {"key": "flight", "scene": "境内机票", "keywords": ["航空运输电子客票行程单", "机票"]},
+    {"key": "train", "scene": "境内火车票", "keywords": ["铁路电子客票", "火车"]},
+]
+_RATE_MAP = {"13": "13%", "9": "9%", "6": "6%", "3": "3%"}
+
+
+def _patch_texts(monkeypatch, texts):
+    monkeypatch.setattr(invoice_amount, "extract_invoice_text_bytes", lambda data: texts.get(data, ""))
+
+
+def test_parse_invoice_uploads_groups_by_category_and_rate(monkeypatch) -> None:
+    _patch_texts(monkeypatch, {
+        b"stay6": "住宿服务 税率6% 价税合计（小写）¥1,280.00",
+        b"stay3": "住宿服务 税率3% 价税合计（小写）¥300.00",
+        b"flight9": "航空运输电子客票行程单 税率9% 价税合计（小写）¥860.00",
+    })
+    result = invoice_amount.parse_invoice_uploads(
+        [("a.pdf", b"stay6"), ("b.pdf", b"stay3"), ("c.pdf", b"flight9")],
+        _CATEGORIES, _RATE_MAP, "其他",
+    )
+    assert result["total"] == "2440.00"
+    rows = {(r["category"], r["tax_rate"]): r for r in result["rows"]}
+    # 住宿 6% 与 3% 拆成两行（税率不同）
+    assert rows[("stay", "6")]["amount"] == "1280.00"
+    assert rows[("stay", "3")]["amount"] == "300.00"
+    assert rows[("stay", "6")]["invoice_type"] == "6%"
+    assert rows[("flight", "9")]["scene"] == "境内机票"
+
+
+def test_parse_invoice_uploads_same_rate_accumulates(monkeypatch) -> None:
+    _patch_texts(monkeypatch, {
+        b"t1": "铁路电子客票 税率9% 价税合计（小写）¥200.00",
+        b"t2": "铁路电子客票 税率9% 价税合计（小写）¥50.00",
+    })
+    result = invoice_amount.parse_invoice_uploads([("a.pdf", b"t1"), ("b.pdf", b"t2")], _CATEGORIES, _RATE_MAP, "")
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["amount"] == "250.00"
+    assert result["rows"][0]["count"] == 2
+
+
+def test_parse_invoice_uploads_rate_falls_back_to_tax_amount(monkeypatch) -> None:
+    # 没有「税率 x%」，用 税额/(价税合计-税额) 反推 → 9%
+    _patch_texts(monkeypatch, {b"x": "航空运输电子客票行程单 价税合计（小写）¥1,090.00 税额90.00"})
+    result = invoice_amount.parse_invoice_uploads([("a.pdf", b"x")], _CATEGORIES, _RATE_MAP, "")
+    assert result["rows"][0]["tax_rate"] == "9"
+
+
+def test_parse_invoice_uploads_unknown_category_only_affects_items(monkeypatch) -> None:
+    _patch_texts(monkeypatch, {b"u": "某某服务费 税率6% 价税合计（小写）¥100.00"})
+    result = invoice_amount.parse_invoice_uploads([("a.pdf", b"u")], _CATEGORIES, _RATE_MAP, "")
+    assert result["rows"] == []          # 归不了类就不生成明细行
+    assert result["total"] == "100.00"   # 但金额仍累计、item 上标了类别缺失

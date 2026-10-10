@@ -557,22 +557,28 @@
     opt.textContent = s.name;
     scenarioSelect.appendChild(opt);
   });
-  body.appendChild(field('报销场景', scenarioSelect));
+  var scenarioRow = field('报销场景', scenarioSelect);
+  scenarioRow.style.order = '1';
+  body.appendChild(scenarioRow);
 
   // 场景提示（如「相关流程」需手动选择、报销明细暂不支持代填）
   var noticeBox = el('div', 'display:none;flex-direction:column;gap:3px;border:1px solid #f0dca8;background:#fffaef;color:#8a4b00;border-radius:9px;padding:7px 9px;font-size:11px;line-height:1.65;');
+  noticeBox.style.order = '3';
   body.appendChild(noticeBox);
 
   // 报销场景二选一（如交通报销：飞机 / 火车·汽车·船）
   var sceneSeg = el('div', 'display:flex;border:1px solid #e3e7f1;border-radius:8px;overflow:hidden;');
   var sceneSegRow = field('报销场景', sceneSeg);
   sceneSegRow.style.display = 'none';
+  sceneSegRow.style.order = '2';
   body.appendChild(sceneSegRow);
   var sceneChoice = '';
 
   // 报销事由
   var reasonInput = el('input', INPUT);
-  body.appendChild(field('报销事由', reasonInput));
+  var reasonRow = field('报销事由', reasonInput);
+  reasonRow.style.order = '4';
+  body.appendChild(reasonRow);
 
   // 出差天数（仅出差报销场景；对应 OA「实际出差天数」）
   var tripDaysInput = el('input', INPUT);
@@ -581,6 +587,7 @@
   tripDaysInput.step = '0.5';
   var tripDaysRow = field('出差天数', tripDaysInput);
   tripDaysRow.style.display = 'none';
+  tripDaysRow.style.order = '5';
   body.appendChild(tripDaysRow);
 
   // 公司名称
@@ -591,7 +598,9 @@
     opt.textContent = name;
     companySelect.appendChild(opt);
   });
-  body.appendChild(field('公司名称', companySelect));
+  var companyRow = field('公司名称', companySelect);
+  companyRow.style.order = '6';
+  body.appendChild(companyRow);
 
   // 发票类型
   var invoiceSelect = el('select', INPUT);
@@ -601,7 +610,9 @@
     opt.textContent = t.label || t.value;
     invoiceSelect.appendChild(opt);
   });
-  body.appendChild(field('发票类型', invoiceSelect));
+  var invoiceRow = field('发票类型', invoiceSelect);
+  invoiceRow.style.order = '7';
+  body.appendChild(invoiceRow);
 
   // 是否全为电子票
   var radioWrap = el('div', 'display:flex;gap:16px;align-items:center;height:26px;');
@@ -619,7 +630,9 @@
   var defaultYes = PANEL_CFG.default_all_e_ticket === true;
   radioWrap.appendChild(radio('no', '否', !defaultYes));
   radioWrap.appendChild(radio('yes', '是', defaultYes));
-  body.appendChild(field('是否全为电子票', radioWrap));
+  var eticketRow = field('是否全为电子票', radioWrap);
+  eticketRow.style.order = '8';
+  body.appendChild(eticketRow);
   radioWrap.addEventListener('change', function () { syncAttachVisibility(); });
 
   // 报销金额（下方 hint 用于显示自动计算/取整的原始金额）
@@ -630,7 +643,9 @@
   var amountBox = el('div', 'display:flex;flex-direction:column;gap:4px;');
   amountBox.appendChild(amountInput);
   amountBox.appendChild(amountHint);
-  body.appendChild(field('报销金额（默认值，可改）', amountBox));
+  var amountRow = field('报销金额（默认值，可改）', amountBox);
+  amountRow.style.order = '11';
+  body.appendChild(amountRow);
 
   // 附件（全为电子票才需要）：本地多选 PDF → 直接搬进 OA，同时可自动算金额
   var attachmentFiles = [];
@@ -675,7 +690,89 @@
   attachBox.appendChild(floorWrap);
 
   var attachRow = field('电子发票附件（挂到 OA「相关票据」区）', attachBox);
+  attachRow.style.order = '9';
   body.appendChild(attachRow);
+
+  // 报销明细（出差报销：由发票解析自动生成，放在附件后面）
+  var rowsBox = el('div', 'display:flex;flex-direction:column;gap:7px;');
+  var rowsHint = el('div', 'font-size:11px;color:#a3aaba;', '选择发票后自动按「类别 + 税率」生成');
+  var rowsWrap = el('div', 'display:flex;flex-direction:column;gap:7px;border:1px dashed #dfe3ec;border-radius:10px;background:#fafbfd;padding:9px;');
+  rowsWrap.appendChild(rowsHint);
+  rowsWrap.appendChild(rowsBox);
+  var rowsSection = field('报销明细（自动生成，可改）', rowsWrap);
+  rowsSection.style.display = 'none';
+  rowsSection.style.order = '10';
+  body.appendChild(rowsSection);
+  var panelRows = [];
+
+  function isTripScenario() {
+    var s = currentScenario();
+    return !!(s && s.line_items);
+  }
+
+  function refreshRowTotal() {
+    var sum = panelRows.reduce(function (n, r) { return n + (Number(r.amount) || 0); }, 0);
+    if (isTripScenario()) amountInput.value = sum.toFixed(2);
+  }
+
+  function renderRows() {
+    rowsBox.textContent = '';
+    rowsHint.style.display = panelRows.length ? 'none' : 'block';
+    panelRows.forEach(function (row, i) {
+      var item = el('div', 'border:1px solid #e3e7f1;border-radius:9px;background:#fff;padding:7px;display:flex;flex-direction:column;gap:6px;');
+      var head = el('div', 'display:flex;align-items:center;gap:6px;');
+      head.appendChild(el('span', 'font-size:11.5px;font-weight:600;color:#464c5e;', row.scene || row.category || '明细'));
+      head.appendChild(el('span', 'font-size:10px;color:#a3aaba;', '第 ' + (i + 1) + ' 行 · ' + (row.count || 1) + ' 张票'));
+      item.appendChild(head);
+
+      var itype = el('input', INPUT);
+      itype.value = row.invoice_type || '';
+      itype.placeholder = '发票类型（按税率匹配，可改）';
+      itype.addEventListener('input', function () { row.invoice_type = itype.value; });
+      item.appendChild(field('发票类型', itype));
+
+      var grid = el('div', 'display:grid;grid-template-columns:1fr 108px;gap:6px;');
+      var desc = el('input', INPUT);
+      desc.value = row.item_desc || '';
+      desc.addEventListener('input', function () { row.item_desc = desc.value; });
+      var amt = el('input', INPUT);
+      amt.type = 'number';
+      amt.step = '0.01';
+      amt.value = row.amount || '';
+      amt.addEventListener('input', function () { row.amount = amt.value; refreshRowTotal(); });
+      grid.appendChild(field('事项描述', desc));
+      grid.appendChild(field('金额', amt));
+      item.appendChild(grid);
+
+      rowsBox.appendChild(item);
+    });
+    refreshRowTotal();
+  }
+
+  async function parseForRows() {
+    if (!attachmentFiles.length) { panelRows = []; renderRows(); return; }
+    if (!BASE) { logLine('无法定位 StaffDeck 服务地址，跳过发票解析。', 'warn'); return; }
+    logLine('正在解析 ' + attachmentFiles.length + ' 张发票…', 'dim');
+    try {
+      var fd = new FormData();
+      attachmentFiles.forEach(function (file) { fd.append('files', file, file.name); });
+      var res = await fetch(BASE + '/api/enterprise/oa-assistant/invoice-amounts', { method: 'POST', body: fd });
+      var data = await res.json();
+      if (!res.ok) throw new Error((data && data.detail) || ('HTTP ' + res.status));
+      panelRows = (data.rows || []).map(function (r) {
+        return {
+          category: r.category, scene: r.scene, tax_rate: r.tax_rate,
+          invoice_type: r.invoice_type || '', amount: r.amount, count: r.count,
+          item_desc: r.item_desc || ((r.scene || '') + '费')
+        };
+      });
+      renderRows();
+      var failed = (data.items || []).filter(function (it) { return it.error; });
+      logLine('解析完成：' + panelRows.length + ' 行明细' + (failed.length ? '；' + failed.length + ' 张未识别' : ''), failed.length ? 'warn' : 'ok');
+    } catch (err) {
+      logLine('发票解析失败：' + String((err && err.message) || err) + '（可在下方手动填明细）', 'err');
+    }
+  }
 
   function syncAttachVisibility() {
     attachRow.style.display = allETicket() ? 'flex' : 'none';
@@ -704,6 +801,7 @@
       del.addEventListener('click', function () {
         attachmentFiles.splice(index, 1);
         renderFiles();
+        if (isTripScenario()) { parseForRows(); return; }
         if (!attachmentFiles.length) { lastCalcTotal = null; amountHint.style.display = 'none'; }
         else if (calcCheck.checked) calcAmounts();
       });
@@ -767,7 +865,13 @@
   }
 
   pickBtn.addEventListener('click', function () { fileInput.click(); });
-  clearFilesBtn.addEventListener('click', function () { attachmentFiles = []; lastCalcTotal = null; amountHint.style.display = 'none'; renderFiles(); });
+  clearFilesBtn.addEventListener('click', function () {
+    attachmentFiles = [];
+    lastCalcTotal = null;
+    amountHint.style.display = 'none';
+    renderFiles();
+    if (isTripScenario()) { panelRows = []; renderRows(); }
+  });
   floorCheck.addEventListener('change', function () {
     if (lastCalcTotal !== null) {
       applyCalculatedAmount();
@@ -791,7 +895,8 @@
       if (!dup) attachmentFiles.push(file);
     });
     renderFiles();
-    if (calcCheck.checked && attachmentFiles.length) calcAmounts();
+    if (isTripScenario()) parseForRows();
+    else if (calcCheck.checked && attachmentFiles.length) calcAmounts();
   });
 
   syncAttachVisibility();
@@ -923,6 +1028,18 @@
 
     var needsTripDays = (scenario.fields || []).indexOf('trip_days') >= 0;
     tripDaysRow.style.display = needsTripDays ? 'flex' : 'none';
+
+    // 出差报：报销明细按发票解析生成；发票类型/是否全电子票/取整等交给明细行
+    var isTrip = !!scenario.line_items;
+    invoiceRow.style.display = isTrip ? 'none' : 'flex';
+    eticketRow.style.display = isTrip ? 'none' : 'flex';
+    rowsSection.style.display = isTrip ? 'flex' : 'none';
+    calcWrap.style.display = isTrip ? 'none' : 'flex';
+    floorWrap.style.display = isTrip ? 'none' : 'flex';
+    amountRow.firstChild.textContent = isTrip ? '报销金额（明细合计）' : '报销金额（默认值，可改）';
+    amountInput.readOnly = isTrip;
+    if (isTrip) { amountHint.textContent = ''; amountHint.style.display = 'none'; }
+    if (isTrip) refreshRowTotal();
   }
 
   scenarioSelect.addEventListener('change', function () { refreshPrefill(); syncScenarioFields(); });
@@ -941,6 +1058,67 @@
     } catch (e) {}
   }
 
+  /** 填多行报销明细：先按需点「新增」补行，再逐行填 row_fields（selector 里的 {i} 换成行号）。 */
+  async function fillLineItems(scenario, rows, steps) {
+    var li = scenario.line_items || {};
+    var rowFields = li.row_fields || {};
+    var order = ['scene', 'invoice_type', 'item_desc', 'amount'];
+
+    var initial = Number(li.initial_rows || 1);
+    if (rows.length > initial) {
+      var addSel = li.add_row_selector;
+      if (!addSel || addSel === TODO) {
+        steps.push({ field: '报销明细', status: 'todo', detail: '「新增」按钮定位器待配置' });
+        logLine('! 报销明细：「新增」按钮定位器待配置，只填第 1 行', 'warn');
+      } else {
+        for (var k = initial; k < rows.length; k++) {
+          var addNode = findEl(addSel);
+          if (!addNode) {
+            steps.push({ field: '报销明细', status: 'error', detail: '未找到「新增」按钮' });
+            logLine('✗ 报销明细：未找到新增按钮，只能填已有行', 'err');
+            break;
+          }
+          clickEl(addNode);
+          await sleep(700);
+          logLine('＋ 已点「新增」，准备填第 ' + (k + 1) + ' 行', 'dim');
+        }
+      }
+    }
+
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      for (var o = 0; o < order.length; o++) {
+        var key = order[o];
+        var spec = rowFields[key];
+        if (!spec) continue;
+        var label = '明细第' + (i + 1) + '行·' + (spec.label || key);
+        var value = row[key];
+        if (value === undefined || value === null || value === '') {
+          steps.push({ field: label, status: 'skipped', detail: '无值' });
+          logLine('○ ' + label + '：无值，跳过', 'dim');
+          continue;
+        }
+        var sel = String(spec.selector || '').replace(/\{i\}/g, String(i));
+        var node = findEl(sel);
+        if (!node) {
+          steps.push({ field: label, status: 'error', detail: '未找到 ' + sel });
+          logLine('✗ ' + label + '：未找到 ' + sel, 'err');
+          continue;
+        }
+        try {
+          if ((spec.mode || 'input') === 'select') await fillSelect(node, spec, String(value), null);
+          else fillText(node, String(value), spec.mode || 'input');
+          steps.push({ field: label, status: 'filled', detail: String(value) });
+          logLine('✓ ' + label + '：' + value, 'ok');
+        } catch (err) {
+          steps.push({ field: label, status: 'error', detail: String((err && err.message) || err) });
+          logLine('✗ ' + label + '：' + String((err && err.message) || err), 'err');
+        }
+        await sleep(200);
+      }
+    }
+  }
+
   async function run() {
     var scenario = currentScenario();
     if (!scenario) { logLine('没有可用场景', 'err'); return; }
@@ -956,8 +1134,15 @@
       return;
     }
 
+    var isTrip = !!scenario.line_items;
+    if (isTrip && !panelRows.length) {
+      logLine('请先选择发票，自动生成报销明细后再点「代填」。', 'err');
+      runBtn.disabled = false;
+      return;
+    }
+
     var amountValue = String(amountInput.value || '').trim();
-    if (!amountValue || isNaN(Number(amountValue))) {
+    if (!isTrip && (!amountValue || isNaN(Number(amountValue)))) {
       logLine('报销金额未填写或格式不对（应为数字），已中止。', 'err');
       runBtn.disabled = false;
       return;
@@ -981,7 +1166,10 @@
       company_name: companySelect.value,
       invoice_type: invoiceSelect.value,
       all_e_ticket: eTicket,
-      attachment_paths: files.map(function (f) { return f.name; })
+      attachment_paths: files.map(function (f) { return f.name; }),
+      rows: isTrip ? panelRows.map(function (r) {
+        return { scene: r.scene, invoice_type: r.invoice_type, amount: r.amount, item_desc: r.item_desc };
+      }) : []
     };
     values['all_e_ticket=yes'] = eTicket;
 
@@ -1013,6 +1201,10 @@
         steps.push({ field: spec.label || spec.key, status: 'error', detail: String((err && err.message) || err) });
         logLine('✗ ' + (spec.label || spec.key) + '：' + String((err && err.message) || err), 'err');
       }
+    }
+
+    if (isTrip && values.rows.length) {
+      await fillLineItems(scenario, values.rows, steps);
     }
 
     if (saveCheck.checked) {

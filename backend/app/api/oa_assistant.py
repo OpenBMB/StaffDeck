@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import APIRouter, File, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
-from app.core.invoice_amount import is_pdf_bytes, sum_invoice_amounts_from_uploads
+from app.core.invoice_amount import is_pdf_bytes, parse_invoice_uploads
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ async def invoice_amounts(files: list[UploadFile] = File(default=[])) -> JSONRes
     这里只是借后端 pypdf 解一下价税合计。扩展名/MIME 都不可信，只认 %PDF- 文件头。
     """
     if not files:
-        return _invoice_response({"items": [], "total": "0.00"})
+        return _invoice_response({"items": [], "rows": [], "total": "0.00"})
     if len(files) > MAX_INVOICE_FILES:
         return _invoice_response({"detail": f"一次最多解析 {MAX_INVOICE_FILES} 个附件"}, 400)
 
@@ -115,6 +115,20 @@ async def invoice_amounts(files: list[UploadFile] = File(default=[])) -> JSONRes
             return _invoice_response({"detail": f"{name} 超过 {MAX_INVOICE_MB}MB"}, 400)
         uploads.append((name, data))
 
-    result = sum_invoice_amounts_from_uploads(uploads)
-    logger.info("[oa-assistant] 解析 %d 张发票，合计 %s", len(uploads), result.get("total"))
+    try:
+        config = _load_config()
+    except Exception as exc:
+        logger.warning("读取 oa_assistant.json 失败：%s", exc)
+        config = {}
+    parse_cfg = config.get("invoice_parse", {}) or {}
+    result = parse_invoice_uploads(
+        uploads,
+        categories=parse_cfg.get("categories"),
+        rate_invoice_types=parse_cfg.get("tax_rate_invoice_types"),
+        default_invoice_type=parse_cfg.get("default_invoice_type", ""),
+    )
+    logger.info(
+        "[oa-assistant] 解析 %d 张发票，合计 %s，生成 %d 行明细",
+        len(uploads), result.get("total"), len(result.get("rows") or []),
+    )
     return _invoice_response(result)

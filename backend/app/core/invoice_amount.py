@@ -19,6 +19,10 @@ from pypdf import PdfReader
 _AMOUNT_RE = re.compile(r"[（(]\s*小写\s*[）)]\s*[¥￥]?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)")
 # 兜底：价税合计关键字之后的第一串金额（有的发票没有「小写」字样）
 _TOTAL_RE = re.compile(r"价税合计[^0-9]{0,30}?[¥￥]?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)")
+# 票面税率（%）：「税率 9%」这种
+_RATE_RE = re.compile(r"税率[^0-9%]{0,8}([0-9]{1,2}(?:\.[0-9]{1,2})?)\s*%")
+# 税额：税率缺失时用 税额/(价税合计-税额) 反推
+_TAX_RE = re.compile(r"税额[^0-9]{0,8}([0-9][0-9,]*(?:\.[0-9]{1,2})?)")
 
 
 def _pdf_text(pdf_path: Path) -> str:
@@ -47,6 +51,15 @@ def extract_invoice_total_bytes(data: bytes) -> str | None:
     return extract_invoice_total_text(text)
 
 
+def extract_invoice_text_bytes(data: bytes) -> str | None:
+    """从内存中的 PDF 字节提取全量文本（供分类/税率解析复用）。"""
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        return _reader_text(reader)
+    except Exception:
+        return None
+
+
 def extract_invoice_total_text(text: str) -> str | None:
     """从发票文本里解析价税合计金额字符串（两位小数）；解析失败返回 None。"""
     if not text:
@@ -71,6 +84,103 @@ def extract_invoice_total(pdf_path: Path) -> str | None:
     except Exception:
         return None
     return extract_invoice_total_text(text)
+
+
+def _norm_rate(raw: str) -> str | None:
+    """税率归一：9.0 → 「9」，6.5 保留一位。"""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0 or value > 100:
+        return None
+    if abs(value - round(value)) < 0.2:
+        return str(int(round(value)))
+    return f"{value:.1f}".rstrip("0").rstrip(".")
+
+
+def extract_tax_rate_text(text: str, total: str | None = None) -> str | None:
+    """票面税率（百分数，归一成「9」「6」这类字符串）。
+
+    先找「税率 x%」；找不到时，用 税额/(价税合计-税额) 反推。解析失败返回 None。
+    """
+    if not text:
+        return None
+    compact = re.sub(r"\s+", "", text)
+    match = _RATE_RE.search(compact)
+    if match:
+        return _norm_rate(match.group(1))
+    if total:
+        try:
+            tax_match = _TAX_RE.search(compact)
+            if tax_match:
+                tax = Decimal(tax_match.group(1).replace(",", ""))
+                base = Decimal(total) - tax
+                if base > 0:
+                    return _norm_rate(str(float(tax / base * 100)))
+        except (InvalidOperation, ValueError):
+            return None
+    return None
+
+
+def _classify(text: str, categories: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    """按关键词把发票归到报销场景；命中第一个 category 就返回。"""
+    for category in categories or []:
+        for keyword in category.get("keywords") or []:
+            if keyword and keyword in text:
+                return category
+    return None
+
+
+def parse_invoice_uploads(
+    uploads: list[tuple[str, bytes]],
+    categories: list[dict[str, Any]] | None = None,
+    rate_invoice_types: dict[str, str] | None = None,
+    default_invoice_type: str = "",
+) -> dict[str, Any]:
+    """解析发票（价税合计 + 税率 + 类别），并按「类别 + 税率」聚合成报销明细行。
+
+    返回 {items, rows, total}：items 是逐张结果（供前端展示/纠错）；rows 是聚合行
+    （scene + 税率映射出的 invoice_type + 累计 amount）。解析失败只在 items 里标原因。
+    """
+    rate_map = {str(k): v for k, v in (rate_invoice_types or {}).items()}
+    items: list[dict[str, Any]] = []
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    total = Decimal("0")
+    for filename, data in uploads:
+        if not data:
+            items.append({"filename": filename, "amount": None, "tax_rate": None, "category": None, "error": "空文件"})
+            continue
+        text = extract_invoice_text_bytes(data) or ""
+        amount = extract_invoice_total_text(text)
+        rate = extract_tax_rate_text(text, amount)
+        category = _classify(re.sub(r"\s+", "", text), categories)
+        if amount is None:
+            items.append({"filename": filename, "amount": None, "tax_rate": rate, "category": (category or {}).get("key"), "error": "未能解析出价税合计（非电子发票版式或扫描件）"})
+            continue
+        total += Decimal(amount)
+        items.append({"filename": filename, "amount": amount, "tax_rate": rate, "category": (category or {}).get("key"), "error": None})
+        if category is None:
+            continue
+        key = (category["key"], rate or "")
+        row = rows.get(key)
+        if row is None:
+            row = {
+                "category": category["key"],
+                "scene": category.get("scene") or category.get("key"),
+                "tax_rate": rate or "",
+                "invoice_type": rate_map.get(rate or "", default_invoice_type),
+                "amount": Decimal("0"),
+                "count": 0,
+            }
+            rows[key] = row
+        row["amount"] += Decimal(amount)
+        row["count"] += 1
+    return {
+        "items": items,
+        "rows": [{**row, "amount": f"{row['amount']:.2f}"} for row in rows.values()],
+        "total": f"{total:.2f}",
+    }
 
 
 def sum_invoice_amounts(paths: list[str]) -> dict[str, Any]:
