@@ -159,3 +159,21 @@ def test_parse_invoice_uploads_unknown_category_only_affects_items(monkeypatch) 
     result = invoice_amount.parse_invoice_uploads([("a.pdf", b"u")], _CATEGORIES, _RATE_MAP, "")
     assert result["rows"] == []          # 归不了类就不生成明细行
     assert result["total"] == "100.00"   # 但金额仍累计、item 上标了类别缺失
+
+
+def test_total_falls_back_to_currency_amount() -> None:
+    # 铁路电子客票没有「价税合计」字样，只在票面印「￥87.00」
+    assert invoice_amount.extract_invoice_total_text("电子发票（铁路电子客票）票价:二等座 ￥ 87.00") == "87.00"
+
+
+def test_tax_rate_rejects_implausible_fallback() -> None:
+    # 税额/(价税合计-税额) 反推出 ~60%，不在常见档位 → 不信
+    assert invoice_amount.extract_tax_rate_text("价税合计（小写）¥252.12 税额 95.00", "252.12") is None
+
+
+def test_category_default_tax_rate_used_when_invoice_has_none(monkeypatch) -> None:
+    _patch_texts(monkeypatch, {b"t": "电子发票（铁路电子客票） ￥87.00"})
+    categories = [{"key": "train", "scene": "境内火车票", "default_tax_rate": "9", "keywords": ["铁路"]}]
+    result = invoice_amount.parse_invoice_uploads([("a.pdf", b"t")], categories, _RATE_MAP, "")
+    assert result["rows"][0]["tax_rate"] == "9"
+    assert result["rows"][0]["invoice_type"] == "9%"

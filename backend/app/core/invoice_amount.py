@@ -15,6 +15,33 @@ from typing import Any
 
 from pypdf import PdfReader
 
+# 部分铁路电子客票的 FontDescriptor 同时带 /FontFile2 与 /FontFile3（还指向同一对象），
+# pypdf 会直接抛 PdfReadError，导致整页文本取不到（金额/税率全丢）。这里只保留第一个 FontFile。
+def _apply_pypdf_font_workaround() -> None:
+    try:
+        import pypdf._font as _pypdf_font
+
+        if getattr(_pypdf_font.Font, "_sd_tolerant_font_files", False):
+            return
+        original = _pypdf_font.Font._parse_font_descriptor
+
+        def tolerant(font_descriptor_obj):
+            keys = [k for k in ("/FontFile", "/FontFile2", "/FontFile3") if k in font_descriptor_obj]
+            for extra in keys[1:]:
+                try:
+                    del font_descriptor_obj[extra]
+                except Exception:
+                    pass
+            return original(font_descriptor_obj)
+
+        _pypdf_font.Font._parse_font_descriptor = staticmethod(tolerant)
+        _pypdf_font.Font._sd_tolerant_font_files = True
+    except Exception:
+        pass
+
+
+_apply_pypdf_font_workaround()
+
 # 「（小写）」/「(小写)」后面跟可选货币符的金额；去空白后匹配以兼容版式空格
 _AMOUNT_RE = re.compile(r"[（(]\s*小写\s*[）)]\s*[¥￥]?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)")
 # 兜底：价税合计关键字之后的第一串金额（有的发票没有「小写」字样）
@@ -23,6 +50,10 @@ _TOTAL_RE = re.compile(r"价税合计[^0-9]{0,30}?[¥￥]?\s*([0-9][0-9,]*(?:\.[
 _RATE_RE = re.compile(r"税率[^0-9%]{0,8}([0-9]{1,2}(?:\.[0-9]{1,2})?)\s*%")
 # 税额：税率缺失时用 税额/(价税合计-税额) 反推
 _TAX_RE = re.compile(r"税额[^0-9]{0,8}([0-9][0-9,]*(?:\.[0-9]{1,2})?)")
+# 兜底：票面出现的 ￥金额（铁路电子客票没有「价税合计」字样，只印「￥87.00」）
+_MONEY_RE = re.compile(r"[¥￥]\s*([0-9][0-9,]*\.[0-9]{2})")
+# 可接受的税率档位：反推出来的税率只在这些档位附近才采纳（防止误取到别的数字）
+_PLAUSIBLE_RATES = (1, 3, 5, 6, 9, 10, 13)
 
 
 def _pdf_text(pdf_path: Path) -> str:
@@ -74,6 +105,15 @@ def extract_invoice_total_text(text: str) -> str | None:
             return f"{Decimal(raw):.2f}"
         except InvalidOperation:
             continue
+    # 铁路电子客票这类只印「票价 … ￥87.00」：取票面上最大的 ￥金额（通常是总票价）
+    money = []
+    for raw in _MONEY_RE.findall(compact):
+        try:
+            money.append(Decimal(raw.replace(",", "")))
+        except InvalidOperation:
+            continue
+    if money:
+        return f"{max(money):.2f}"
     return None
 
 
@@ -99,10 +139,18 @@ def _norm_rate(raw: str) -> str | None:
     return f"{value:.1f}".rstrip("0").rstrip(".")
 
 
+def _snap_rate(value: float) -> str | None:
+    """反推的税率只在常见档位附近才采纳，否则视为没识别到。"""
+    for rate in _PLAUSIBLE_RATES:
+        if abs(value - rate) <= 0.5:
+            return str(rate)
+    return None
+
+
 def extract_tax_rate_text(text: str, total: str | None = None) -> str | None:
     """票面税率（百分数，归一成「9」「6」这类字符串）。
 
-    先找「税率 x%」；找不到时，用 税额/(价税合计-税额) 反推。解析失败返回 None。
+    先找「税率 x%」；找不到时，用 税额/(价税合计-税额) 反推（只认常见档位）。
     """
     if not text:
         return None
@@ -117,7 +165,7 @@ def extract_tax_rate_text(text: str, total: str | None = None) -> str | None:
                 tax = Decimal(tax_match.group(1).replace(",", ""))
                 base = Decimal(total) - tax
                 if base > 0:
-                    return _norm_rate(str(float(tax / base * 100)))
+                    return _snap_rate(float(tax / base * 100))
         except (InvalidOperation, ValueError):
             return None
     return None
@@ -153,8 +201,9 @@ def parse_invoice_uploads(
             continue
         text = extract_invoice_text_bytes(data) or ""
         amount = extract_invoice_total_text(text)
-        rate = extract_tax_rate_text(text, amount)
         category = _classify(re.sub(r"\s+", "", text), categories)
+        # 火车票/机票行程单不印税率，用类别上的默认税率（如旅客运输 9%）
+        rate = extract_tax_rate_text(text, amount) or (category or {}).get("default_tax_rate")
         if amount is None:
             items.append({"filename": filename, "amount": None, "tax_rate": rate, "category": (category or {}).get("key"), "error": "未能解析出价税合计（非电子发票版式或扫描件）"})
             continue

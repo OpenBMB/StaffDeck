@@ -43,11 +43,11 @@
     "description": "OA 表单右上角的「保存」按钮（e-cology9 按钮文字带空格，用 has-text 匹配）"
   },
   "invoice_parse": {
-    "_note": "发票解析规则：按关键词把发票归到报销场景（categories）；按票面税率（%）映射 OA 发票类型搜索词。用于出差报销：传票后自动生成报销明细行。",
+    "_note": "发票解析规则：按关键词把发票归到报销场景（categories）；按票面税率（%）映射 OA 发票类型搜索词。default_tax_rate 给不印税率的票（机票/火车票通常 9%）用。用于出差报销：传票后自动生成报销明细行。",
     "categories": [
       { "key": "stay", "scene": "境内住宿", "keywords": ["住宿", "酒店", "客房"] },
-      { "key": "flight", "scene": "境内机票", "keywords": ["航空运输电子客票行程单", "机票", "民航发展基金", "航空运输"] },
-      { "key": "train", "scene": "境内火车票", "keywords": ["铁路电子客票", "火车票", "铁路"] }
+      { "key": "flight", "scene": "境内机票", "default_tax_rate": "9", "keywords": ["航空运输电子客票行程单", "机票", "民航发展基金", "航空运输"] },
+      { "key": "train", "scene": "境内火车票", "default_tax_rate": "9", "keywords": ["铁路电子客票", "火车票", "铁路"] }
     ],
     "tax_rate_invoice_types": {
       "13": "13%",
