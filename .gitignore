@@ -67,3 +67,6 @@ logs/
 .codewhale
 .planning/
 .cursor/
+
+# playwright-cli 会话快照（本地自测产物）
+.playwright-cli/
