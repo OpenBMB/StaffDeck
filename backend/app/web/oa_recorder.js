@@ -76,7 +76,7 @@
   }
 
   function structure() {
-    var data = { url: location.href, title: document.title, tables: [], fieldmarks: [], clickables: [] };
+    var data = { url: location.href, title: document.title, tables: [], fieldmarks: [], clickables: [], dropdowns: [] };
     var docs = collectDocs();
     for (var d = 0; d < docs.length; d++) {
       var doc = docs[d];
@@ -103,6 +103,22 @@
         if (!tx && !tl) continue;
         var cls = (el.getAttribute('class') || '').trim().split(/\s+/).slice(0, 2).join('.');
         data.clickables.push((tx || '') + (tl ? '(' + tl + ')' : '') + ' <' + el.tagName.toLowerCase() + (cls ? '.' + cls : '') + (el.getAttribute('onclick') ? ' onclick' : '') + '>');
+      }
+      // 当前打开的下拉项真实结构（判断税率在哪：文本/子节点/属性）
+      var dds = doc.querySelectorAll('.ant-select-dropdown, [class*="dropdown"]');
+      for (var q = 0; q < dds.length; q++) {
+        if (dds[q].className && String(dds[q].className).indexOf('hidden') >= 0) continue;
+        var items = dds[q].querySelectorAll('li.ant-select-dropdown-menu-item, .ant-select-item-option, li[role="option"], li');
+        for (var it = 0; it < items.length && data.dropdowns.length < 40; it++) {
+          var li = items[it];
+          var visible = false;
+          try { var rect = li.getBoundingClientRect(); visible = rect.width > 1 && rect.height > 1; } catch (e) {}
+          data.dropdowns.push({
+            visible: visible,
+            text: (li.innerText || li.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+            html: (li.outerHTML || '').replace(/\s+/g, ' ').slice(0, 400),
+          });
+        }
       }
     }
     return data;
