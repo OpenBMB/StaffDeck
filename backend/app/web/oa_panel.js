@@ -720,6 +720,9 @@
     } else {
       value = spec.value;
     }
+    if (value === undefined || value === null) {
+      return { field: label, status: 'skipped', detail: '未配置值' };
+    }
 
     if (mode === 'select' && typeof value === 'boolean') {
       value = value ? (spec.value_yes || '是') : (spec.value_no || '否');

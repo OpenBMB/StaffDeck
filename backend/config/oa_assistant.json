@@ -93,9 +93,7 @@
       "label": "费用承担部门",
       "selector": "div[data-fieldmark=\"field7012\"]",
       "mode": "select",
-      "value": "核定费用承担部门",
-      "clear_first": true,
-      "_note": "点选提交后 hidden=1151、选项全名「核定费用承担部门」；OA 预填默认值（如 AI+），须先清掉再搜「核定」，等下拉出现匹配 li 直接点击、全程无回车。注意：明细行同款组件的 a.child-item 列表是干扰项，不能全页搜选项"
+      "_note": "value/clear_first 由场景提供：只有「通讯报销 / 交通报销」需要改写为「核定费用承担部门」，且要先退格清掉 OA 预填值（如 AI+）再搜。其他场景不要用这个改写"
     },
     "invoice_type": {
       "label": "发票类型",
@@ -213,7 +211,10 @@
         "scene",
         "item_desc",
         "amount"
-      ]
+      ],
+      "field_overrides": {
+        "cost_department": { "value": "核定费用承担部门", "clear_first": true }
+      }
     },
     {
       "id": "traffic",
@@ -237,7 +238,10 @@
         "scene",
         "item_desc",
         "amount"
-      ]
+      ],
+      "field_overrides": {
+        "cost_department": { "value": "核定费用承担部门", "clear_first": true }
+      }
     },
     {
       "id": "business_trip",
