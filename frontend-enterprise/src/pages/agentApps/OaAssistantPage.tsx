@@ -54,7 +54,7 @@ export default function OaAssistantPage({
         className="mb-[16px]"
         onLogout={onLogout}
         userName={currentUser?.username}
-        title="Agent 广场 · OA 浏览器代填"
+        title="Agent 广场 · AI 单据助手"
       />
 
       <div className="flex flex-col gap-[14px]">
@@ -82,7 +82,7 @@ export default function OaAssistantPage({
               title="拖我到书签栏"
             >
               <Puzzle className="size-[14px] text-[#757f9c]" />
-              AI报销代填
+              AI 单据助手
             </a>
           </div>
 
@@ -100,7 +100,7 @@ export default function OaAssistantPage({
           </div>
           <ol className="mt-[10px] flex list-decimal flex-col gap-[6px] pl-[20px] text-[12.5px] leading-[1.9] text-[#464c5e]">
             <li>像平时一样打开 OA 报销表单页（已登录状态）。</li>
-            <li>点书签栏里的「AI报销代填」→ 右上角弹出面板。</li>
+            <li>点书签栏里的「AI 单据助手」→ 右上角弹出面板。</li>
             <li>在面板里确认场景 / 事由 / 金额，点「代填」。</li>
             <li>面板会逐个字段操作当前 OA 页面，并显示每一步结果；失败的字段可以单独重试。</li>
             <li>默认<strong>不会自动点保存</strong>，先看填得对不对；确认无误后可勾选「填完后自动点保存」。</li>

@@ -404,7 +404,7 @@ describe('AgentAppPage', () => {
     renderPage('oa-assistant');
 
     expect(await screen.findByText('Agent 广场 · OA 浏览器代填')).toBeTruthy();
-    expect(await screen.findByText('AI报销代填')).toBeTruthy();
+    expect(await screen.findByText('AI 单据助手')).toBeTruthy();
     // 书签本体是 javascript: loader，且指向后端下发的 panel.js
     await waitFor(() => {
       const link = document.querySelector('a[title="拖我到书签栏"]') as HTMLAnchorElement | null;
