@@ -541,30 +541,48 @@
     return arr;
   }
 
+  /** 去掉选项末尾的税率段，得到「发票类型名」：如「增值税普通发票|6%」→「增值税普通发票」。 */
+  function baseName(t) {
+    var s = String(t).replace(/\s+/g, '');
+    s = s.replace(/[|｜/，,、\-—:：]*[（(【\[]?(税率|税额)?\d+(?:\.\d+)?[%％][)）】\]]?$/, '');
+    return s;
+  }
+
   function pickOption(options, keyword, prefer) {
     var key = String(keyword || '').replace(/\s+/g, '');
     if (!key || !options.length) return options[0];
     var pref = String(prefer || '').replace(/\s+/g, '');
-    var exact = null;   // 有候选文案完全等于关键词
-    var prefix = null;  // 有候选文案以关键词开头（同一类）
-    var best = null;    // 同前缀 + 含期望税率
+    var matched = [];   // 发票类型名与关键词完全一致（不含税率部分）
+    var prefixed = [];  // 以关键词开头（宽容兜底）
+    var plain = null;   // 完全一致且本身不带税率
     for (var i = 0; i < options.length; i++) {
       var texts = optionTexts(options[i]);
-      var isExact = false;
+      var isMatch = false;
       var isPrefix = false;
+      var hasRate = false;
       var hasPref = false;
       for (var j = 0; j < texts.length; j++) {
         var t = texts[j];
-        if (t === key) isExact = true;
+        if (baseName(t) === key) isMatch = true;
         if (t.indexOf(key) === 0) isPrefix = true;
+        if (/[%％]/.test(t)) hasRate = true;
         if (pref && (t.indexOf(pref) >= 0 || t.indexOf(pref.replace(/%/g, '％')) >= 0)) hasPref = true;
       }
-      if (isExact && !exact) exact = options[i];
-      if (isPrefix && !prefix) prefix = options[i];
-      if (isPrefix && hasPref && !best) best = options[i];
+      var rec = { el: options[i], hasPref: hasPref, hasRate: hasRate };
+      if (isMatch) { matched.push(rec); if (!hasRate && !plain) plain = options[i]; }
+      if (isPrefix) prefixed.push(rec);
     }
-    // 只认「同一类」（以关键词开头）的项：优先同前缀+含税率的，再精确/前缀/第一个
-    return best || exact || prefix || options[0];
+    // ① 类型名完全匹配；多个时用税率找唯一；再退到不带税率的那条
+    if (matched.length) {
+      if (pref) { for (var m = 0; m < matched.length; m++) if (matched[m].hasPref) return matched[m].el; }
+      return plain || matched[0].el;
+    }
+    // ② 宽容：以关键词开头
+    if (prefixed.length) {
+      if (pref) { for (var p = 0; p < prefixed.length; p++) if (prefixed[p].hasPref) return prefixed[p].el; }
+      return prefixed[0].el;
+    }
+    return options[0];
   }
 
   /** 提交判据：容器内 hidden input 有值（渲染区文本会镜像搜索词，不能作依据）。 */
