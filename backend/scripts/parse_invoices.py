@@ -51,6 +51,7 @@ def main() -> int:
         categories=cfg.get("categories"),
         rate_invoice_types=cfg.get("tax_rate_invoice_types"),
         default_invoice_type=cfg.get("default_invoice_type", ""),
+        kind_to_type=cfg.get("kind_to_invoice_type"),
     )
 
     print(f"共 {len(paths)} 张发票\n")
@@ -58,7 +59,7 @@ def main() -> int:
         flag = "✓" if item["error"] is None else "✗"
         line = (
             f"{flag} {item['filename'][:44]:46} 金额={str(item['amount']):>9} "
-            f"税率={str(item['tax_rate']):>4} 类别={item['category'] or '-'}"
+            f"税率={str(item['tax_rate']):>4} 类别={item['category'] or '-'} 种类={item.get('kind') or '-'}"
         )
         if item["error"]:
             line += f"  ({item['error']})"

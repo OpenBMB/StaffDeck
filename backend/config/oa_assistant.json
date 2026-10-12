@@ -31,7 +31,8 @@
     "invoice_types": [
       { "value": "普通发票", "label": "普通发票 税率0%", "tax_rate": "0" },
       { "value": "电子普通发票", "label": "电子普通发票 税额13%", "tax_rate": "13" },
-      { "value": "增值税普通发票", "label": "增值税普通发票 6%", "tax_rate": "6" }
+      { "value": "增值税普通发票", "label": "增值税普通发票 6%", "tax_rate": "6" },
+      { "value": "增值税电子普通发票（境内客运）", "label": "增值税电子普通发票（境内客运） 9%", "tax_rate": "9" }
     ],
     "default_all_e_ticket": true,
     "auto_save_default": false,
@@ -58,7 +59,12 @@
       "1": "1%"
     },
     "_invoice_types_note": "发票类型下拉的选项在 panel.invoice_types（value=发给 OA 的搜索词，label=显示，tax_rate=用于按票面税率自动预选）。同一税率可能有电子/普通/增值多个选项，面板只做预选，用户可改。",
-    "default_invoice_type": ""
+    "default_invoice_type": "",
+    "kind_to_invoice_type": {
+      "电子发票（普通发票）": "电子普通发票",
+      "电子发票（铁路电子客票）": "增值税电子普通发票（境内客运）",
+      "电子发票（航空运输电子客票行程单）": "增值税电子普通发票（境内客运）"
+    }
   },
   "field_library": {
     "expense_type": {

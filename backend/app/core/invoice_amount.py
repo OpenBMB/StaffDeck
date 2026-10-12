@@ -150,6 +150,23 @@ def _snap_rate(value: float) -> str | None:
     return None
 
 
+# 发票种类：票面标题「电子发票（普通发票）/（增值税专用发票）」或「增值税XX发票」
+_KIND_RE = re.compile(r"(电子发票[（(][^）)]{1,14}[）)])")
+_KIND_FALLBACK_RE = re.compile(r"(增值税[^，,。；; ]{0,10}?发票)")
+
+
+def extract_invoice_kind(text: str) -> str:
+    """从票面识别发票种类名：如「电子发票（普通发票）」「增值税专用发票」「铁路电子客票」。"""
+    compact = re.sub(r"\s+", "", text or "")
+    match = _KIND_RE.search(compact)
+    if match:
+        return match.group(1).replace("(", "（").replace(")", "）")
+    match = _KIND_FALLBACK_RE.search(compact)
+    if match:
+        return match.group(1)
+    return ""
+
+
 def extract_tax_rate_text(text: str, total: str | None = None) -> str | None:
     """票面税率（百分数，归一成「9」「6」这类字符串）。
 
@@ -202,30 +219,33 @@ def parse_invoice_uploads(
     categories: list[dict[str, Any]] | None = None,
     rate_invoice_types: dict[str, str] | None = None,
     default_invoice_type: str = "",
+    kind_to_type: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """解析发票（价税合计 + 税率 + 类别），一张发票生成一行报销明细。
+    """解析发票（价税合计 + 税率 + 类别 + 种类），一张发票生成一行报销明细。
 
-    返回 {items, rows, total}：items 是逐张结果（供前端展示/纠错）；rows 是明细行
-    （每张发票 → scene + 税率映射的 invoice_type + 该票金额 + 文件名）。解析失败只在 items 里标原因。
+    返回 {items, rows, total}：items 是逐张结果（供前端展示/纠错）；rows 是明细行。
+    kind_to_type 把票面种类（如「电子发票（普通发票）」）映射成 OA 发票类型。
     """
     rate_map = {str(k): v for k, v in (rate_invoice_types or {}).items()}
+    kind_map = {str(k): v for k, v in (kind_to_type or {}).items()}
     items: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     total = Decimal("0")
     for filename, data in uploads:
         if not data:
-            items.append({"filename": filename, "amount": None, "tax_rate": None, "category": None, "error": "空文件"})
+            items.append({"filename": filename, "amount": None, "tax_rate": None, "category": None, "kind": "", "error": "空文件"})
             continue
         text = extract_invoice_text_bytes(data) or ""
         amount = extract_invoice_total_text(text)
         category = _classify(re.sub(r"\s+", "", text), categories)
+        kind = extract_invoice_kind(text)
         # 火车票/机票行程单不印税率，用类别上的默认税率（如旅客运输 9%）
         rate = extract_tax_rate_text(text, amount) or (category or {}).get("default_tax_rate")
         if amount is None:
-            items.append({"filename": filename, "amount": None, "tax_rate": rate, "category": (category or {}).get("key"), "error": "未能解析出价税合计（非电子发票版式或扫描件）"})
+            items.append({"filename": filename, "amount": None, "tax_rate": rate, "category": (category or {}).get("key"), "kind": kind, "error": "未能解析出价税合计（非电子发票版式或扫描件）"})
             continue
         total += Decimal(amount)
-        items.append({"filename": filename, "amount": amount, "tax_rate": rate, "category": (category or {}).get("key"), "error": None})
+        items.append({"filename": filename, "amount": amount, "tax_rate": rate, "category": (category or {}).get("key"), "kind": kind, "error": None})
         if category is None:
             continue
         # 一张发票一行报销明细（不按类别合并；报销总额在 total / 面板金额）
@@ -234,6 +254,8 @@ def parse_invoice_uploads(
             "scene": category.get("scene") or category.get("key"),
             "tax_rate": rate or "",
             "invoice_type": rate_map.get(rate or "", default_invoice_type),
+            "suggested_invoice_type": kind_map.get(kind, ""),
+            "kind": kind,
             "amount": f"{Decimal(amount):.2f}",
             "filename": filename,
         })

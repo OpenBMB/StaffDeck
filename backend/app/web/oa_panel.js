@@ -1229,7 +1229,7 @@
       var parsed = (data.rows || []).map(function (r) {
         return {
           category: r.category, scene: r.scene, tax_rate: r.tax_rate,
-          invoice_type: r.invoice_type || '', amount: Number(r.amount) || 0, filename: r.filename,
+          invoice_type: r.suggested_invoice_type || r.invoice_type || '', amount: Number(r.amount) || 0, filename: r.filename,
           item_desc: (r.scene || '') + '费'
         };
       });
