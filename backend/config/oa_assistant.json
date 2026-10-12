@@ -32,8 +32,8 @@
     "default_amount": "100.00",
     "company_names": ["上海复星旅游管理有限公司", "珠海市横琴复星旅文旅游发展有限公司"],
     "invoice_types": [
-      { "value": "普通发票|0", "label": "普通发票 税率0%", "search": "普通发票", "tax_rate": "0" },
-      { "value": "电子普通发票|13", "label": "电子普通发票 税额13%", "search": "电子普通发票", "tax_rate": "13" },
+      { "value": "普通发票|0", "label": "普通发票 0%", "search": "普通发票", "tax_rate": "0" },
+      { "value": "电子普通发票|13", "label": "电子普通发票 13%", "search": "电子普通发票", "tax_rate": "13" },
       { "value": "电子普通发票|9", "label": "电子普通发票 9%", "search": "电子普通发票", "tax_rate": "9" },
       { "value": "增值税普通发票|6", "label": "增值税普通发票 6%", "search": "增值税普通发票", "tax_rate": "6" },
       { "value": "增值税普通发票|9", "label": "增值税普通发票 9%", "search": "增值税普通发票", "tax_rate": "9" },
@@ -240,6 +240,7 @@
       "id": "traffic",
       "name": "交通报销",
       "enabled": true,
+      "url": "https://oa.fosunholiday.com/spa/workflow/static4form/index.html?_rdm=1791601026398#/main/workflow/req?iscreate=1&workflowid=57&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0&menuIds=1,12&menuPathIds=1,12&preloadkey=1791601026398&timestamp=1791601026398",
       "reason_prefill": "{last_month}月交通报销",
       "scene": "交通费用",
       "fields": [
@@ -264,6 +265,7 @@
       "id": "business_trip",
       "name": "出差报销",
       "enabled": true,
+      "url": "https://oa.fosunholiday.com/spa/workflow/static4form/index.html?_rdm=1791601026398#/main/workflow/req?iscreate=1&workflowid=57&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0&menuIds=1,12&menuPathIds=1,12&preloadkey=1791601026398&timestamp=1791601026398",
       "reason_prefill": "出差费用报销",
       "notices": [
         "报销明细由发票自动解析生成（境内住宿 / 境内机票）；一张发票一行，金额按行累计，不取整。",

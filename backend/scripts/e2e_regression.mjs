@@ -79,7 +79,11 @@ async function runScenario(page, host, id, opts = {}) {
       .filter((t) => t.startsWith('⚠'));
     return Array.from(new Set(parts)).join(' ');
   });
-  return { oa, summary: m ? { ok: +m[1], skip: +m[2], fail: +m[3] } : null, log, notice };
+  const link = await host.evaluate((el) => {
+    const a = [...el.shadowRoot.querySelectorAll('a')].find((x) => x.getAttribute('href'));
+    return a ? a.getAttribute('href') : '';
+  });
+  return { oa, summary: m ? { ok: +m[1], skip: +m[2], fail: +m[3] } : null, log, notice, link };
 }
 
 const browser = await chromium.launch({ channel: 'chrome' });
@@ -88,7 +92,8 @@ const page = await browser.newPage();
 // 1) 通讯费用（单行表单，无明细）
 {
   const host = await injectPanel(page);
-  const { oa, summary, notice } = await runScenario(page, host, 'communication', { files: HOTEL ? [HOTEL] : [] });
+  const { oa, summary, notice, link } = await runScenario(page, host, 'communication', { files: HOTEL ? [HOTEL] : [] });
+  check('通讯报销 「打开表单」链接→workflowid=57', /workflowid=57/.test(link), link);
   check('通讯报销 顶部提示含「发票类型…二次确认」', /发票类型.*二次确认/.test(notice), notice);
   check('通讯报销 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
   check('通讯报销 报销类型=公务限额费用', oa.expense === '公务限额费用', oa.expense);
@@ -126,7 +131,8 @@ const page = await browser.newPage();
 {
   const host = await injectPanel(page);
   const files = [HOTEL, TRAIN].filter(Boolean);
-  const { oa, summary, notice } = await runScenario(page, host, 'company_payment', { files, wait: 16000, fill: { '收款单位名称': '上海测试科技' } });
+  const { oa, summary, notice, link } = await runScenario(page, host, 'company_payment', { files, wait: 16000, fill: { '收款单位名称': '上海测试科技' } });
+  check('境内公司付款 「打开表单」链接→workflowid=56', /workflowid=56/.test(link), link);
   check('境内公司付款 顶部提示「收款单位」需在 OA 页面上二次确认', /「收款单位」需在 OA 页面上二次确认/.test(notice), notice);
   check('境内公司付款 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
   check('境内公司付款 明细行1 报销场景=IT服务外包', oa.cpScene0 === 'IT服务外包', oa.cpScene0);
