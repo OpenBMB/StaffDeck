@@ -214,12 +214,34 @@ def _classify(text: str, categories: list[dict[str, Any]] | None) -> dict[str, A
     return None
 
 
+def _suggest_invoice_type(kind: str, category_key: str, kind_map: dict[str, str] | None, transport_categories: list[str] | None) -> str:
+    """由票面种类（+ 类别）推断 OA 发票类型名。
+
+    规则（按 kind_map 的顺序子串匹配）：
+    - 含「增值税专用发票」→ 增值税专用发票（不分电子/纸质，再靠税率细分）
+    - 含「铁路电子客票」/「航空…行程单」→ 增值税电子普通发票（境内客运）
+    - 含「增值税普通发票」→ 交通类（火车/机票）归「增值税电子普通发票（境内客运）」，其他归「增值税普通发票」
+    - 含「普通发票」（无增值税）→ 电子普通发票
+    """
+    if not kind:
+        return ""
+    for key, value in (kind_map or {}).items():
+        if key and key in kind:
+            return value
+    if "普通发票" in kind:
+        if category_key in (transport_categories or []):
+            return "增值税电子普通发票（境内客运）"
+        return "增值税普通发票" if "增值税" in kind else "电子普通发票"
+    return ""
+
+
 def parse_invoice_uploads(
     uploads: list[tuple[str, bytes]],
     categories: list[dict[str, Any]] | None = None,
     rate_invoice_types: dict[str, str] | None = None,
     default_invoice_type: str = "",
     kind_to_type: dict[str, str] | None = None,
+    transport_categories: list[str] | None = None,
 ) -> dict[str, Any]:
     """解析发票（价税合计 + 税率 + 类别 + 种类），一张发票生成一行报销明细。
 
@@ -254,7 +276,7 @@ def parse_invoice_uploads(
             "scene": category.get("scene") or category.get("key"),
             "tax_rate": rate or "",
             "invoice_type": rate_map.get(rate or "", default_invoice_type),
-            "suggested_invoice_type": kind_map.get(kind, ""),
+            "suggested_invoice_type": _suggest_invoice_type(kind, category["key"], kind_map, transport_categories),
             "kind": kind,
             "amount": f"{Decimal(amount):.2f}",
             "filename": filename,

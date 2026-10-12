@@ -136,6 +136,7 @@ async def invoice_amounts(files: list[UploadFile] = File(default=[])) -> JSONRes
         rate_invoice_types=parse_cfg.get("tax_rate_invoice_types"),
         default_invoice_type=parse_cfg.get("default_invoice_type", ""),
         kind_to_type=parse_cfg.get("kind_to_invoice_type"),
+        transport_categories=parse_cfg.get("transport_categories"),
     )
     logger.info(
         "[oa-assistant] 解析 %d 张发票，合计 %s，生成 %d 行明细",

@@ -1133,6 +1133,31 @@
   }
 
   /** 按票面税率预选发票类型（同税率可能有电子/普通/增值多个，面板只做预选，用户可改）。 */
+  /** 把「发票类型名/搜索词（+税率）」反查成面板选项的唯一 value。同名多个时按税率取唯一。 */
+  function invoiceTypeValueFromSearch(name, rate) {
+    if (!name) return '';
+    var opts = PANEL_CFG.invoice_types || [];
+    var exact = '';
+    var first = '';
+    var hasRate = rate !== undefined && rate !== null && rate !== '';
+    for (var i = 0; i < opts.length; i++) {
+      var isName = String(opts[i].search || opts[i].value) === String(name) || String(opts[i].value) === String(name);
+      if (!isName) continue;
+      if (!first) first = String(opts[i].value);
+      if (hasRate && String(opts[i].tax_rate || '') === String(rate)) { exact = String(opts[i].value); break; }
+    }
+    return exact || first;
+  }
+
+  /** 面板里某个发票类型选项对应的 OA 搜索词（发给 OA 用）。 */
+  function invoiceTypeSearch(value) {
+    var opts = PANEL_CFG.invoice_types || [];
+    for (var i = 0; i < opts.length; i++) {
+      if (String(opts[i].value) === String(value)) return String(opts[i].search || opts[i].value);
+    }
+    return String(value || '');
+  }
+
   /** 面板里某个发票类型选项对应的税率（用于给引擎传期望税率）。 */
   function invoiceTypeRate(value) {
     var opts = PANEL_CFG.invoice_types || [];
@@ -1227,9 +1252,10 @@
       var data = await res.json();
       if (!res.ok) throw new Error((data && data.detail) || ('HTTP ' + res.status));
       var parsed = (data.rows || []).map(function (r) {
+        var itValue = invoiceTypeValueFromSearch(r.suggested_invoice_type, r.tax_rate) || invoiceTypeValueFromSearch(r.invoice_type, r.tax_rate) || '';
         return {
           category: r.category, scene: r.scene, tax_rate: r.tax_rate,
-          invoice_type: r.suggested_invoice_type || r.invoice_type || '', amount: Number(r.amount) || 0, filename: r.filename,
+          invoice_type: itValue, amount: Number(r.amount) || 0, filename: r.filename,
           item_desc: (r.scene || '') + '费'
         };
       });
@@ -1337,9 +1363,10 @@
       if (!res.ok) throw new Error((data && data.detail) || ('HTTP ' + res.status));
       var rowsParsed = data.rows || [];
       if (rowsParsed.length) {
-        // 由发票附件识别税率 → 自动选发票类型（与金额是否勾选无关）
+        // 由发票附件识别税率 + 票面种类 → 自动选发票类型（与金额是否勾选无关）
         lastInvoiceRate = String(rowsParsed[0].tax_rate || '');
-        var autoType = matchInvoiceType(lastInvoiceRate);
+        var autoType = invoiceTypeValueFromSearch(rowsParsed[0].suggested_invoice_type, lastInvoiceRate)
+          || matchInvoiceType(lastInvoiceRate);
         if (autoType) invoiceSelect.value = autoType;
       }
       var failed = (data.items || []).filter(function (item) { return item.error; });
@@ -1745,7 +1772,7 @@
       related_flow: String(relatedFlowInput.value || '').trim(),
       company_name: companySelect.value,
       payee_name: String(payeeNameInput.value || '').trim(),
-      invoice_type: invoiceSelect.value,
+      invoice_type: invoiceTypeSearch(invoiceSelect.value),
       invoice_rate: invoiceTypeRate(invoiceSelect.value),
       all_e_ticket: eTicket,
       attachment_paths: files.map(function (f) { return f.name; }),
@@ -1753,7 +1780,7 @@
       rows: isTrip ? panelRows.map(function (r) {
         return {
           scene: r.scene,
-          invoice_type: r.invoice_type,
+          invoice_type: invoiceTypeSearch(r.invoice_type),
           invoice_rate: invoiceTypeRate(r.invoice_type),
           amount: r.amount,
           item_desc: r.item_desc

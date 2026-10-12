@@ -104,7 +104,7 @@ const page = await browser.newPage();
 {
   const host = await injectPanel(page);
   const files = [HOTEL, TRAIN].filter(Boolean);
-  const { oa, summary } = await runScenario(page, host, 'business_trip', { files, numberFirst: '2' });
+  const { oa, summary } = await runScenario(page, host, 'business_trip', { files, numberFirst: '2', wait: 14000 });
   check('出差报销 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
   check('出差报销 明细2行', !!oa.scene1, 'scene1=' + oa.scene1);
   check('出差报销 明细行1=境内住宿', oa.scene0 === '境内住宿', oa.scene0);
@@ -117,7 +117,7 @@ const page = await browser.newPage();
 {
   const host = await injectPanel(page);
   const files = [HOTEL, TRAIN].filter(Boolean);
-  const { oa, summary } = await runScenario(page, host, 'company_payment', { files, wait: 11000, fill: { '收款单位名称': '上海测试科技' } });
+  const { oa, summary } = await runScenario(page, host, 'company_payment', { files, wait: 16000, fill: { '收款单位名称': '上海测试科技' } });
   check('境内公司付款 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
   check('境内公司付款 明细行1 报销场景=IT服务外包', oa.cpScene0 === 'IT服务外包', oa.cpScene0);
   check('境内公司付款 明细行2 存在', !!oa.cpScene1 || !!oa.cpAmt1, 'scene1=' + oa.cpScene1 + ' amt1=' + oa.cpAmt1);

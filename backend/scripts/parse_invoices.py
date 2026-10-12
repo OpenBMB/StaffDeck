@@ -52,6 +52,7 @@ def main() -> int:
         rate_invoice_types=cfg.get("tax_rate_invoice_types"),
         default_invoice_type=cfg.get("default_invoice_type", ""),
         kind_to_type=cfg.get("kind_to_invoice_type"),
+        transport_categories=cfg.get("transport_categories"),
     )
 
     print(f"共 {len(paths)} 张发票\n")

@@ -72,12 +72,12 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
   <tr><td class="lb">费用承担部门</td><td><div class="ant-select" data-fieldmark="field7012" data-options="核定费用承担部门|核定"></div></td><td></td><td></td></tr>
   <tr><td class="lb">收款单位名称</td><td><div class="ant-select" data-options="上海测试科技有限公司|某某网络有限公司|上海测试"></div></td><td></td><td></td></tr>
   <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_0" data-options="通讯费用|交通费用|飞机|火车汽车船|IT服务外包|相关票据|境内住宿|境内机票|境内火车票"></div></td>
-      <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税电子普通发票（境内客运）|电子普通发票|9%|6%|3%|13%"></div></td></tr>
+      <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td></tr>
   <tr><td class="lb">事项描述</td><td><input id="field6920_0"></td>
       <td class="lb">金额</td><td><input id="field6932_0"></td></tr>
   <!-- 境内公司付款（workflow 56）明细：fieldmark 直用 -->
   <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_0" data-options="IT服务外包|普通发票|相关票据"></div></td>
-      <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6826_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税电子普通发票（境内客运）|电子普通发票|9%|6%|3%|13%"></div></td></tr>
+      <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6826_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td></tr>
   <tr><td class="lb">事项描述</td><td><input id="field6821_0"></td>
       <td class="lb">金额</td><td><input id="field6829_0"></td></tr>
 </table>
@@ -127,12 +127,12 @@ document.getElementById('addrow').addEventListener('click', function(e){
   var table = document.querySelector('table');
   var tr1 = document.createElement('tr');
   tr1.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_'+i+'" data-options="IT服务外包|交通费用|相关票据|境内住宿|境内机票|境内火车票"></div></td>'
-    + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_'+i+'" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税电子普通发票（境内客运）|电子普通发票|9%|6%|3%|13%"></div></td>';
+    + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_'+i+'" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td>';
   var tr2 = document.createElement('tr');
   tr2.innerHTML = '<td class="lb">事项描述</td><td><input id="field6920_'+i+'"></td><td class="lb">金额</td><td><input id="field6932_'+i+'"></td>';
   var tr3 = document.createElement('tr');
   tr3.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_'+i+'" data-options="IT服务外包|普通发票"></div></td>'
-    + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6826_'+i+'" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税电子普通发票（境内客运）|电子普通发票|9%|6%|3%|13%"></div></td>';
+    + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6826_'+i+'" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td>';
   var tr4 = document.createElement('tr');
   tr4.innerHTML = '<td class="lb">事项描述</td><td><input id="field6821_'+i+'"></td><td class="lb">金额</td><td><input id="field6829_'+i+'"></td>';
   table.appendChild(tr1); table.appendChild(tr2); table.appendChild(tr3); table.appendChild(tr4);
