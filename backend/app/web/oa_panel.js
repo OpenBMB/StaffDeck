@@ -1534,7 +1534,7 @@
     var scenario = currentScenario();
     if (!scenario) return;
 
-    var notices = scenario.notices || [];
+    var notices = (PANEL_CFG.notices || []).concat(scenario.notices || []);
     noticeBox.textContent = '';
     notices.forEach(function (n) { noticeBox.appendChild(el('div', '', '⚠ ' + n)); });
     noticeBox.style.display = notices.length ? 'flex' : 'none';

@@ -15,7 +15,7 @@
     "新增场景流程：在 OA 里打开目标表单 → 用浏览器开发者工具或临时脚本确认字段容器 → 把新字段补进 field_library（已存在的直接复用）→ 新增 scenario 条目。字段定义尽量复用，只有场景差异写在场景里。",
     "以下定位器为泛微 e-cology9「境内个人费用报销审批表」实测值（2026-10-09 抓取）：明细行字段以 _0 结尾（第 1 行），报销场景/是否全电子发票/上传附件都是自定义组件，用 data-fieldmark 定位容器。",
     "login_check 用于判断当前是不是 OA 登录页：url_contains 任一命中或 selectors 任一可见即判定未登录。",
-    "panel 段是书签面板的表单默认值（标题、默认金额、公司/发票类型选项、默认票据形式、是否自动算金额与自动保存）。"
+    "panel 段是书签面板的表单默认值（标题、默认金额、公司/发票类型选项、默认票据形式、是否自动算金额与自动保存）。panel.notices = 所有报销场景都显示的顶部提示（scenario.notices 为单个场景追加）。"
   ],
   "browser": {
     "login_check": {
@@ -26,6 +26,9 @@
   "panel": {
     "_note": "书签面板（浏览器侧代填）的默认值。面板脚本由 /api/enterprise/oa-assistant/panel.js 下发，配置内嵌。",
     "title": "AI报销代填",
+    "notices": [
+      "「发票类型」自动识别可能有误，请二次确认。"
+    ],
     "default_amount": "100.00",
     "company_names": ["上海复星旅游管理有限公司", "珠海市横琴复星旅文旅游发展有限公司"],
     "invoice_types": [
@@ -309,7 +312,7 @@
       "url": "https://oa.fosunholiday.com/spa/workflow/static4form/index.html?_rdm=1791766427519#/main/workflow/req?iscreate=1&workflowid=56&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0&menuIds=1,12&menuPathIds=1,12&preloadkey=1791766427519&timestamp=1791766427519&_key=gczdmd",
       "reason_prefill": "",
       "notices": [
-        "「收款单位」需在 OA 页面自行补全。",
+        "「收款单位」需在 OA 页面上二次确认。",
         "报销明细由上传的票据生成：税率相同合并为一行、不同则新增一行。"
       ],
       "line_items": {

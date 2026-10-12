@@ -73,7 +73,13 @@ async function runScenario(page, host, id, opts = {}) {
     return box ? box.textContent.replace(/\s+/g, ' ') : '';
   });
   const m = log.match(/完成：成功 (\d+) · 跳过 (\d+) · 失败 (\d+)/);
-  return { oa, summary: m ? { ok: +m[1], skip: +m[2], fail: +m[3] } : null, log };
+  const notice = await host.evaluate((el) => {
+    const parts = [...el.shadowRoot.querySelectorAll('div')]
+      .map((d) => d.textContent.trim())
+      .filter((t) => t.startsWith('⚠'));
+    return Array.from(new Set(parts)).join(' ');
+  });
+  return { oa, summary: m ? { ok: +m[1], skip: +m[2], fail: +m[3] } : null, log, notice };
 }
 
 const browser = await chromium.launch({ channel: 'chrome' });
@@ -82,7 +88,8 @@ const page = await browser.newPage();
 // 1) 通讯费用（单行表单，无明细）
 {
   const host = await injectPanel(page);
-  const { oa, summary } = await runScenario(page, host, 'communication', { files: HOTEL ? [HOTEL] : [] });
+  const { oa, summary, notice } = await runScenario(page, host, 'communication', { files: HOTEL ? [HOTEL] : [] });
+  check('通讯报销 顶部提示含「发票类型…二次确认」', /发票类型.*二次确认/.test(notice), notice);
   check('通讯报销 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
   check('通讯报销 报销类型=公务限额费用', oa.expense === '公务限额费用', oa.expense);
   check('通讯报销 报销场景=通讯费用', oa.scene0 === '通讯费用', oa.scene0);
@@ -94,7 +101,8 @@ const page = await browser.newPage();
 // 2) 交通报销（报销场景=飞机，默认）
 {
   const host = await injectPanel(page);
-  const { oa, summary } = await runScenario(page, host, 'traffic', { files: HOTEL ? [HOTEL] : [] });
+  const { oa, summary, notice } = await runScenario(page, host, 'traffic', { files: HOTEL ? [HOTEL] : [] });
+  check('交通报销 顶部提示含「发票类型…二次确认」', /发票类型.*二次确认/.test(notice), notice);
   check('交通报销 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
   check('交通报销 报销场景=交通费用', oa.scene0 === '交通费用', oa.scene0);
   check('交通报销 发票类型由附件识别（含6%）', !!oa.itype0 && oa.itype0.indexOf('6%') >= 0, oa.itype0);
@@ -104,7 +112,8 @@ const page = await browser.newPage();
 {
   const host = await injectPanel(page);
   const files = [HOTEL, TRAIN].filter(Boolean);
-  const { oa, summary } = await runScenario(page, host, 'business_trip', { files, numberFirst: '2', wait: 14000 });
+  const { oa, summary, notice } = await runScenario(page, host, 'business_trip', { files, numberFirst: '2', wait: 14000 });
+  check('出差报销 顶部提示含「发票类型…二次确认」', /发票类型.*二次确认/.test(notice), notice);
   check('出差报销 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
   check('出差报销 明细2行', !!oa.scene1, 'scene1=' + oa.scene1);
   check('出差报销 明细行1=境内住宿', oa.scene0 === '境内住宿', oa.scene0);
@@ -117,7 +126,8 @@ const page = await browser.newPage();
 {
   const host = await injectPanel(page);
   const files = [HOTEL, TRAIN].filter(Boolean);
-  const { oa, summary } = await runScenario(page, host, 'company_payment', { files, wait: 16000, fill: { '收款单位名称': '上海测试科技' } });
+  const { oa, summary, notice } = await runScenario(page, host, 'company_payment', { files, wait: 16000, fill: { '收款单位名称': '上海测试科技' } });
+  check('境内公司付款 顶部提示「收款单位」需在 OA 页面上二次确认', /「收款单位」需在 OA 页面上二次确认/.test(notice), notice);
   check('境内公司付款 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
   check('境内公司付款 明细行1 报销场景=IT服务外包', oa.cpScene0 === 'IT服务外包', oa.cpScene0);
   check('境内公司付款 明细行2 存在', !!oa.cpScene1 || !!oa.cpAmt1, 'scene1=' + oa.cpScene1 + ' amt1=' + oa.cpAmt1);
