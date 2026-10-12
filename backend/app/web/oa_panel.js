@@ -548,41 +548,43 @@
     return s;
   }
 
+  /** 选项的「类型名」（去掉末尾税率段）。 */
+  function optionNames(el) {
+    return optionTexts(el).map(baseName).filter(Boolean);
+  }
+
+  /** 选项的税率段（如 '6%'）；无税率返回空串。 */
+  function optionRate(el) {
+    var t = optionTexts(el).filter(function (x) { return /[%％]/.test(x); });
+    return t.length ? t[0] : '';
+  }
+
+  /**
+   * 选下拉项（所有场景共用）：
+   *  ① 先取「类型名完全相同」的选项；没有同名就退回全部检索结果；
+   *  ② 只有一个结果 → 直接选；
+   *  ③ 多个 → 按期望税率匹配；匹配不到（含税率 0%）→ 选「名字完全相同且税率为空」的那条。
+   */
   function pickOption(options, keyword, prefer) {
     var key = String(keyword || '').replace(/\s+/g, '');
     if (!key || !options.length) return options[0];
     var pref = String(prefer || '').replace(/\s+/g, '');
-    var matched = [];   // 发票类型名与关键词完全一致（不含税率部分）
-    var prefixed = [];  // 以关键词开头（宽容兜底）
-    var plain = null;   // 完全一致且本身不带税率
-    for (var i = 0; i < options.length; i++) {
-      var texts = optionTexts(options[i]);
-      var isMatch = false;
-      var isPrefix = false;
-      var hasRate = false;
-      var hasPref = false;
-      for (var j = 0; j < texts.length; j++) {
-        var t = texts[j];
-        if (baseName(t) === key) isMatch = true;
-        if (t.indexOf(key) === 0) isPrefix = true;
-        if (/[%％]/.test(t)) hasRate = true;
-        if (pref && (t.indexOf(pref) >= 0 || t.indexOf(pref.replace(/%/g, '％')) >= 0)) hasPref = true;
-      }
-      var rec = { el: options[i], hasPref: hasPref, hasRate: hasRate };
-      if (isMatch) { matched.push(rec); if (!hasRate && !plain) plain = options[i]; }
-      if (isPrefix) prefixed.push(rec);
+    var sameName = options.filter(function (el) { return optionNames(el).indexOf(key) >= 0; });
+    var pool = sameName.length ? sameName : options;
+    if (pool.length === 1) return pool[0];
+    if (pref) {
+      var withPref = pool.filter(function (el) {
+        var texts = optionTexts(el);
+        for (var i = 0; i < texts.length; i++) {
+          if (texts[i].indexOf(pref) >= 0 || texts[i].indexOf(pref.replace(/%/g, '％')) >= 0) return true;
+        }
+        return false;
+      });
+      if (withPref.length) return withPref[0];
     }
-    // ① 类型名完全匹配；多个时用税率找唯一；再退到不带税率的那条
-    if (matched.length) {
-      if (pref) { for (var m = 0; m < matched.length; m++) if (matched[m].hasPref) return matched[m].el; }
-      return plain || matched[0].el;
-    }
-    // ② 宽容：以关键词开头
-    if (prefixed.length) {
-      if (pref) { for (var p = 0; p < prefixed.length; p++) if (prefixed[p].hasPref) return prefixed[p].el; }
-      return prefixed[0].el;
-    }
-    return options[0];
+    var noRate = pool.filter(function (el) { return optionRate(el) === ''; });
+    if (noRate.length) return noRate[0];
+    return pool[0];
   }
 
   /** 提交判据：容器内 hidden input 有值（渲染区文本会镜像搜索词，不能作依据）。 */
@@ -1558,6 +1560,52 @@
   }
 
   /** 填多行报销明细：先按需点「新增」补行，再逐行填 row_fields（selector 里的 {i} 换成行号）。 */
+  /** 读第 i 行明细的 OA「税率」列（一般是小数，如 0.06），换成百分数 6；读不到返回 null。 */
+  function readRowRate(rowIndex) {
+    var node = findByLabelText('税率', 'input', rowIndex);
+    if (!node) return null;
+    var v = String(node.value || '').trim();
+    if (!v) return null;
+    var n = Number(v);
+    if (isNaN(n)) return null;
+    return n > 1.5 ? Math.round(n) : Math.round(n * 100);
+  }
+
+  /**
+   * 发票类型按税率选：OA 下拉只显示类型名（税率只在悬浮提示里，读不到），所以
+   * 逐个选项点选后读该行的「税率」列验证，命中期望税率才保留；否则重开下拉试下一个。
+   */
+  async function fillSelectByRate(container, spec, keyword, prefer, rowIndex) {
+    var wantNum = Number(String(prefer).replace(/[^0-9.]/g, ''));
+    var picked = await fillSelect(container, spec, keyword, prefer);
+    if (!wantNum) return picked;
+    var initial = readRowRate(rowIndex);
+    if (initial === null) return picked; // OA 没有可读的税率列 → 只能用常规结果
+    if (initial === wantNum) return picked;
+    var tried = [];
+    for (var attempt = 0; attempt < 5; attempt++) {
+      var doc = container.ownerDocument || document;
+      var opts = visibleOptions(doc, keyword);
+      if (!opts.length) break;
+      var progressed = false;
+      for (var i = 0; i < opts.length; i++) {
+        if (tried.indexOf(opts[i]) >= 0) continue;
+        tried.push(opts[i]);
+        progressed = true;
+        clickEl(opts[i]);
+        await sleep(450);
+        if (readRowRate(rowIndex) === wantNum) return optionText(opts[i]).trim();
+        // 未命中：重新打开下拉、重新搜索，继续试下一个
+        clickEl(visibleIn(container, '.ant-select-selection') || container);
+        await sleep(300);
+        var search = visibleIn(container, '.ant-select-search__field');
+        if (search) { setNative(search, keyword); fireEvent(search, 'input'); await sleep(300); }
+      }
+      if (!progressed) break;
+    }
+    return picked;
+  }
+
   async function fillLineItems(scenario, rows, steps) {
     var li = scenario.line_items || {};
     var rowFields = li.row_fields || {};
@@ -1616,8 +1664,12 @@
           var prefer = '';
           if (key === 'invoice_type' && row.invoice_rate) prefer = String(row.invoice_rate) + '%';
           var pickedText = '';
-          if ((spec.mode || 'input') === 'select') pickedText = (await fillSelect(node, spec, String(value), prefer)) || '';
-          else fillText(node, String(value), spec.mode || 'input');
+          if ((spec.mode || 'input') === 'select') {
+            if (key === 'invoice_type' && prefer) pickedText = (await fillSelectByRate(node, spec, String(value), prefer, i)) || '';
+            else pickedText = (await fillSelect(node, spec, String(value), prefer)) || '';
+          } else {
+            fillText(node, String(value), spec.mode || 'input');
+          }
           steps.push({ field: label, status: 'filled', detail: pickedText || String(value) });
           logLine('✓ ' + label + '：' + (pickedText || value), 'ok');
         } catch (err) {
