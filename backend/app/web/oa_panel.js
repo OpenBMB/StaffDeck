@@ -553,20 +553,38 @@
     return false;
   }
 
+  /** 渲染区是否已经清空（判断预填值还在不在）。 */
+  function selectionEmpty(container) {
+    if (container.querySelector('.ant-select-selection__choice, .ant-select-selection__choice__content')) return false;
+    var rendered = container.querySelector('.ant-select-selection__rendered');
+    if (!rendered) return true;
+    return !(rendered.innerText || rendered.textContent || '').trim();
+  }
+
   function clearSelection(container, search) {
-    // 悬停才出现清除图标；先派发 hover 让它可点（«×» icon 清掉 OA 预填的默认值）
     fireHover(container);
+    // ① 清除图标 / 每个 chip 的 ×
     var clearIcon = visibleIn(container, '.ant-select-selection__clear');
     if (clearIcon) clickEl(clearIcon);
+    var chipRemoves = container.querySelectorAll('.ant-select-selection__choice__remove');
+    for (var c = 0; c < chipRemoves.length; c++) clickEl(chipRemoves[c]);
+    // ② 复刻原 Playwright 的「退格清空」：搜索框清空后连按退格，
+    //    antd/wea 在输入为空时会用 Backspace 取消已选项（合成 keydown 会走 React onKeyDown）
+    if (search) { try { search.focus(); } catch (e) {} }
+    var target = search || container;
+    for (var i = 0; i < 8; i++) {
+      if (selectionEmpty(container)) break;
+      if (search) { setNative(search, ''); fireEvent(search, 'input'); }
+      fireKey(target, 'keydown', 'Backspace');
+      fireKey(target, 'keyup', 'Backspace');
+    }
+    // ③ 兼底：直接把 hidden 值清掉
     var hidden = container.querySelector("input[type='hidden']");
     if (hidden && (hidden.value || '').trim()) {
       setNative(hidden, '');
       fireInput(hidden);
     }
-    if (search) {
-      setNative(search, '');
-      fireEvent(search, 'input');
-    }
+    if (search) { setNative(search, ''); fireEvent(search, 'input'); }
   }
 
   /** 联想下拉（ant-select / wea-select / wea-browser）：沿用原 Playwright 版验证过的实录操作序列。 */
