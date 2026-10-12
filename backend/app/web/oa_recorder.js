@@ -132,12 +132,34 @@
     clicks.push({ act: 'change', at: Date.now(), target: describe(e.target), value: e.target && e.target.value });
   }, true);
 
+  // 上下键选择时，偷看「当前高亮项」与屏幕上出现的百分数（税率可能只在悬停/选中时显示）
+  var keySnaps = [];
+  document.addEventListener('keydown', function (e) {
+    if (!/^Arrow(Up|Down)$/.test(e.key) && e.key !== 'Enter') return;
+    var active = [];
+    var lis = document.querySelectorAll('.ant-select-dropdown-menu-item, .ant-select-item-option, li[role="option"]');
+    for (var i = 0; i < lis.length && active.length < 20; i++) {
+      var cls = lis[i].getAttribute('class') || '';
+      if (cls.indexOf('active') < 0 && cls.indexOf('selected') < 0 && cls.indexOf('hover') < 0) continue;
+      active.push({ cls: cls, text: (lis[i].innerText || '').replace(/\s+/g, ' ').trim().slice(0, 60), html: (lis[i].outerHTML || '').replace(/\s+/g, ' ').slice(0, 500) });
+    }
+    var pct = [];
+    var all = document.querySelectorAll('span, div, td, li, em, i, b');
+    for (var j = 0; j < all.length && pct.length < 30; j++) {
+      if (all[j].children.length) continue;
+      var t = (all[j].textContent || '').trim();
+      if (t && t.length <= 12 && /\d+(\.\d+)?\s*[%％]/.test(t)) pct.push(t);
+    }
+    keySnaps.push({ key: e.key, activeItems: active, percentages: pct });
+  }, true);
+
   var dot = null;
   function setDot(text) { if (dot) dot.textContent = text; }
 
   function dump() {
     var data = structure();
     data.clicks = clicks;
+    data.keySnaps = keySnaps;
     var text = JSON.stringify(data, null, 2);
     console.log('[SD recorder] ==== 复制下面这段发回 ====');
     console.log(text);

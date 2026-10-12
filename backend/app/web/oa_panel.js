@@ -449,6 +449,45 @@
     'a.child-item',
   ];
 
+  /** 选项的完整文案：列表文字 + title 属性（e-cology 把完整名+税率放在 title/悬浮提示里，列表只显示截断名）。 */
+  function optionText(el) {
+    var text = (el.innerText || el.textContent || '');
+    try {
+      var titled = el.querySelectorAll('[title]');
+      for (var i = 0; i < titled.length; i++) {
+        var v = titled[i].getAttribute('title');
+        if (v) text += ' ' + v;
+      }
+    } catch (e) {}
+    var own = el.getAttribute && el.getAttribute('title');
+    if (own) text += ' ' + own;
+    return text;
+  }
+
+  function hoverEl(node) {
+    if (!node) return;
+    var W = winOf(node);
+    var opts = { bubbles: true, cancelable: true, view: W };
+    try { node.dispatchEvent(new W.MouseEvent('mouseover', opts)); } catch (e) {}
+    try { node.dispatchEvent(new W.MouseEvent('mousemove', opts)); } catch (e) {}
+    try { node.dispatchEvent(new W.MouseEvent('mouseenter', { bubbles: false, cancelable: true, view: W })); } catch (e) {}
+  }
+
+  /** 当前可见的 tooltip 文本（悬浮提示）。 */
+  function visibleTooltipText(doc) {
+    var sels = ['.ant-tooltip:not(.ant-tooltip-hidden)', '[class*="tooltip"]:not([class*="hidden"])', '.ant-tooltip-inner'];
+    for (var s = 0; s < sels.length; s++) {
+      var list;
+      try { list = doc.querySelectorAll(sels[s]); } catch (e) { continue; }
+      for (var i = 0; i < list.length; i++) {
+        if (!isVisible(list[i])) continue;
+        var t = (list[i].innerText || list[i].textContent || '').trim();
+        if (t) return t;
+      }
+    }
+    return '';
+  }
+
   function visibleOptions(doc, keyword) {
     var found = [];
     var seen = [];
@@ -460,7 +499,7 @@
         if (seen.indexOf(li) >= 0) continue;
         seen.push(li);
         if (!isVisible(li)) continue;
-        var text = (li.innerText || li.textContent || '').trim();
+        var text = optionText(li).trim();
         if (!keyword || text.indexOf(keyword) >= 0
             || text.replace(/\s+/g, '').indexOf(String(keyword).replace(/\s+/g, '')) >= 0) found.push(li);
       }
@@ -484,7 +523,7 @@
     var best = null;      // 含关键词 + 期望税率，且以关键词开头
     var bestAny = null;   // 含关键词 + 期望税率
     for (var i = 0; i < options.length; i++) {
-      var text = (options[i].innerText || options[i].textContent || '').replace(/\s+/g, '');
+      var text = optionText(options[i]).replace(/\s+/g, '');
       var hasKey = text.indexOf(key) >= 0;
       if (!exact && text === key) exact = options[i];
       if (!prefix && text.indexOf(key) === 0) prefix = options[i];
@@ -569,9 +608,27 @@
       var lastAvail = [];
       for (var o = 0; o < 12; o++) {
         var all = visibleOptions(doc, '');
-        if (all.length) lastAvail = all.map(function (li) { return (li.innerText || li.textContent || '').trim().slice(0, 16); });
+        if (all.length) lastAvail = all.map(function (li) { return optionText(li).trim().slice(0, 20); });
         var opts = visibleOptions(doc, keyword);
-        if (opts.length) { option = pickOption(opts, keyword, prefer); break; }
+        if (opts.length) {
+          // 期望税率不在选项文字里（e-cology 只显示截断名，完整名+税率在悬浮提示）时，逐个悬浮读 tooltip
+          var prefNorm = String(prefer || '').replace(/\s+/g, '');
+          if (prefNorm && opts.length > 1) {
+            var foundPref = false;
+            for (var z = 0; z < opts.length; z++) {
+              if (optionText(opts[z]).replace(/\s+/g, '').indexOf(prefNorm) >= 0) { foundPref = true; break; }
+            }
+            if (!foundPref) {
+              for (var hz = 0; hz < opts.length; hz++) {
+                hoverEl(opts[hz]);
+                await sleep(220);
+                if (visibleTooltipText(doc).replace(/\s+/g, '').indexOf(prefNorm) >= 0) { opts = [opts[hz]]; break; }
+              }
+            }
+          }
+          option = pickOption(opts, keyword, prefer);
+          break;
+        }
         await sleep(300);
       }
       attempts.push('opts=' + (option ? 'hit' : 'miss'));
