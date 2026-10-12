@@ -520,26 +520,51 @@
    *  ③ 退而求其次：包含关键词的最短项。
    * 之前的「取第一个包含项」会在「电子普通发票」这类关键词上误选「增值税电子普通发票」。
    */
+  /** 选项的各候选文案（列表文字 + title/data-*），用于精确/前缀/税率匹配。 */
+  function optionTexts(el) {
+    var arr = [];
+    var t = (el.innerText || el.textContent || '');
+    if (t) arr.push(t.replace(/\s+/g, ''));
+    var attrRe = /^(title|data-title|data-value|data-rate|data-name|data-text)$/;
+    function from(node) {
+      if (!node.attributes) return;
+      for (var k = 0; k < node.attributes.length; k++) {
+        var a = node.attributes[k];
+        if (attrRe.test(a.name) && a.value) arr.push(String(a.value).replace(/\s+/g, ''));
+      }
+    }
+    from(el);
+    try {
+      var inner = el.querySelectorAll('[title],[data-title],[data-value],[data-rate],[data-name],[data-text]');
+      for (var i = 0; i < inner.length; i++) from(inner[i]);
+    } catch (e) {}
+    return arr;
+  }
+
   function pickOption(options, keyword, prefer) {
     var key = String(keyword || '').replace(/\s+/g, '');
     if (!key || !options.length) return options[0];
     var pref = String(prefer || '').replace(/\s+/g, '');
-    var exact = null;
-    var prefix = null;
-    var best = null;      // 含关键词 + 期望税率，且以关键词开头
-    var bestAny = null;   // 含关键词 + 期望税率
+    var exact = null;   // 有候选文案完全等于关键词
+    var prefix = null;  // 有候选文案以关键词开头（同一类）
+    var best = null;    // 同前缀 + 含期望税率
     for (var i = 0; i < options.length; i++) {
-      var text = optionText(options[i]).replace(/\s+/g, '');
-      var hasKey = text.indexOf(key) >= 0;
-      if (!exact && text === key) exact = options[i];
-      if (!prefix && text.indexOf(key) === 0) prefix = options[i];
-      if (pref && hasKey && (text.indexOf(pref) >= 0 || text.indexOf(pref.replace(/%/g, '％')) >= 0)) {
-        if (!bestAny) bestAny = options[i];
-        if (!best && text.indexOf(key) === 0) best = options[i];
+      var texts = optionTexts(options[i]);
+      var isExact = false;
+      var isPrefix = false;
+      var hasPref = false;
+      for (var j = 0; j < texts.length; j++) {
+        var t = texts[j];
+        if (t === key) isExact = true;
+        if (t.indexOf(key) === 0) isPrefix = true;
+        if (pref && (t.indexOf(pref) >= 0 || t.indexOf(pref.replace(/%/g, '％')) >= 0)) hasPref = true;
       }
+      if (isExact && !exact) exact = options[i];
+      if (isPrefix && !prefix) prefix = options[i];
+      if (isPrefix && hasPref && !best) best = options[i];
     }
-    // 多个命中时：优先「同时含关键词和期望税率」的；再精确 / 前缀 / 第一个符合的
-    return best || exact || prefix || bestAny || options[0];
+    // 只认「同一类」（以关键词开头）的项：优先同前缀+含税率的，再精确/前缀/第一个
+    return best || exact || prefix || options[0];
   }
 
   /** 提交判据：容器内 hidden input 有值（渲染区文本会镜像搜索词，不能作依据）。 */
@@ -1138,7 +1163,7 @@
       var known = (PANEL_CFG.invoice_types || []).some(function (o) { return o.value === row.invoice_type; });
       itype.value = known ? row.invoice_type : matchInvoiceType(row.tax_rate);
       row.invoice_type = itype.value;
-      itype.addEventListener('change', function () { row.invoice_type = itype.value; });
+      itype.addEventListener('change', function () { row.invoice_type = itype.value; row.invoice_type_manual = true; });
       item.appendChild(field('发票类型', itype));
 
       var amt = el('input', INPUT);
@@ -1647,7 +1672,7 @@
         return {
           scene: r.scene,
           invoice_type: r.invoice_type,
-          invoice_rate: r.tax_rate,
+          invoice_rate: r.invoice_type_manual ? '' : r.tax_rate,
           amount: r.amount,
           item_desc: r.item_desc
         };
