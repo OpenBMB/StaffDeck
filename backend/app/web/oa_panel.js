@@ -449,18 +449,22 @@
     'a.child-item',
   ];
 
-  /** 选项的完整文案：列表文字 + title 属性（e-cology 把完整名+税率放在 title/悬浮提示里，列表只显示截断名）。 */
+  /** 选项的完整文案：列表文字 + title/data-* 属性（e-cology 把完整名+税率放在 title/悬浮提示里，列表只显示截断名）。 */
   function optionText(el) {
     var text = (el.innerText || el.textContent || '');
-    try {
-      var titled = el.querySelectorAll('[title]');
-      for (var i = 0; i < titled.length; i++) {
-        var v = titled[i].getAttribute('title');
-        if (v) text += ' ' + v;
+    var attrRe = /^(title|data-title|data-value|data-rate|data-name|data-text)$/;
+    function collect(node) {
+      if (!node.attributes) return;
+      for (var k = 0; k < node.attributes.length; k++) {
+        var a = node.attributes[k];
+        if (attrRe.test(a.name) && a.value) text += ' ' + a.value;
       }
+    }
+    collect(el);
+    try {
+      var inner = el.querySelectorAll('[title],[data-title],[data-value],[data-rate],[data-name],[data-text]');
+      for (var i = 0; i < inner.length; i++) collect(inner[i]);
     } catch (e) {}
-    var own = el.getAttribute && el.getAttribute('title');
-    if (own) text += ' ' + own;
     return text;
   }
 
@@ -473,19 +477,21 @@
     try { node.dispatchEvent(new W.MouseEvent('mouseenter', { bubbles: false, cancelable: true, view: W })); } catch (e) {}
   }
 
-  /** 当前可见的 tooltip 文本（悬浮提示）。 */
+  /** 当前可见的 tooltip 文本（悬浮提示）；取最后一个（antd 会保留旧 tooltip，最新的在最后）。 */
   function visibleTooltipText(doc) {
-    var sels = ['.ant-tooltip:not(.ant-tooltip-hidden)', '[class*="tooltip"]:not([class*="hidden"])', '.ant-tooltip-inner'];
+    var sels = ['.ant-tooltip:not(.ant-tooltip-hidden)', '.ant-tooltip-inner', '[class*="tooltip"]:not([class*="hidden"])'];
+    var last = '';
     for (var s = 0; s < sels.length; s++) {
       var list;
       try { list = doc.querySelectorAll(sels[s]); } catch (e) { continue; }
       for (var i = 0; i < list.length; i++) {
         if (!isVisible(list[i])) continue;
         var t = (list[i].innerText || list[i].textContent || '').trim();
-        if (t) return t;
+        if (t) last = t;
       }
+      if (last) return last;
     }
-    return '';
+    return last;
   }
 
   function visibleOptions(doc, keyword) {
@@ -640,7 +646,7 @@
       if (selectCommitted(container, value)) {
         try { if (search) fireKey(search, 'keydown', 'Escape'); } catch (e) {}
         try { document.body.click(); } catch (e) {}
-        return (option.innerText || option.textContent || '').trim() || String(value);
+        return optionText(option).trim() || String(value);
       }
       attempts.push('not_committed');
     }
