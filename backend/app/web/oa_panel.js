@@ -724,7 +724,8 @@
     }
 
     if (mode === 'select') {
-      var pickedText = await fillSelect(node, spec, String(value), null);
+      var prefer = spec.from === 'invoice_type' && values.invoice_rate ? String(values.invoice_rate) + '%' : '';
+      var pickedText = await fillSelect(node, spec, String(value), prefer);
       return { field: label, status: 'filled', detail: '选择 ' + (pickedText || value) };
     }
 
@@ -900,7 +901,7 @@
     invoiceSelect.appendChild(opt);
   });
   var invoiceRow = field('发票类型', invoiceSelect);
-  invoiceRow.style.order = '7';
+  invoiceRow.style.order = '10';
   body.appendChild(invoiceRow);
 
   // 是否全为电子票
@@ -961,6 +962,7 @@
   attachBox.appendChild(fileList);
 
   var lastCalcTotal = null;
+  var lastInvoiceRate = '';
 
   var calcWrap = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;color:#464c5e;font-size:11.5px;');
   var calcCheck = document.createElement('input');
@@ -1250,6 +1252,13 @@
       var data = await res.json();
       if (!res.ok) throw new Error((data && data.detail) || ('HTTP ' + res.status));
       lastCalcTotal = Number(data.total);
+      var rowsParsed = data.rows || [];
+      if (rowsParsed.length) {
+        // 由发票附件识别税率 → 自动选发票类型
+        lastInvoiceRate = String(rowsParsed[0].tax_rate || '');
+        var autoType = matchInvoiceType(lastInvoiceRate);
+        if (autoType) invoiceSelect.value = autoType;
+      }
       var floored = applyCalculatedAmount();
       var suffix = floored ? '（已向下取整到百位，原 ' + lastCalcTotal.toFixed(2) + '）' : '';
       var failed = (data.items || []).filter(function (item) { return item.error; });
@@ -1599,6 +1608,7 @@
       company_name: companySelect.value,
       payee_name: String(payeeNameInput.value || '').trim(),
       invoice_type: invoiceSelect.value,
+      invoice_rate: lastInvoiceRate,
       all_e_ticket: eTicket,
       attachment_paths: files.map(function (f) { return f.name; }),
       other_ref_files: otherRefFiles.map(function (f) { return f.name; }),

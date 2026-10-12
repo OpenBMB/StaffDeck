@@ -82,17 +82,19 @@ const page = await browser.newPage();
 // 1) 通讯费用（单行表单，无明细）
 {
   const host = await injectPanel(page);
-  const { oa, summary } = await runScenario(page, host, 'communication', { files: TRAIN ? [TRAIN] : [] });
-  check('通讯费用 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
-  check('通讯费用 报销类型=公务限额费用', oa.expense === '公务限额费用', oa.expense);
-  check('通讯费用 报销场景=通讯费用', oa.scene0 === '通讯费用', oa.scene0);
-  check('通讯费用 相关票据=1', oa.relTickets === 1, oa.relTickets);
+  const { oa, summary } = await runScenario(page, host, 'communication', { files: HOTEL ? [HOTEL] : [] });
+  check('通讯报销 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
+  check('通讯报销 报销类型=公务限额费用', oa.expense === '公务限额费用', oa.expense);
+  check('通讯报销 报销场景=通讯费用', oa.scene0 === '通讯费用', oa.scene0);
+  check('通讯报销 费用承担部门=核定费用承担部门', oa.costDept === '核定费用承担部门', oa.costDept);
+  check('通讯报销 发票类型由附件识别（含6%）', !!oa.itype0 && oa.itype0.indexOf('6%') >= 0, oa.itype0);
+  check('通讯报销 相关票据=1', oa.relTickets === 1, oa.relTickets);
 }
 
 // 2) 交通报销（报销场景=飞机，默认）
 {
   const host = await injectPanel(page);
-  const { oa, summary } = await runScenario(page, host, 'traffic', { files: TRAIN ? [TRAIN] : [] });
+  const { oa, summary } = await runScenario(page, host, 'traffic', { files: HOTEL ? [HOTEL] : [] });
   check('交通报销 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
   check('交通报销 报销场景=飞机', oa.scene0 === '飞机', oa.scene0);
 }

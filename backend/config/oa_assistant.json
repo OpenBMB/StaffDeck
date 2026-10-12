@@ -93,7 +93,7 @@
       "label": "费用承担部门",
       "selector": "div[data-fieldmark=\"field7012\"]",
       "mode": "select",
-      "value": "核定",
+      "value": "核定费用承担部门",
       "clear_first": true,
       "_note": "点选提交后 hidden=1151、选项全名「核定费用承担部门」；OA 预填默认值（如 AI+），须先清掉再搜「核定」，等下拉出现匹配 li 直接点击、全程无回车。注意：明细行同款组件的 a.child-item 列表是干扰项，不能全页搜选项"
     },
@@ -195,7 +195,7 @@
   "scenarios": [
     {
       "id": "communication",
-      "name": "通讯费用",
+      "name": "通讯报销",
       "enabled": true,
       "url": "https://oa.fosunholiday.com/spa/workflow/static4form/index.html?_rdm=1791601026398#/main/workflow/req?iscreate=1&workflowid=57&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0&menuIds=1,12&menuPathIds=1,12&preloadkey=1791601026398&timestamp=1791601026398",
       "reason_prefill": "{last_month}月通讯费报销",
