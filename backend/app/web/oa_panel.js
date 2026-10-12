@@ -488,7 +488,7 @@
       var hasKey = text.indexOf(key) >= 0;
       if (!exact && text === key) exact = options[i];
       if (!prefix && text.indexOf(key) === 0) prefix = options[i];
-      if (pref && hasKey && text.indexOf(pref) >= 0) {
+      if (pref && hasKey && (text.indexOf(pref) >= 0 || text.indexOf(pref.replace(/%/g, '％')) >= 0)) {
         if (!bestAny) bestAny = options[i];
         if (!best && text.indexOf(key) === 0) best = options[i];
       }
@@ -583,7 +583,7 @@
       if (selectCommitted(container, value)) {
         try { if (search) fireKey(search, 'keydown', 'Escape'); } catch (e) {}
         try { document.body.click(); } catch (e) {}
-        return;
+        return (option.innerText || option.textContent || '').trim() || String(value);
       }
       attempts.push('not_committed');
     }
@@ -667,8 +667,8 @@
     }
 
     if (mode === 'select') {
-      await fillSelect(node, spec, String(value), null);
-      return { field: label, status: 'filled', detail: '选择 ' + value };
+      var pickedText = await fillSelect(node, spec, String(value), null);
+      return { field: label, status: 'filled', detail: '选择 ' + (pickedText || value) };
     }
 
     fillText(node, String(value), mode);
@@ -1472,10 +1472,11 @@
         try {
           var prefer = '';
           if (key === 'invoice_type' && row.invoice_rate) prefer = String(row.invoice_rate) + '%';
-          if ((spec.mode || 'input') === 'select') await fillSelect(node, spec, String(value), prefer);
+          var pickedText = '';
+          if ((spec.mode || 'input') === 'select') pickedText = (await fillSelect(node, spec, String(value), prefer)) || '';
           else fillText(node, String(value), spec.mode || 'input');
-          steps.push({ field: label, status: 'filled', detail: String(value) });
-          logLine('✓ ' + label + '：' + value, 'ok');
+          steps.push({ field: label, status: 'filled', detail: pickedText || String(value) });
+          logLine('✓ ' + label + '：' + (pickedText || value), 'ok');
         } catch (err) {
           steps.push({ field: label, status: 'error', detail: String((err && err.message) || err) });
           logLine('✗ ' + label + '：' + String((err && err.message) || err), 'err');
