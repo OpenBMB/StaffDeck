@@ -1133,6 +1133,15 @@
   }
 
   /** 按票面税率预选发票类型（同税率可能有电子/普通/增值多个，面板只做预选，用户可改）。 */
+  /** 面板里某个发票类型选项对应的税率（用于给引擎传期望税率）。 */
+  function invoiceTypeRate(value) {
+    var opts = PANEL_CFG.invoice_types || [];
+    for (var i = 0; i < opts.length; i++) {
+      if (String(opts[i].value) === String(value)) return String(opts[i].tax_rate || '');
+    }
+    return '';
+  }
+
   function matchInvoiceType(rate) {
     var opts = PANEL_CFG.invoice_types || [];
     if (rate !== undefined && rate !== null && rate !== '') {
@@ -1737,7 +1746,7 @@
       company_name: companySelect.value,
       payee_name: String(payeeNameInput.value || '').trim(),
       invoice_type: invoiceSelect.value,
-      invoice_rate: lastInvoiceRate,
+      invoice_rate: invoiceTypeRate(invoiceSelect.value),
       all_e_ticket: eTicket,
       attachment_paths: files.map(function (f) { return f.name; }),
       other_ref_files: otherRefFiles.map(function (f) { return f.name; }),
@@ -1745,7 +1754,7 @@
         return {
           scene: r.scene,
           invoice_type: r.invoice_type,
-          invoice_rate: r.invoice_type_manual ? '' : r.tax_rate,
+          invoice_rate: invoiceTypeRate(r.invoice_type),
           amount: r.amount,
           item_desc: r.item_desc
         };
