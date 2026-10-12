@@ -687,8 +687,11 @@
             }
             if (!foundPref) {
               for (var hz = 0; hz < opts.length; hz++) {
+                // antd Tooltip 一般包在列表项的内层元素上：内层 + 外层都悬一下
+                var innerEl = opts[hz].querySelector('span, div, a') || opts[hz];
+                hoverEl(innerEl);
                 hoverEl(opts[hz]);
-                await sleep(220);
+                await sleep(260);
                 if (visibleTooltipText(doc).replace(/\s+/g, '').indexOf(prefNorm) >= 0) { opts = [opts[hz]]; break; }
               }
             }
