@@ -221,10 +221,7 @@
       "name": "交通报销",
       "enabled": true,
       "reason_prefill": "{last_month}月交通报销",
-      "scene_options": [
-        { "label": "飞机", "value": "飞机" },
-        { "label": "火车 / 汽车 / 船", "value": "火车汽车船" }
-      ],
+      "scene": "交通费用",
       "fields": [
         "expense_type",
         "tax_exceeded",

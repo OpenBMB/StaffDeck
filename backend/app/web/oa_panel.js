@@ -1278,22 +1278,26 @@
       var res = await fetch(BASE + '/api/enterprise/oa-assistant/invoice-amounts', { method: 'POST', body: fd });
       var data = await res.json();
       if (!res.ok) throw new Error((data && data.detail) || ('HTTP ' + res.status));
-      lastCalcTotal = Number(data.total);
       var rowsParsed = data.rows || [];
       if (rowsParsed.length) {
-        // 由发票附件识别税率 → 自动选发票类型
+        // 由发票附件识别税率 → 自动选发票类型（与金额是否勾选无关）
         lastInvoiceRate = String(rowsParsed[0].tax_rate || '');
         var autoType = matchInvoiceType(lastInvoiceRate);
         if (autoType) invoiceSelect.value = autoType;
       }
-      var floored = applyCalculatedAmount();
-      var suffix = floored ? '（已向下取整到百位，原 ' + lastCalcTotal.toFixed(2) + '）' : '';
       var failed = (data.items || []).filter(function (item) { return item.error; });
-      if (failed.length) {
-        logLine('已按可识别发票填写金额 ' + amountInput.value + suffix + '；' + failed.length + ' 张未能解析：' +
-          failed.map(function (item) { return item.filename; }).join('、'), 'warn');
-      } else {
-        logLine('已按发票合计填写金额：' + amountInput.value + suffix, 'ok');
+      if (calcCheck.checked) {
+        lastCalcTotal = Number(data.total);
+        var floored = applyCalculatedAmount();
+        var suffix = floored ? '（已向下取整到百位，原 ' + lastCalcTotal.toFixed(2) + '）' : '';
+        if (failed.length) {
+          logLine('已按可识别发票填写金额 ' + amountInput.value + suffix + '；' + failed.length + ' 张未能解析：' +
+            failed.map(function (item) { return item.filename; }).join('、'), 'warn');
+        } else {
+          logLine('已按发票合计填写金额：' + amountInput.value + suffix, 'ok');
+        }
+      } else if (rowsParsed.length) {
+        logLine('已按发票识别并选择发票类型：' + (invoiceSelect.value || '—'), 'ok');
       }
     } catch (err) {
       logLine('自动计算失败：' + String((err && err.message) || err) + '（可手动填金额）', 'err');
@@ -1334,7 +1338,7 @@
     });
     renderFiles();
     if (isTripScenario()) parseForRows();
-    else if (calcCheck.checked && attachmentFiles.length) calcAmounts();
+    else if (attachmentFiles.length) calcAmounts();
   });
 
   syncAttachVisibility();

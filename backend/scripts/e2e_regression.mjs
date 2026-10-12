@@ -96,7 +96,8 @@ const page = await browser.newPage();
   const host = await injectPanel(page);
   const { oa, summary } = await runScenario(page, host, 'traffic', { files: HOTEL ? [HOTEL] : [] });
   check('交通报销 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
-  check('交通报销 报销场景=飞机', oa.scene0 === '飞机', oa.scene0);
+  check('交通报销 报销场景=交通费用', oa.scene0 === '交通费用', oa.scene0);
+  check('交通报销 发票类型由附件识别（含6%）', !!oa.itype0 && oa.itype0.indexOf('6%') >= 0, oa.itype0);
 }
 
 // 3) 出差报销（明细按 报销场景+税率 合并）
