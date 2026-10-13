@@ -162,6 +162,20 @@ if (OTHER) {
   check('任意类目 无「未识别」提示', !/未能解析|未识别/.test(log), '');
 }
 
+// 6) 出差报销：任意类目发票 → 不崩，明确提示「报销场景需手动选」，金额/发票类型照填。
+//    出差是「场景必填」的明细表，面板对空场景不猜、直接跳过并提示。
+if (OTHER) {
+  const host = await injectPanel(page);
+  const { oa, summary, log } = await runScenario(page, host, 'business_trip', {
+    files: [OTHER],
+    wait: 12000,
+  });
+  check('出差+任意类目 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
+  check('出差+任意类目 金额仍填上', oa.amt0 === '31922.46', oa.amt0);
+  check('出差+任意类目 行1 发票类型含 6%', !!oa.itype0 && oa.itype0.indexOf('6%') >= 0, oa.itype0);
+  check('出差+任意类目 提示报销场景需手动选', /需要在 OA 页面手动选择/.test(log), '');
+}
+
 await browser.close();
 
 let failed = 0;

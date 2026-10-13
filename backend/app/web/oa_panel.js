@@ -1294,11 +1294,23 @@
       }
       panelRows = parsed;
       renderRows();
+      // 逐张报出识别结果：明细行会按「报销场景 + 税率」合并（2 张票可能只出 1 行），
+      // 只报行数会让人误以为「后加的那张没被识别」——这里把每张票的金额/税率都列出来。
+      var okItems = (data.items || []).filter(function (it) { return !it.error; });
+      (data.items || []).forEach(function (it) {
+        if (it.error) return;
+        logLine('· ' + (it.amount || '—') + (it.tax_rate ? '（税率 ' + it.tax_rate + '%）' : '') + ' ← ' + it.filename, 'dim');
+      });
       var failed = (data.items || []).filter(function (it) { return it.error; });
-      logLine('解析完成：' + panelRows.length + ' 行明细' + (failed.length ? '；' + failed.length + ' 张未识别' : ''), failed.length ? 'warn' : 'ok');
+      failed.forEach(function (it) {
+        logLine('· 未能解析 ← ' + it.filename + '：' + (it.error || ''), 'warn');
+      });
+      logLine('解析完成：' + okItems.length + ' 张发票 → ' + panelRows.length + ' 行明细'
+        + (panelRows.length && panelRows.length < okItems.length ? '（同「报销场景 + 税率」已合并，合计 ' + (data.total || '') + '）' : '')
+        + (failed.length ? '；' + failed.length + ' 张未识别' : ''), failed.length ? 'warn' : 'ok');
       var noScene = panelRows.filter(function (r) { return !r.scene; }).length;
       if (noScene) {
-        logLine('有 ' + noScene + ' 行发票未能归到报销场景（票面类目不在场景关键词内）：报销场景需在 OA 页面手动选择。', 'warn');
+        logLine('有 ' + noScene + ' 行发票未能归到报销场景（票面类目不在场景关键词内）：报销场景需要在 OA 页面手动选择。', 'warn');
       }
     } catch (err) {
       logLine('发票解析失败：' + String((err && err.message) || err) + '（可在下方手动填明细）', 'err');
@@ -1437,11 +1449,17 @@
       return !isPdfFile(file);
     });
     if (invalid.length) logLine('已跳过非 PDF 文件：' + invalid.map(function (f) { return f.name; }).join('、'), 'warn');
+    var duplicates = [];
     picked.forEach(function (file) {
       if (invalid.indexOf(file) >= 0) return;
       var dup = attachmentFiles.some(function (x) { return x.name === file.name && x.size === file.size; });
-      if (!dup) attachmentFiles.push(file);
+      if (dup) { duplicates.push(file.name); return; }
+      attachmentFiles.push(file);
     });
+    if (duplicates.length) {
+      // 同名同大小视为同一张票；说清楚，别让人以为「上传了却没反应」
+      logLine('已跳过重复附件（同名同大小已在列表）：' + duplicates.join('、'), 'warn');
+    }
     renderFiles();
     if (isTripScenario()) parseForRows();
     else if (attachmentFiles.length) calcAmounts();
@@ -1773,6 +1791,15 @@
       runBtn.disabled = false;
     runBtn.textContent = '代填';
       return;
+    }
+    // 未归类提醒要在「执行日志」里再说一次：解析完成后用户往往会再点「代填」，
+    // 而 run() 会清空日志，只在解析时提示一次等于提示丢失。
+    if (isTrip) {
+      var noSceneRows = panelRows.filter(function (r) { return !r.scene; });
+      if (noSceneRows.length) {
+        logLine('注意：有 ' + noSceneRows.length + ' 行明细没有报销场景（票面类目未匹配到场景关键词），'
+          + '这几行的「报销场景」需要在 OA 页面手动选择。', 'warn');
+      }
     }
 
     var amountValue = String(amountInput.value || '').trim();
