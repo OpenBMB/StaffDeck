@@ -20,6 +20,8 @@ class GeneralSkillImportRequest(BaseModel):
     name: Optional[str] = None
     slug: Optional[str] = None
     description: Optional[str] = None
+    #: 标签分类（办公类 / 财务类 / 人力资源类 / 编程类）；空串表示清空。
+    category: Optional[str] = None
     homepage: Optional[str] = None
     markdown: Optional[str] = None
     files: list[GeneralSkillFile] = Field(default_factory=list)
@@ -82,6 +84,7 @@ class GeneralSkillRead(BaseModel):
     slug: str
     name: str
     description: Optional[str] = None
+    category: Optional[str] = None
     homepage: Optional[str] = None
     skill_markdown: str
     skill_files: list[GeneralSkillFile] = Field(default_factory=list)

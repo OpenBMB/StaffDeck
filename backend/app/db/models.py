@@ -454,6 +454,8 @@ class GeneralSkill(SQLModel, table=True):
     slug: str = Field(index=True)
     name: str
     description: Optional[str] = None
+    #: 标签分类（办公类 / 财务类 / 人力资源类 / 编程类），技能广场按此下拉过滤。
+    category: Optional[str] = None
     homepage: Optional[str] = None
     skill_markdown: str
     skill_files_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))

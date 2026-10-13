@@ -96,6 +96,10 @@ import type {
 } from '../types';
 
 const GENERAL_SKILL_PAGE_SIZE = 10;
+//: 技能广场的标签分类：新建/编辑表单与下拉过滤共用这一份口径。
+const GENERAL_SKILL_CATEGORIES = ['办公类', '财务类', '人力资源类', '编程类'] as const;
+//: Radix Select 不接受空串 value，用一个哨兵值表示「未分类」。
+const GENERAL_SKILL_CATEGORY_NONE = '__none__';
 const GENERAL_SKILL_RUN_MODEL_STORAGE_KEY = 'general-skill-run-model';
 
 const STATUS_BADGE: Record<GeneralSkillRead['status'], { tone: BadgeTone; text: string }> = {
@@ -340,6 +344,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
     return new URLSearchParams(window.location.search).get('q') || '';
   });
   const [statusFilter, setStatusFilter] = useState<'all' | GeneralSkillRead['status']>('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
   const [agentId, setAgentId] = useState(readEmployeeScope);
   const [isOverallAgent, setIsOverallAgent] = useState(true);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
@@ -455,18 +460,20 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
     const keyword = searchText.trim().toLowerCase();
     return rows.filter((row) => {
       const matchesStatus = statusFilter === 'all' || row.status === statusFilter;
+      const matchesCategory = categoryFilter === 'all' || row.category === categoryFilter;
       const haystack = [
         row.name,
         row.slug,
         row.description,
+        row.category,
         row.homepage,
         resourceCreatorName(row),
       ].filter(Boolean).join(' ').toLowerCase();
-      return matchesStatus && (!keyword || haystack.includes(keyword));
+      return matchesStatus && matchesCategory && (!keyword || haystack.includes(keyword));
     });
-  }, [rows, searchText, statusFilter]);
+  }, [rows, searchText, statusFilter, categoryFilter]);
 
-  const pagination = useClientPagination(filteredRows, GENERAL_SKILL_PAGE_SIZE, `${searchText}|${statusFilter}`);
+  const pagination = useClientPagination(filteredRows, GENERAL_SKILL_PAGE_SIZE, `${searchText}|${statusFilter}|${categoryFilter}`);
 
   const stats = useMemo(() => ({
     total: rows.length,
@@ -817,6 +824,16 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
       render: (row) => <CapabilityScopeBadge value={row.capability_scope} />,
     },
     {
+      key: 'category',
+      title: '标签分类',
+      width: 110,
+      render: (row) => (
+        row.category
+          ? <StatusBadge tone="blue">{row.category}</StatusBadge>
+          : <span className="text-[#c0c6d4]">未分类</span>
+      ),
+    },
+    {
       key: 'creator',
       title: '创建者',
       width: 120,
@@ -869,6 +886,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
           <div className="flex items-center gap-[6px]">
             <StatusBadge tone={preset.tone}>{preset.text}</StatusBadge>
             <CapabilityScopeBadge value={row.capability_scope} />
+            {row.category && <StatusBadge tone="blue">{row.category}</StatusBadge>}
           </div>
           <span>{row.skill_files?.length || 1} 个文件 · {formatDateTime(row.updated_at)}</span>
         </div>
@@ -979,6 +997,17 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
                 <SelectItem value="published">已启用</SelectItem>
                 <SelectItem value="draft">草稿</SelectItem>
                 <SelectItem value="archived">已停用</SelectItem>
+              </SelectContent>
+            </UISelect>
+            <UISelect value={categoryFilter} onValueChange={setCategoryFilter}>
+              <SelectTrigger className={cn(SELECT_TRIGGER_CLASS, 'w-[130px]')} aria-label="标签分类筛选">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部分类</SelectItem>
+                {GENERAL_SKILL_CATEGORIES.map((item) => (
+                  <SelectItem key={item} value={item}>{item}</SelectItem>
+                ))}
               </SelectContent>
             </UISelect>
           </div>
@@ -1639,6 +1668,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
   const [skillSlug, setSkillSlug] = useState('');
   const [skillDescription, setSkillDescription] = useState('');
   const [skillHomepage, setSkillHomepage] = useState('');
+  const [skillCategory, setSkillCategory] = useState('');
   const [capabilityScope, setCapabilityScope] = useState<CapabilityScope>('general');
   const [skillFiles, setSkillFiles] = useState<GeneralSkillFile[]>([
     { path: 'SKILL.md', content: EMPTY_SKILL_MARKDOWN, size: EMPTY_SKILL_MARKDOWN.length, mime_type: 'text/markdown' },
@@ -1927,6 +1957,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       || skillName !== original.name
       || stableSlug !== original.slug
       || skillDescription !== (original.description || '')
+      || skillCategory !== (original.category || '')
       || skillHomepage !== (original.homepage || '')
       || capabilityScope !== normalizeCapabilityScope(original.capability_scope)
       || normalizedSkillFiles(skillFiles) !== normalizedSkillFiles(
@@ -1972,6 +2003,8 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         name: skillName.trim() || undefined,
         slug: editingSlug || skillSlug.trim() || undefined,
         description: skillDescription.trim() || undefined,
+        // 总是显式上送：空串 = 清空分类，与后端「None 表示不涉及分类」区分开
+        category: skillCategory.trim(),
         homepage: skillHomepage.trim() || undefined,
         capability_scope: capabilityScope,
         markdown,
@@ -1990,6 +2023,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       setSkillSlug(row.slug);
       setSkillDescription(row.description || '');
       setSkillHomepage(row.homepage || '');
+      setSkillCategory(row.category || '');
       setCapabilityScope(normalizeCapabilityScope(row.capability_scope));
       setSkillFiles(row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md', content: row.skill_markdown }]);
       setSkillDirectories(row.skill_directories || []);
@@ -2021,6 +2055,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setSkillSlug('');
     setSkillDescription('');
     setSkillHomepage('');
+    setSkillCategory('');
     setCapabilityScope('general');
     setSkillFiles([{ path: 'SKILL.md', content: EMPTY_SKILL_MARKDOWN, size: EMPTY_SKILL_MARKDOWN.length, mime_type: 'text/markdown' }]);
     setSkillDirectories([]);
@@ -2041,6 +2076,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
     setSkillSlug(row.slug);
     setSkillDescription(row.description || '');
     setSkillHomepage(row.homepage || '');
+    setSkillCategory(row.category || '');
     setCapabilityScope(normalizeCapabilityScope(row.capability_scope));
     setSkillFiles(row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md', content: row.skill_markdown }]);
     setSkillDirectories(row.skill_directories || []);
@@ -2061,6 +2097,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       setSkillSlug(row.slug);
       setSkillDescription(row.description || '');
       setSkillHomepage(row.homepage || '');
+      setSkillCategory(row.category || '');
       setCapabilityScope(normalizeCapabilityScope(row.capability_scope));
       setMarkdown(row.skill_markdown);
       setSkillFiles(row.skill_files?.length ? row.skill_files : [{ path: 'SKILL.md', content: row.skill_markdown }]);
@@ -2953,6 +2990,23 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
                   disabled={!canManageCurrentScope}
                   placeholder="可选，参考文档或项目主页"
                 />
+              </Field>
+              <Field label="标签分类">
+                <UISelect
+                  value={skillCategory || GENERAL_SKILL_CATEGORY_NONE}
+                  onValueChange={(value) => setSkillCategory(value === GENERAL_SKILL_CATEGORY_NONE ? '' : value)}
+                  disabled={!canManageCurrentScope}
+                >
+                  <SelectTrigger className={cn(SELECT_TRIGGER_CLASS, 'w-full')} aria-label="标签分类">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={GENERAL_SKILL_CATEGORY_NONE}>未分类</SelectItem>
+                    {GENERAL_SKILL_CATEGORIES.map((item) => (
+                      <SelectItem key={item} value={item}>{item}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </UISelect>
               </Field>
               <div className="md:col-span-2">
                 <CapabilityScopeControl

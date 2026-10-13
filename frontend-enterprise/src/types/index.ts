@@ -301,6 +301,7 @@ export type GeneralSkillRead = {
   slug: string;
   name: string;
   description?: string;
+  category?: string | null;
   capability_scope?: CapabilityScope;
   homepage?: string;
   skill_markdown: string;

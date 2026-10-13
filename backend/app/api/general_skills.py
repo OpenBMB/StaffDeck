@@ -125,6 +125,7 @@ def general_skill_read(
         slug=row.slug,
         name=row.name,
         description=row.description,
+        category=row.category,
         homepage=row.homepage,
         skill_markdown=row.skill_markdown,
         skill_files=(
@@ -152,6 +153,7 @@ _GENERAL_SKILL_SLIM_COLUMNS = (
     "slug",
     "name",
     "description",
+    "category",
     "homepage",
     "skill_markdown",
     "metadata_json",
@@ -297,6 +299,10 @@ def import_general_skill(
         row.slug = slug
         row.name = name
         row.description = description
+        # category 用「空串 = 清空」语义：调用方总是显式传当前表单值，
+        # 不传（None）表示这次保存不涉及分类（如从开源平台整包导入）。
+        if request.category is not None:
+            row.category = _optional_text(request.category)
         row.homepage = homepage
         row.skill_markdown = markdown
         row.skill_files_json = [file.model_dump(mode="json") for file in files]
@@ -313,6 +319,7 @@ def import_general_skill(
             slug=slug,
             name=name,
             description=description,
+            category=_optional_text(request.category),
             homepage=homepage,
             skill_markdown=markdown,
             skill_files_json=[file.model_dump(mode="json") for file in files],

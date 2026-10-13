@@ -66,6 +66,7 @@ def init_db() -> None:
     _migrate_ai_review_schema()
     _migrate_mcp_server_timeout()
     _migrate_general_skill_download_count()
+    _migrate_general_skill_category()
     _migrate_free_model_schema()
     # _migrate_sqlite_skill_schema()
     # _migrate_pg_api_key_schema()
@@ -3361,6 +3362,21 @@ def _migrate_mcp_server_timeout() -> None:
         return
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN timeout_seconds FLOAT"))
+
+
+def _migrate_general_skill_category() -> None:
+    """general_skills 补 category：技能广场的标签分类（办公类 / 财务类 / 人力资源类 / 编程类）。
+
+    新表由 create_all 直接建；这里给**已存在**的表补新列，历史技能为空（未分类）。
+    """
+    inspector = inspect(engine)
+    if "general_skills" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("general_skills")}
+    if "category" in columns:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE general_skills ADD COLUMN category VARCHAR"))
 
 
 def _migrate_general_skill_download_count() -> None:

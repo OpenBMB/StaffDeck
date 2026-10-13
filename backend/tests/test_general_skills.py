@@ -319,6 +319,62 @@ def test_import_general_skill_uses_user_supplied_metadata() -> None:
             assert exc.detail == "General skill slug cannot be modified"
 
 
+def test_import_general_skill_persists_and_clears_category() -> None:
+    """标签分类：新建时落库、改名（不传）时保留、显式空串时清空。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.commit()
+
+        created = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="分类技能",
+                slug="categorized",
+                category="财务类",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            _admin_user(),
+        )
+        assert created.category == "财务类"
+        assert list_general_skills("tenant_demo", db)[0].category == "财务类"
+
+        # 不传 category（如从开源平台整包导入）→ 保留原分类
+        kept = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="分类技能改",
+                slug="categorized",
+                original_slug="categorized",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            _admin_user(),
+        )
+        assert kept.category == "财务类"
+
+        # 显式空串 → 清空（表单里选「未分类」后保存）
+        cleared = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="分类技能改",
+                slug="categorized",
+                original_slug="categorized",
+                category="",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+            _admin_user(),
+        )
+        assert cleared.category is None
+        assert list_general_skills("tenant_demo", db)[0].category is None
+
+
 def test_import_general_skill_without_original_slug_does_not_overwrite_existing() -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)
