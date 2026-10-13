@@ -773,8 +773,9 @@ export default function OpenPlatformPage({
         title={item.title}
         description={item.agentEntry?.description || item.description}
         badge={resourceDrawerBadge(detailItem.kind, item)}
-        categoryMeta={item.meta}
+        categoryMeta={detailItem.kind === 'general-skills' ? (item.category || '未分类') : item.meta}
         categoryMetaLabel={detailItem.kind === 'agent-apps' ? '作者 / 更新时间' : undefined}
+        platformTitleLabel={detailItem.kind === 'general-skills' ? '所属广场' : undefined}
         detailText={item.agentEntry
           ? `能力：${item.agentEntry.capability}｜由平台统一维护，所有成员只能使用、不能编辑或删除。`
           : detailItem.kind === 'general-skills'

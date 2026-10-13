@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -145,5 +145,29 @@ describe('开放广场 技能广场 tab 标签分类', () => {
     });
     expect(screen.queryAllByText(/随手工具/).length).toBe(0);
     expect(screen.getAllByText(/报销助手/).length).toBeGreaterThan(0);
+  });
+
+  it('详情抽屉的「分类」显示 category（不是 slug）', async () => {
+    const user = userEvent.setup();
+    renderPlatform();
+
+    await user.click((await screen.findAllByText(/报销助手/))[0]);
+    const drawer = await screen.findByRole('dialog');
+
+    expect(within(drawer).getByText('分类')).toBeTruthy();
+    expect(within(drawer).getByText('财务类')).toBeTruthy();
+    // 左格是所属广场，不再与「分类」重名
+    expect(within(drawer).getByText('所属广场')).toBeTruthy();
+    expect(within(drawer).queryByText('expense-bot')).toBeNull();
+  });
+
+  it('未分类的技能在详情里显示「未分类」', async () => {
+    const user = userEvent.setup();
+    renderPlatform();
+
+    await user.click((await screen.findAllByText(/随手工具/))[0]);
+    const drawer = await screen.findByRole('dialog');
+
+    expect(within(drawer).getByText('未分类')).toBeTruthy();
   });
 });
