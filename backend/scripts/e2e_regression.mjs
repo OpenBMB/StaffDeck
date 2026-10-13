@@ -50,6 +50,11 @@ async function runScenario(page, host, id, opts = {}) {
     await host.locator('input[type=file]').first().setInputFiles(opts.files);
     await page.waitForTimeout(2200);
   }
+  if (opts.mergeOff) {
+    // 「税率相同的合并到同一明细中」开关：点标签即切换，切换后面板会立刻重算明细
+    await host.getByText('税率相同的合并到同一明细中').first().click();
+    await page.waitForTimeout(1800);
+  }
   await host.locator('button:has-text("代填")').first().click();
   await page.waitForTimeout(opts.wait || 9000);
   const frame = page.frames().find((f) => f.url().includes('/oa-form'));
@@ -174,6 +179,32 @@ if (OTHER) {
   check('出差+任意类目 金额仍填上', oa.amt0 === '31922.46', oa.amt0);
   check('出差+任意类目 行1 发票类型含 6%', !!oa.itype0 && oa.itype0.indexOf('6%') >= 0, oa.itype0);
   check('出差+任意类目 提示报销场景需手动选', /需要在 OA 页面手动选择/.test(log), '');
+}
+
+// 7) 合并开关（默认勾选）：两张同为 6% 的票 → 合并成 1 行、金额累计
+if (OTHER) {
+  const host = await injectPanel(page);
+  const { oa } = await runScenario(page, host, 'company_payment', {
+    files: [HOTEL, OTHER].filter(Boolean),
+    wait: 12000,
+    fill: { '收款单位名称': '上海测试科技' },
+  });
+  check('合并开关 勾选 → 行1=32672.46（6% 合并）', oa.cpAmt0 === '32672.46', oa.cpAmt0);
+  check('合并开关 勾选 → 只有 1 行明细', !oa.cpAmt1, 'row2=' + oa.cpAmt1);
+}
+
+// 8) 合并开关取消 → 一张发票一行（OA 上两行各自金额）
+if (OTHER) {
+  const host = await injectPanel(page);
+  const { oa } = await runScenario(page, host, 'company_payment', {
+    files: [HOTEL, OTHER].filter(Boolean),
+    wait: 12000,
+    mergeOff: true,
+    fill: { '收款单位名称': '上海测试科技' },
+  });
+  check('合并开关 取消 → 行1=750.00', oa.cpAmt0 === '750.00', oa.cpAmt0);
+  check('合并开关 取消 → 行2=31922.46', oa.cpAmt1 === '31922.46', oa.cpAmt1);
+  check('合并开关 取消 → 行2 报销场景=IT服务外包', oa.cpScene1 === 'IT服务外包', oa.cpScene1);
 }
 
 await browser.close();

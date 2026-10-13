@@ -1070,7 +1070,21 @@
   var rowsBox = el('div', 'display:flex;flex-direction:column;gap:7px;');
   var rowsHint = el('div', 'font-size:11px;color:#a3aaba;', '选择发票后自动生成：一张发票一行');
   var rowsWrap = el('div', 'display:none;flex-direction:column;gap:7px;');
+
+  // 明细合并开关：勾选 = 同一「报销场景 + 税率」合并为一行、金额累计；
+  // 不勾选 = 一张发票一行，各自金额。默认值随场景配置（line_items.group_by）走。
+  var mergeWrap = el('label', 'display:flex;align-items:center;gap:6px;cursor:pointer;color:#464c5e;font-size:11.5px;');
+  mergeWrap.title = '不勾选时：一张发票一行明细（各自金额、发票类型可单独改）';
+  var mergeCheck = document.createElement('input');
+  mergeCheck.type = 'checkbox';
+  mergeCheck.checked = true;
+  mergeWrap.appendChild(mergeCheck);
+  mergeWrap.appendChild(el('span', '', '税率相同的合并到同一明细中'));
+  // 只在「切换场景」时按配置重置开关，避免同场景内的其它交互把用户的选择抹掉
+  var mergeDefaultScenarioId = '';
+
   rowsWrap.appendChild(rowsHint);
+  rowsWrap.appendChild(mergeWrap);
   rowsWrap.appendChild(rowsBox);
   attachBox.appendChild(rowsWrap);
   var panelRows = [];
@@ -1279,9 +1293,9 @@
           if (!r.scene) { r.scene = scenario.scene; r.item_desc = scenario.scene + '费'; }
         });
       }
-      // 统一规则：同一「报销场景 + 税率」合并为一行、金额累计；不同则新增一行。
-      // （只有 group_by='invoice' 才是一张发票一行）
-      if (li.group_by !== 'invoice') {
+      // 合并规则由面板上的「税率相同的合并到同一明细中」开关决定（默认随场景配置）：
+      // 勾选 = 同一「报销场景 + 税率」合并为一行、金额累计；不勾选 = 一张发票一行。
+      if (mergeCheck.checked) {
         var byKey = {};
         parsed.forEach(function (r) {
           var key = (r.scene || '') + '|' + String(r.tax_rate || '');
@@ -1290,8 +1304,11 @@
           }
           byKey[key].amount += r.amount;
         });
-        parsed = Object.keys(byKey).map(function (k) { var r = byKey[k]; r.amount = r.amount.toFixed(2); return r; });
+        parsed = Object.keys(byKey).map(function (k) { return byKey[k]; });
       }
+      // 金额统一成两位小数字符串：不合并时是票面金额、合并时是累计值，都要落成
+      // "750.00" 这种写法，否则 OA 明细上会写成 "750"（Number 直接转字符串）。
+      parsed.forEach(function (r) { r.amount = (Number(r.amount) || 0).toFixed(2); });
       panelRows = parsed;
       renderRows();
       // 逐张报出识别结果：明细行会按「报销场景 + 税率」合并（2 张票可能只出 1 行），
@@ -1423,6 +1440,11 @@
       calcCheck.disabled = false;
     }
   }
+
+  mergeCheck.addEventListener('change', function () {
+    refreshAttachLabel();
+    if (isTripScenario()) parseForRows();
+  });
 
   pickBtn.addEventListener('click', function () { fileInput.click(); });
   clearFilesBtn.addEventListener('click', function () {
@@ -1569,6 +1591,18 @@
     reasonInput.value = template.replace(/\{last_month\}/g, String(lastMonth()));
   }
 
+  /** 附件区标题：跟着「合并」开关与当前场景走，让用户一眼看出会生成几行。 */
+  function refreshAttachLabel() {
+    var scenario = currentScenario() || {};
+    if (!scenario.line_items) {
+      attachRow.firstChild.textContent = '电子发票附件（挂到 OA「相关票据」区）';
+      return;
+    }
+    attachRow.firstChild.textContent = mergeCheck.checked
+      ? '相关票据（税率相同合并为一行）'
+      : '发票附件与明细（一张发票一行，可改）';
+  }
+
   /** 按当前场景切换面板上的条件项：提示、报销场景二选一、出差天数。 */
   function syncScenarioFields() {
     var scenario = currentScenario();
@@ -1616,9 +1650,11 @@
     invoiceRow.style.display = isTrip ? 'none' : 'flex';
     eticketRow.style.display = isTrip ? 'none' : 'flex';
     rowsWrap.style.display = isTrip ? 'flex' : 'none';
-    attachRow.firstChild.textContent = isTrip
-      ? (scenario.line_items.group_by === 'tax_rate' ? '相关票据（税率相同合并为一行）' : '发票附件与明细（一张发票一行，可改）')
-      : '电子发票附件（挂到 OA「相关票据」区）';
+    if (scenario.id !== mergeDefaultScenarioId) {
+      mergeDefaultScenarioId = scenario.id;
+      mergeCheck.checked = (scenario.line_items || {}).group_by !== 'invoice';
+    }
+    refreshAttachLabel();
     calcWrap.style.display = isTrip ? 'none' : 'flex';
     floorWrap.style.display = isTrip ? 'none' : 'flex';
     otherRefsRow.style.display = (scenario.fields || []).indexOf('other_refs') >= 0 ? 'flex' : 'none';
