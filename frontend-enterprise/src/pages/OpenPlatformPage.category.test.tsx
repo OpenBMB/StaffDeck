@@ -147,6 +147,16 @@ describe('开放广场 技能广场 tab 标签分类', () => {
     expect(screen.getAllByText(/报销助手/).length).toBeGreaterThan(0);
   });
 
+  it('卡片上直接显示标签分类（未分类也有占位）', async () => {
+    renderPlatform();
+
+    const tagged = (await screen.findAllByText(/报销助手/))[0].closest('button');
+    expect(tagged?.textContent).toContain('财务类');
+
+    const untagged = (await screen.findAllByText(/随手工具/))[0].closest('button');
+    expect(untagged?.textContent).toContain('未分类');
+  });
+
   it('详情抽屉的「分类」显示 category（不是 slug）', async () => {
     const user = userEvent.setup();
     renderPlatform();

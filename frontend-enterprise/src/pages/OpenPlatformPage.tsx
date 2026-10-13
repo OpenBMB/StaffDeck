@@ -465,9 +465,14 @@ export default function OpenPlatformPage({
         meta: item.slug,
         downloadCount: item.download_count ?? 0,
         category: item.category,
-        // 「N 次下载」放第 2 位：列表卡片只渲染前两个 tag（resourceDrawerBadge 读 tags[0]，
-        // 顺序不能动 tags[0]），这样技能广场列表卡上直接能看到下载次数。
-        tags: [item.homepage ? '外部能力' : '内置能力', `${item.download_count ?? 0} 次下载`, '已启用'],
+        // 顺序：能力（tags[0] = 抽屉角标，不能动）→ 下载次数 → 标签分类。
+        // 技能卡片渲染 3 个 tag（其他模块仍只渲染 2 个，见 PlatformResourceCard 的调用处）；
+        // 「已启用」不再占位——广场列表本身只列 published，属于冗余信息。
+        tags: [
+          item.homepage ? '外部能力' : '内置能力',
+          `${item.download_count ?? 0} 次下载`,
+          item.category || '未分类',
+        ],
       })),
     skills: skills
       .filter((item) => item.status === 'published')
@@ -1005,6 +1010,9 @@ export default function OpenPlatformPage({
               replayKey={activeKind}
             >
               {filteredItems.map((item) => (
+                // 技能广场比其它模块多一个「标签分类」tag：窄屏下标签会换行，而卡片是
+                // h-[150px] + overflow-hidden，会把图标和标签裁掉。这里改成「最小 150px、
+                // 内容多则长高」——宽屏（标签一行放下）时高度与原来完全一致。
                 <PlatformResourceCard
                   key={item.id}
                   icon={PLATFORM_RESOURCE_ICON[activeKind]
@@ -1014,7 +1022,8 @@ export default function OpenPlatformPage({
                   title={item.title}
                   meta={item.meta}
                   description={item.description}
-                  tags={item.tags.slice(0, 2)}
+                  tags={item.tags.slice(0, activeKind === 'general-skills' ? 3 : 2)}
+                  className={activeKind === 'general-skills' ? 'h-auto min-h-[150px]' : undefined}
                   onClick={() => setDetailItem({ kind: activeKind, item })}
                 />
               ))}

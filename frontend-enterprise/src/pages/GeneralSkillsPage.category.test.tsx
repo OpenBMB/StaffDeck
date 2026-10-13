@@ -119,9 +119,11 @@ describe('技能广场 标签分类', () => {  it('列表展示分类徽标，�
     renderPage();
     await screen.findAllByText('公文助手');
 
-    expect(screen.getAllByText('办公类').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('财务类').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('未分类').length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(screen.getAllByText('办公类').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('财务类').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('未分类').length).toBeGreaterThan(0);
+    });
   });
 
   it('按分类下拉过滤后只保留该分类的技能', async () => {
