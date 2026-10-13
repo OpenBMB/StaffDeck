@@ -50,6 +50,10 @@ import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
+import {
+  GENERAL_SKILL_CATEGORY_NONE,
+  GENERAL_SKILL_CATEGORIES,
+} from '@/lib/general-skill-categories';
 import { missingSkillReferencePaths } from '@/lib/general-skill-import-error';
 import {
   MENU_CONTENT_CLASS,
@@ -96,10 +100,6 @@ import type {
 } from '../types';
 
 const GENERAL_SKILL_PAGE_SIZE = 10;
-//: 技能广场的标签分类：新建/编辑表单与下拉过滤共用这一份口径。
-const GENERAL_SKILL_CATEGORIES = ['办公类', '财务类', '人力资源类', '编程类'] as const;
-//: Radix Select 不接受空串 value，用一个哨兵值表示「未分类」。
-const GENERAL_SKILL_CATEGORY_NONE = '__none__';
 const GENERAL_SKILL_RUN_MODEL_STORAGE_KEY = 'general-skill-run-model';
 
 const STATUS_BADGE: Record<GeneralSkillRead['status'], { tone: BadgeTone; text: string }> = {

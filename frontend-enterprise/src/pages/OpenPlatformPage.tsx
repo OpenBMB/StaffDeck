@@ -7,6 +7,13 @@ import {
   UsergroupAddOutlined,
 } from '../icons';
 import { notify } from '@/components/ui';
+import {
+  Select as UISelect,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { RevealGroup } from '@/components/RevealGroup';
 import type { ComponentType, ReactNode, SVGProps } from 'react';
@@ -52,6 +59,11 @@ import {
   type PlatformStat,
 } from '@/components/openPlatform';
 import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
+import {
+  GENERAL_SKILL_CATEGORY_ALL,
+  GENERAL_SKILL_CATEGORIES,
+} from '@/lib/general-skill-categories';
+import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
 import { agentCatalogMeta, listAgentCatalog, type AgentCatalogEntry } from '@/lib/agentCatalog';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
@@ -83,6 +95,8 @@ type PlatformItem = {
   tags: string[];
   /** 技能包累计下载次数（仅技能广场条目带）。 */
   downloadCount?: number;
+  /** 标签分类（仅技能广场条目带；null = 未分类）。 */
+  category?: string | null;
   agent?: AgentProfileRead;
   /** Agent 广场条目（来自本地清单，不落库）。 */
   agentEntry?: AgentCatalogEntry;
@@ -242,6 +256,8 @@ export default function OpenPlatformPage({
   // 支持 ?q= 深链（技能分享页「去技能广场查看」带上技能名）：进页面即预填搜索词，
   // 广场自动过滤出目标技能；用户可随时清空改查。
   const [searchText, setSearchText] = useState(() => new URLSearchParams(window.location.search).get('q') || '');
+  // 技能广场专用：标签分类下拉过滤（其他 tab 不显示，但状态保留、切回时可用）。
+  const [skillCategoryFilter, setSkillCategoryFilter] = useState(GENERAL_SKILL_CATEGORY_ALL);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [generalSkills, setGeneralSkills] = useState<GeneralSkillRead[]>([]);
@@ -285,6 +301,7 @@ export default function OpenPlatformPage({
       return;
     }
     setSearchText('');
+    setSkillCategoryFilter(GENERAL_SKILL_CATEGORY_ALL);
   }, [activeKind]);
 
   useEffect(() => {
@@ -447,6 +464,7 @@ export default function OpenPlatformPage({
         description: item.description || '可复制到当前数字员工的技能。',
         meta: item.slug,
         downloadCount: item.download_count ?? 0,
+        category: item.category,
         // 「N 次下载」放第 2 位：列表卡片只渲染前两个 tag（resourceDrawerBadge 读 tags[0]，
         // 顺序不能动 tags[0]），这样技能广场列表卡上直接能看到下载次数。
         tags: [item.homepage ? '外部能力' : '内置能力', `${item.download_count ?? 0} 次下载`, '已启用'],
@@ -475,15 +493,19 @@ export default function OpenPlatformPage({
 
   const filteredItems = useMemo(() => {
     const items = platformItems[activeKind];
+    const scoped = activeKind === 'general-skills' && skillCategoryFilter !== GENERAL_SKILL_CATEGORY_ALL
+      ? items.filter((item) => item.category === skillCategoryFilter)
+      : items;
     const keyword = searchText.trim().toLowerCase();
-    if (!keyword) return items;
-    return items.filter((item) => [
+    if (!keyword) return scoped;
+    return scoped.filter((item) => [
       item.title,
       item.description,
       item.meta,
+      item.category,
       item.tags.join(' '),
-    ].some((value) => value.toLowerCase().includes(keyword)));
-  }, [activeKind, platformItems, searchText]);
+    ].some((value) => (value || '').toLowerCase().includes(keyword)));
+  }, [activeKind, platformItems, searchText, skillCategoryFilter]);
 
   const tabItems = useMemo(
     () =>
@@ -903,19 +925,37 @@ export default function OpenPlatformPage({
         </div>
 
         <div className="flex flex-col gap-[16px]">
-          <label className="flex h-[34px] w-full max-w-[360px] items-center gap-[8px] overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] transition-colors focus-within:border-[#18181a]">
-            <IconSearch className="size-[14px] shrink-0 text-[#858b9c]" />
-            <input
-              autoComplete="off"
-              data-1p-ignore="true"
-              data-lpignore="true"
-              data-bwignore="true"
-              value={searchText}
-              placeholder={`搜索${platformCountLabel(activeKind)}`}
-              onChange={(event) => setSearchText(event.target.value)}
-              className="min-w-0 flex-1 border-0 bg-transparent text-[12px] text-[#18181a] outline-none placeholder:text-[#858b9c]"
-            />
-          </label>
+          <div className="flex flex-wrap items-center gap-[12px]">
+            <label className="flex h-[34px] w-full max-w-[360px] items-center gap-[8px] overflow-hidden rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] transition-colors focus-within:border-[#18181a]">
+              <IconSearch className="size-[14px] shrink-0 text-[#858b9c]" />
+              <input
+                autoComplete="off"
+                data-1p-ignore="true"
+                data-lpignore="true"
+                data-bwignore="true"
+                value={searchText}
+                placeholder={`搜索${platformCountLabel(activeKind)}`}
+                onChange={(event) => setSearchText(event.target.value)}
+                className="min-w-0 flex-1 border-0 bg-transparent text-[12px] text-[#18181a] outline-none placeholder:text-[#858b9c]"
+              />
+            </label>
+
+            {activeKind === 'general-skills' && (
+              <UISelect value={skillCategoryFilter} onValueChange={setSkillCategoryFilter}>
+                <SelectTrigger className={cn(SELECT_TRIGGER_CLASS, 'w-[130px]')} aria-label="标签分类筛选">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={GENERAL_SKILL_CATEGORY_ALL}>全部分类</SelectItem>
+                  {GENERAL_SKILL_CATEGORIES.map((item) => (
+                    <SelectItem key={item} value={item}>
+                      {item}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </UISelect>
+            )}
+          </div>
 
           {loading ? (
             <DetailSkeleton kind={activeKind} />
