@@ -11,6 +11,7 @@
  *   MOCK_BASE      mock 地址，默认 http://127.0.0.1:8899
  *   INVOICE_HOTEL  6% 住宿发票 PDF 路径（用于金额/税率断言）
  *   INVOICE_TRAIN  9% 火车票 PDF 路径
+ *   INVOICE_OTHER  票面类目任意（如软件服务费 6%）的 PDF 路径——回归「归不到场景也要出明细行」
  *   PW_DIR         含 playwright 的 node_modules 目录
  */
 
@@ -22,6 +23,7 @@ const { chromium } = createRequire(requireBase)('playwright');
 const BASE = process.env.MOCK_BASE || 'http://127.0.0.1:8899';
 const HOTEL = process.env.INVOICE_HOTEL;
 const TRAIN = process.env.INVOICE_TRAIN;
+const OTHER = process.env.INVOICE_OTHER;
 
 const results = [];
 function check(name, cond, detail) {
@@ -141,6 +143,23 @@ const page = await browser.newPage();
   check('境内公司付款 明细行1 事项描述', !!oa.cpDesc0, oa.cpDesc0);
   check('境内公司付款 行1 发票类型含 6%（多个结果时按税率选）', !!oa.cpItype0 && oa.cpItype0.indexOf('6%') >= 0, oa.cpItype0);
   check('境内公司付款 收款单位名称搜索选中全称', oa.payee === '上海测试科技有限公司', oa.payee);
+}
+
+// 5) 境内公司付款：票面类目任意的发票（阿里云「*生产生活服务*软件服务费」6%）也要出明细行
+//    —— 回归：早先「没命中 住宿/机票/火车票 关键词」会把整张票丢掉，一行明细都不生成。
+if (OTHER) {
+  const host = await injectPanel(page);
+  const { oa, summary, log } = await runScenario(page, host, 'company_payment', {
+    files: [OTHER],
+    wait: 12000,
+    fill: { '收款单位名称': '上海测试科技' },
+  });
+  check('任意类目 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
+  check('任意类目 明细行1 报销场景=IT服务外包', oa.cpScene0 === 'IT服务外包', oa.cpScene0);
+  check('任意类目 明细行1 金额=31922.46', oa.cpAmt0 === '31922.46', oa.cpAmt0);
+  check('任意类目 明细行1 事项描述=IT服务外包费', oa.cpDesc0 === 'IT服务外包费', oa.cpDesc0);
+  check('任意类目 行1 发票类型含 6%', !!oa.cpItype0 && oa.cpItype0.indexOf('6%') >= 0, oa.cpItype0);
+  check('任意类目 无「未识别」提示', !/未能解析|未识别/.test(log), '');
 }
 
 await browser.close();

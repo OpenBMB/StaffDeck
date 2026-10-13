@@ -206,7 +206,11 @@ def extract_tax_rate_text(text: str, total: str | None = None) -> str | None:
 
 
 def _classify(text: str, categories: list[dict[str, Any]] | None) -> dict[str, Any] | None:
-    """按关键词把发票归到报销场景；命中第一个 category 就返回。"""
+    """按关键词把发票归到报销场景；命中第一个 category 就返回。
+
+    这是**场景提示**，不是准入门槛——票面类目随便是常态，没命中照样生成明细行，
+    `scene` 留空由面板兜底。
+    """
     for category in categories or []:
         for keyword in category.get("keywords") or []:
             if keyword and keyword in text:
@@ -268,15 +272,20 @@ def parse_invoice_uploads(
             continue
         total += Decimal(amount)
         items.append({"filename": filename, "amount": amount, "tax_rate": rate, "category": (category or {}).get("key"), "kind": kind, "error": None})
-        if category is None:
-            continue
+        # 任何类目的发票都要生成明细行：票面类目是任意的（软件服务费、咨询费、
+        # 技术服务费……），`categories` 只是把发票归到报销场景的**提示**；没命中就留空
+        # scene，由面板按当前场景兜底（固定场景 / scene_value）。早先这里是
+        # `if category is None: continue` —— 一张阿里云「*生产生活服务*软件服务费 6%」
+        # 的电子专票因此被整个丢掉，正是这个 bug。
         # 一张发票一行报销明细（不按类别合并；报销总额在 total / 面板金额）
         rows.append({
-            "category": category["key"],
-            "scene": category.get("scene") or category.get("key"),
+            "category": (category or {}).get("key") or "",
+            "scene": (category or {}).get("scene") or "",
             "tax_rate": rate or "",
             "invoice_type": rate_map.get(rate or "", default_invoice_type),
-            "suggested_invoice_type": _suggest_invoice_type(kind, category["key"], kind_map, transport_categories),
+            "suggested_invoice_type": _suggest_invoice_type(
+                kind, (category or {}).get("key") or "", kind_map, transport_categories
+            ),
             "kind": kind,
             "amount": f"{Decimal(amount):.2f}",
             "filename": filename,

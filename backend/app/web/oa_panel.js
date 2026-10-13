@@ -1258,16 +1258,27 @@
       var res = await fetch(BASE + '/api/enterprise/oa-assistant/invoice-amounts', { method: 'POST', body: fd });
       var data = await res.json();
       if (!res.ok) throw new Error((data && data.detail) || ('HTTP ' + res.status));
+      var scenario = currentScenario() || {};
       var parsed = (data.rows || []).map(function (r) {
         var itValue = invoiceTypeValueFromSearch(r.suggested_invoice_type, r.tax_rate) || invoiceTypeValueFromSearch(r.invoice_type, r.tax_rate) || '';
         return {
-          category: r.category, scene: r.scene, tax_rate: r.tax_rate,
+          category: r.category, scene: r.scene || '', tax_rate: r.tax_rate,
           invoice_type: itValue, amount: Number(r.amount) || 0, filename: r.filename,
-          item_desc: (r.scene || '') + '费'
+          // 票面类目是任意的：没归到场景时事项描述留空（不要拼出孤零零的「费」字）
+          item_desc: r.scene ? r.scene + '费' : ''
         };
       });
-      var li = (currentScenario() || {}).line_items || {};
-      if (li.scene_value) parsed.forEach(function (r) { r.scene = li.scene_value; r.item_desc = li.scene_value + '费'; });
+      var li = scenario.line_items || {};
+      // 报销场景兜底（票面类目任意，后端归类不到就留空）：
+      // 1) 场景固定了明细场景（境内公司付款 scene_value=IT服务外包）→ 全部行改写；
+      // 2) 场景本身只对应一个报销场景（通讯费用 / 交通费用）→ 只补空的那几行。
+      if (li.scene_value) {
+        parsed.forEach(function (r) { r.scene = li.scene_value; r.item_desc = li.scene_value + '费'; });
+      } else if (scenario.scene) {
+        parsed.forEach(function (r) {
+          if (!r.scene) { r.scene = scenario.scene; r.item_desc = scenario.scene + '费'; }
+        });
+      }
       // 统一规则：同一「报销场景 + 税率」合并为一行、金额累计；不同则新增一行。
       // （只有 group_by='invoice' 才是一张发票一行）
       if (li.group_by !== 'invoice') {
@@ -1285,6 +1296,10 @@
       renderRows();
       var failed = (data.items || []).filter(function (it) { return it.error; });
       logLine('解析完成：' + panelRows.length + ' 行明细' + (failed.length ? '；' + failed.length + ' 张未识别' : ''), failed.length ? 'warn' : 'ok');
+      var noScene = panelRows.filter(function (r) { return !r.scene; }).length;
+      if (noScene) {
+        logLine('有 ' + noScene + ' 行发票未能归到报销场景（票面类目不在场景关键词内）：报销场景需在 OA 页面手动选择。', 'warn');
+      }
     } catch (err) {
       logLine('发票解析失败：' + String((err && err.message) || err) + '（可在下方手动填明细）', 'err');
     }

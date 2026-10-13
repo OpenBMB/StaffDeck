@@ -10,7 +10,7 @@
     "scenario.scene = 报销场景固定值（如通讯费用）；scenario.scene_options = 报销场景多选一（如交通报销的飞机 / 火车·汽车·船），面板渲染成二选一，选中值作为 scene 字段的值。",
     "scenario.notices = 面板顶部提示（如「相关流程」需手动选择、报销明细暂不支持代填）。",
     "scenario.line_items = 多行报销明细：面板按发票解析结果生成行（统一规则——同一「报销场景 + 税率」合并为一行并累计金额，否则各一行；group_by='invoice' 才是一张发票一行），引擎按 row_fields 的 selector（含 {i} 行号）逐行填；行数不够时先点 add_row_selector 的「新增」按 initial_rows 补齐。scene_value 固定行的报销场景。",
-    "invoice_parse = 发票解析规则：categories 按关键词把发票归到报销场景；tax_rate_invoice_types 按票面税率映射 OA 发票类型搜索词。",
+    "invoice_parse = 发票解析规则：categories 只是「按关键词把发票归到报销场景」的提示（票面类目任意，没命中照样生成明细行、scene 留空由面板兜底）；tax_rate_invoice_types 按票面税率映射 OA 发票类型搜索词。",
     "scenario.field_overrides = 场景特有覆盖：可改 value / search_value / clear_first，或写 { \"enabled\": false } 让该场景整字段跳过（如出差报销不改费用承担部门）。",
     "新增场景流程：在 OA 里打开目标表单 → 用浏览器开发者工具或临时脚本确认字段容器 → 把新字段补进 field_library（已存在的直接复用）→ 新增 scenario 条目。字段定义尽量复用，只有场景差异写在场景里。",
     "以下定位器为泛微 e-cology9「境内个人费用报销审批表」实测值（2026-10-09 抓取）：明细行字段以 _0 结尾（第 1 行），报销场景/是否全电子发票/上传附件都是自定义组件，用 data-fieldmark 定位容器。",

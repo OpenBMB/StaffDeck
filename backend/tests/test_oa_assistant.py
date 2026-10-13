@@ -155,11 +155,44 @@ def test_parse_invoice_uploads_rate_falls_back_to_tax_amount(monkeypatch) -> Non
     assert result["rows"][0]["tax_rate"] == "9"
 
 
-def test_parse_invoice_uploads_unknown_category_only_affects_items(monkeypatch) -> None:
-    _patch_texts(monkeypatch, {b"u": "某某服务费 税率6% 价税合计（小写）¥100.00"})
-    result = invoice_amount.parse_invoice_uploads([("a.pdf", b"u")], _CATEGORIES, _RATE_MAP, "")
-    assert result["rows"] == []          # 归不了类就不生成明细行
-    assert result["total"] == "100.00"   # 但金额仍累计、item 上标了类别缺失
+def test_parse_invoice_uploads_unknown_category_still_produces_a_row(monkeypatch) -> None:
+    """票面类目是任意的：归不到场景也要出明细行（scene 留空，由面板按场景兜底）。
+
+    回归：一张阿里云「*生产生活服务*软件服务费 6%」的电子专票，曾因为
+    「没命中 住宿/机票/火车票 关键词」被整个丢掉（columns 只是场景提示，不是门槛）。
+    """
+    _patch_texts(
+        monkeypatch,
+        {b"u": "电子发票（增值税专用发票） *生产生活服务*软件服务费 税率6% 价税合计（小写）¥100.00"},
+    )
+    result = invoice_amount.parse_invoice_uploads(
+        [("a.pdf", b"u")],
+        _CATEGORIES,
+        _RATE_MAP,
+        "",
+        {"增值税专用发票": "增值税专用发票"},
+    )
+
+    assert result["total"] == "100.00"
+    assert result["items"][0]["error"] is None
+    assert len(result["rows"]) == 1
+    row = result["rows"][0]
+    assert row["scene"] == ""              # 归类不到就留空，由面板兜底
+    assert row["category"] == ""
+    assert row["amount"] == "100.00"
+    assert row["tax_rate"] == "6"
+    assert row["invoice_type"] == "6%"
+    assert row["suggested_invoice_type"] == "增值税专用发票"
+
+
+def test_unknown_category_keeps_default_invoice_type(monkeypatch) -> None:
+    # 没有税率可用时（税率不在映射表里）落到 default_invoice_type，而不是丢掉整行
+    _patch_texts(monkeypatch, {b"u": "某某服务费 税率7% 价税合计（小写）¥100.00"})
+    result = invoice_amount.parse_invoice_uploads(
+        [("a.pdf", b"u")], _CATEGORIES, _RATE_MAP, "普通发票"
+    )
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["invoice_type"] == "普通发票"
 
 
 def test_total_falls_back_to_currency_amount() -> None:
