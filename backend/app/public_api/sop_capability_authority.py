@@ -161,4 +161,5 @@ def constrain_query(query, projection, db, principal, agent_id):
         raise PublicAPIError(403, "SOP_AUTHORITY_EMPTY_SCOPE", "No authorized Knowledge selection remains.")
     query.knowledge_base_ids = sorted(selected)
     query.knowledge_base_version_ids = sorted(current)
+    query._sop_authorized = True
     return query

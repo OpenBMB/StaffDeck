@@ -47,3 +47,13 @@ def test_disabled_domain_binding_is_inert_and_enabled_missing_identity_fails(mon
     with pytest.raises(RuntimeError, match="PD_DOMAIN_HOST_CONFIG_REQUIRED"):
         binding.bind_pilotdeck_domain_client(app, {"PILOTDECK_DOMAIN_HOST_ENABLED": "true"})
     assert not bound
+
+
+def test_project_mode_allows_agent_routing_only_within_configured_actor():
+    client = binding.FixedPilotDeckDomainHostClient("http://pd", "token", "pd-user",
+        tenant_id="tenant", actor_user_id="actor", project_bindings=True)
+    assert client.permits("tenant", "actor", "agent-a")
+    assert client.permits("tenant", "actor", "agent-b")
+    assert not client.permits("other", "actor", "agent-a")
+    assert not client.permits("tenant", "other", "agent-a")
+    assert not client.permits("tenant", "actor", "")

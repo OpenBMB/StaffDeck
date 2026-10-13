@@ -25,7 +25,7 @@ from app.api import knowledge_bases as native_knowledge_bases
 from app.api import skills as native_skills
 from app.api import tools as native_tools
 from app.db import get_session
-from app.db.models import KnowledgeBucket, KnowledgeChunk, KnowledgeDocument, KnowledgeDiscoverySuggestion, ModelConfig, User
+from app.db.models import KnowledgeBucket, KnowledgeChunk, KnowledgeDocument, KnowledgeDiscoverySuggestion, KnowledgeIngestJob, ModelConfig, User
 from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_scopes
 from app.public_api.errors import PublicAPIError
 from app.public_api.knowledge_pep import enforce_public_knowledge_pep
@@ -465,7 +465,11 @@ def cancel_knowledge_job_facade(
     agent_id: str, job_id: str,
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
 ) -> Any:
-    enforce_public_knowledge_pep(db, principal, agent_id, write=True)
+    row = db.get(KnowledgeIngestJob, job_id)
+    if not row or row.tenant_id != principal.tenant_id:
+        raise PublicAPIError(404, "JOB_NOT_FOUND", "Knowledge ingest job not found.")
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True,
+                                 knowledge_base_id=row.knowledge_base_id)
     return _payload(native_knowledge.cancel_job(job_id, principal.tenant_id, db, principal.actor_user))
 
 
