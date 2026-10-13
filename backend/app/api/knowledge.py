@@ -713,12 +713,15 @@ def search_knowledge(
     from app.security.module_policy import require_resource
     from staffdeck_harness.contracts.security import ResourceRef
     from app.db.models import KnowledgeBaseVersion
+    from app.knowledge.public_host_selection import public_host_retrieval_selected
 
     permitted_versions = []
     decisions: dict[str, bool] = {}
     for version_id in visible_version_ids:
         version = db.get(KnowledgeBaseVersion, version_id)
         if version is None:
+            continue
+        if (request.mode == 'chat' or public_host_retrieval_selected()) and not request._sop_authorized and version.capability_scope == 'sop_specific':
             continue
         base_id = version.knowledge_base_id
         if base_id not in decisions:

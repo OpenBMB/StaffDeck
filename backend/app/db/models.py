@@ -28,6 +28,17 @@ class Tenant(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class PilotDeckProjectBinding(SQLModel, table=True):
+    __tablename__ = "pilotdeck_project_bindings"
+    __table_args__ = (UniqueConstraint("tenant_id", "agent_id"),)
+
+    tenant_id: str = Field(primary_key=True)
+    installation_id: str = Field(primary_key=True)
+    project_binding_id: str = Field(primary_key=True)
+    agent_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class User(SQLModel, table=True):
     __tablename__ = "users"
     __table_args__ = (

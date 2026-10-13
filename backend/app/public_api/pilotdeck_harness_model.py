@@ -53,15 +53,15 @@ class PilotDeckHarnessModel:
 
 def select_harness_model(context: Any, model_id: str | None = None) -> PilotDeckHarnessModel:
     host = require_pilotdeck_domain_host()
-    if not isinstance(host, FixedPilotDeckDomainHostClient) or (
+    if not isinstance(host, FixedPilotDeckDomainHostClient) or not host.permits(
         context.tenant_id, context.user_id, context.staff_id
-    ) != (host.tenant_id, host.actor_user_id, host.agent_id):
+    ):
         raise RuntimeError("PUBLIC_HOST_FIXED_IDENTITY_MISMATCH")
     if not all((host.origin, host.bridge_token, host.pilotdeck_user_id)):
         raise RuntimeError("PUBLIC_HOST_IDENTITY_UNBOUND")
     principal = {"pilotDeckUserId": host.pilotdeck_user_id,
                  "tenantId": host.tenant_id, "actorUserId": host.actor_user_id,
-                 "agentId": host.agent_id}
+                 "agentId": context.staff_id}
     with httpx.Client(base_url=host.origin, transport=host.transport,
                       timeout=60, follow_redirects=False) as client:
         try:

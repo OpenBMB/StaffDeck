@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from app.capability_scope import CapabilityScope
 
@@ -195,6 +195,7 @@ class KnowledgeOkfImportRequest(BaseModel):
 
 
 class KnowledgeSearchRequest(BaseModel):
+    _sop_authorized: bool = PrivateAttr(default=False)
     tenant_id: str
     agent_id: Optional[str] = None
     query: str

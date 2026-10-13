@@ -41,6 +41,7 @@ class PilotDeckApprovalClient:
     tenant_id: str
     agent_id: str
     transport: httpx.BaseTransport | None = None
+    project_bindings: bool = False
 
     def call(self, operation: str, body: dict[str, Any], bearer: str) -> dict[str, Any]:
         if operation not in {"status", "resume"}:
@@ -51,7 +52,8 @@ class PilotDeckApprovalClient:
                 f"/api/module-host/approvals/{operation}",
                 headers={"Authorization": f"Bearer {self.bridge_token}",
                          "X-StaffDeck-Approver-Authorization": bearer},
-                json={**body, "tenantId": self.tenant_id, "agentId": self.agent_id},
+                json={**body, "tenantId": self.tenant_id,
+                      **({} if self.project_bindings else {"agentId": self.agent_id})},
             )
         if not response.is_success:
             try:

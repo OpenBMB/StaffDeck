@@ -531,6 +531,15 @@ def publish_skill(
         branch.status = "active"
         branch.updated_at = utc_now()
         db.add(branch)
+        snapshot = db.exec(select(AgentSkillBranchVersion).where(
+            AgentSkillBranchVersion.tenant_id == tenant_id,
+            AgentSkillBranchVersion.agent_id == agent.id,
+            AgentSkillBranchVersion.skill_id == row.skill_id,
+            AgentSkillBranchVersion.version == branch.head_version,
+        )).first()
+        if snapshot is not None:
+            snapshot.status = 'active'
+            db.add(snapshot)
         _sync_skill_tool_bindings(db, tenant_id, row.skill_id, branch.content_json)
         ensure_private_resource_binding(db, tenant_id, agent.id, "skill", row.id, "active")
         validate_published_sop(db, tenant_id, agent.id, row.skill_id)
