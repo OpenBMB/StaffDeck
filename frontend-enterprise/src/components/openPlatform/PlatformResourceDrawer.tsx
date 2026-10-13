@@ -25,8 +25,8 @@ export type PlatformResourceDrawerProps = {
    */
   categoryMetaLabel?: string;
   /**
-   * 第一个信息格的标题。默认「分类」（值是 platformTitle，即所属广场名）；
-   * 技能广场把第二格用作真正的「分类」时，这里改传「所属广场」以免两格同名。
+   * 第一个信息格的标题。值固定是 platformTitle（所属广场名），默认标签即「所属广场」。
+   * 调用方一般不需要覆盖；历史上曾默认「分类」导致「分类：SOP 广场」的错位展示。
    */
   platformTitleLabel?: string;
   detailText: ReactNode;
@@ -176,7 +176,7 @@ export default function PlatformResourceDrawer({
 
           <div className="grid grid-cols-2 gap-[10px]">
             <div className="flex min-h-[60px] flex-col justify-center gap-[4px] rounded-[14px] border-[0.5px] border-[#e3e7f1] px-[16px] py-[8px]">
-              <span className="text-[10px] leading-[13px] text-[#464c5e]">{platformTitleLabel || '分类'}</span>
+              <span className="text-[10px] leading-[13px] text-[#464c5e]">{platformTitleLabel || '所属广场'}</span>
               <strong className="truncate text-[12px] leading-[16px] font-medium text-[#18181a]">
                 {platformTitle}
               </strong>

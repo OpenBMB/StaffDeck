@@ -11,7 +11,7 @@ import { I18nProvider } from '@/i18n';
 import OpenPlatformPage from './OpenPlatformPage';
 
 /**
- * 开放广场「技能广场」tab（/enterprise/platform/general-skills）的标签分类下拉过滤。
+ * 开放广场「技能广场」tab（/enterprise/platform/general-skills）的标签分类 chips 过滤。
  */
 
 const admin: EnterpriseAuthUser = {
@@ -118,33 +118,34 @@ afterEach(() => {
 });
 
 describe('开放广场 技能广场 tab 标签分类', () => {
-  it('技能 tab 显示标签分类下拉，选项为全部分类 + 四个分类', async () => {
-    const user = userEvent.setup();
+  it('技能 tab 平铺分类 chips：全部 + 四个分类，且带计数', async () => {
     renderPlatform();
     await screen.findAllByText(/公文助手/);
 
-    const trigger = screen.getByRole('combobox', { name: '标签分类筛选' });
-    expect(trigger.textContent).toContain('全部分类');
-
-    await user.click(trigger);
-    for (const label of ['全部分类', '办公类', '财务类', '人力资源类', '编程类']) {
-      expect(await screen.findByRole('option', { name: label })).toBeTruthy();
+    const group = screen.getByRole('group', { name: '标签分类筛选' });
+    const expected: Record<string, number> = { 全部: 4, 办公类: 1, 财务类: 1, 人力资源类: 0, 编程类: 1, 未分类: 1 };
+    for (const [label, count] of Object.entries(expected)) {
+      const chip = within(group).getByRole('button', { name: new RegExp(`^${label}`) });
+      expect(chip.textContent).toContain(String(count));
     }
+    // 默认选中「全部」
+    expect(within(group).getByRole('button', { name: /^全部/ }).getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('按分类过滤后只保留该分类的技能', async () => {
+  it('点击分类 chip 后只保留该分类的技能', async () => {
     const user = userEvent.setup();
     renderPlatform();
     await screen.findAllByText(/公文助手/);
 
-    await user.click(screen.getByRole('combobox', { name: '标签分类筛选' }));
-    await user.click(await screen.findByRole('option', { name: '财务类' }));
+    await user.click(screen.getByRole('button', { name: /^财务类/ }));
 
     await waitFor(() => {
       expect(screen.queryAllByText(/公文助手/).length).toBe(0);
     });
     expect(screen.queryAllByText(/随手工具/).length).toBe(0);
     expect(screen.getAllByText(/报销助手/).length).toBeGreaterThan(0);
+    // 存在未分类条目时，「未分类」chip 出现且计数正确
+    expect(screen.getByRole('button', { name: /^未分类/ }).textContent).toContain('1');
   });
 
   it('卡片上直接显示标签分类（未分类也有占位）', async () => {

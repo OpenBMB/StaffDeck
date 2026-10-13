@@ -7,13 +7,6 @@ import {
   UsergroupAddOutlined,
 } from '../icons';
 import { notify } from '@/components/ui';
-import {
-  Select as UISelect,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { RevealGroup } from '@/components/RevealGroup';
 import type { ComponentType, ReactNode, SVGProps } from 'react';
@@ -61,9 +54,9 @@ import {
 import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
 import {
   GENERAL_SKILL_CATEGORY_ALL,
+  GENERAL_SKILL_CATEGORY_NONE,
   GENERAL_SKILL_CATEGORIES,
 } from '@/lib/general-skill-categories';
-import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
 import {
   MOTION,
   prefersReducedMotion,
@@ -241,6 +234,42 @@ function resourceDrawerBadge(kind: PlatformKind, item: PlatformItem): string {
     return parts[parts.length - 1] || item.tags[0] || '';
   }
   return item.tags[0] || '';
+}
+
+/**
+ * 详情抽屉第二格：按模块展示真实字段，并给一个对得上的名字。
+ * 历史上一律标「分类」：SOP 格子里塞的是 skill_id/版本、知识库塞的是文档统计，
+ * 名不副实（截图反馈：分类=project_delivery_pla…）。现在每个模块各归其位。
+ */
+function resourceMetaField(kind: PlatformKind, item: PlatformItem): { label: string; value: string } {
+  switch (kind) {
+    case 'general-skills':
+      return { label: '分类', value: item.category || '未分类' };
+    case 'agent-apps':
+      return { label: '作者 / 更新时间', value: item.meta };
+    case 'knowledge':
+      return { label: '知识规模', value: item.meta };
+    case 'skills':
+      return { label: 'SOP 编号 / 版本', value: item.meta };
+    case 'tools':
+      return { label: '类型', value: item.meta };
+    default:
+      return { label: '分类', value: item.meta };
+  }
+}
+
+/**
+ * 详情「说明」：优先用资源自己的描述（列表卡片同源），不再拿广场级的引导句凑数。
+ * Agent 广场条目没有后端描述，保留「能力 + 只读口径」的说明；技能补充累计下载次数。
+ */
+function resourceDetailText(kind: PlatformKind, item: PlatformItem, config: PlatformConfig): string {
+  if (item.agentEntry) {
+    return `能力：${item.agentEntry.capability}｜由平台统一维护，所有成员只能使用、不能编辑或删除。`;
+  }
+  const base = item.description?.trim() || config.detail;
+  return kind === 'general-skills'
+    ? `${base}（累计下载 ${item.downloadCount ?? 0} 次）`
+    : base;
 }
 
 function DetailSkeleton({ kind }: { kind: PlatformKind }) {
@@ -591,7 +620,9 @@ export default function OpenPlatformPage({
   const filteredItems = useMemo(() => {
     const items = platformItems[activeKind];
     const scoped = activeKind === 'general-skills' && skillCategoryFilter !== GENERAL_SKILL_CATEGORY_ALL
-      ? items.filter((item) => item.category === skillCategoryFilter)
+      ? items.filter((item) => (skillCategoryFilter === GENERAL_SKILL_CATEGORY_NONE
+        ? !item.category
+        : item.category === skillCategoryFilter))
       : items;
     const keyword = searchText.trim().toLowerCase();
     if (!keyword) return scoped;
@@ -623,6 +654,26 @@ export default function OpenPlatformPage({
       })),
     [galleryCounts, kindStates, platformItems],
   );
+
+  // 技能广场分类 chips：平铺点击过滤（替代原下拉），计数来自当前广场列表；
+  // 存在未分类条目时才追加「未分类」chip，避免空选项常驻。
+  const skillCategoryChips = useMemo(() => {
+    const items = platformItems['general-skills'];
+    const countOf = (category: string | null) => items.filter((item) => (
+      category === null ? !item.category : item.category === category
+    )).length;
+    const chips: { value: string; label: string; count: number }[] = [
+      { value: GENERAL_SKILL_CATEGORY_ALL, label: '全部', count: items.length },
+    ];
+    for (const category of GENERAL_SKILL_CATEGORIES) {
+      chips.push({ value: category, label: category, count: countOf(category) });
+    }
+    const uncategorized = countOf(null);
+    if (uncategorized > 0) {
+      chips.push({ value: GENERAL_SKILL_CATEGORY_NONE, label: '未分类', count: uncategorized });
+    }
+    return chips;
+  }, [platformItems]);
 
   function ensureTargetEmployee(): boolean {
     if (!targetEmployee) {
@@ -870,14 +921,9 @@ export default function OpenPlatformPage({
         title={item.title}
         description={item.agentEntry?.description || item.description}
         badge={resourceDrawerBadge(detailItem.kind, item)}
-        categoryMeta={detailItem.kind === 'general-skills' ? (item.category || '未分类') : item.meta}
-        categoryMetaLabel={detailItem.kind === 'agent-apps' ? '作者 / 更新时间' : undefined}
-        platformTitleLabel={detailItem.kind === 'general-skills' ? '所属广场' : undefined}
-        detailText={item.agentEntry
-          ? `能力：${item.agentEntry.capability}｜由平台统一维护，所有成员只能使用、不能编辑或删除。`
-          : detailItem.kind === 'general-skills'
-            ? `累计下载 ${item.downloadCount ?? 0} 次；${config.detail}`
-            : config.detail}
+        categoryMeta={resourceMetaField(detailItem.kind, item).value}
+        categoryMetaLabel={resourceMetaField(detailItem.kind, item).label}
+        detailText={resourceDetailText(detailItem.kind, item, config)}
         useLabel={config.useLabel}
         // Agent 广场对所有成员一律只读：不暴露删除/下线入口。
         canManage={detailItem.kind === 'agent-apps' ? false : canManagePlatform}
@@ -1025,19 +1071,30 @@ export default function OpenPlatformPage({
             </label>
 
             {activeKind === 'general-skills' && (
-              <UISelect value={skillCategoryFilter} onValueChange={setSkillCategoryFilter}>
-                <SelectTrigger className={cn(SELECT_TRIGGER_CLASS, 'w-[130px]')} aria-label="标签分类筛选">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={GENERAL_SKILL_CATEGORY_ALL}>全部分类</SelectItem>
-                  {GENERAL_SKILL_CATEGORIES.map((item) => (
-                    <SelectItem key={item} value={item}>
-                      {item}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </UISelect>
+              <div className="flex flex-wrap items-center gap-[8px]" role="group" aria-label="标签分类筛选">
+                {skillCategoryChips.map((chip) => {
+                  const active = skillCategoryFilter === chip.value;
+                  return (
+                    <button
+                      key={chip.value}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => setSkillCategoryFilter(chip.value)}
+                      className={cn(
+                        'flex h-[34px] items-center gap-[6px] rounded-[10px] border-[0.5px] px-[12px] text-[12px] leading-[normal] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#1a71ff] focus-visible:ring-offset-2',
+                        active
+                          ? 'border-[#1a71ff] bg-[#eef0ff] font-medium text-[#1a71ff]'
+                          : 'border-[#e3e7f1] bg-white font-normal text-[#4f5669] hover:border-[#cbd3e6] hover:bg-[#f6f7fa] hover:text-[#18181a]',
+                      )}
+                    >
+                      {chip.label}
+                      <span className={cn('text-[10px]', active ? 'text-[#1a71ff]' : 'text-[#858b9c]')}>
+                        {chip.count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </div>
 
