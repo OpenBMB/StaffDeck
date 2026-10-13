@@ -64,6 +64,14 @@ import {
   GENERAL_SKILL_CATEGORIES,
 } from '@/lib/general-skill-categories';
 import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
+import {
+  MOTION,
+  prefersReducedMotion,
+  reveal,
+  settle,
+  useStaggerReveal,
+} from '@/lib/motion';
+import { animate, spring } from 'animejs';
 import { agentCatalogMeta, listAgentCatalog, type AgentCatalogEntry } from '@/lib/agentCatalog';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
@@ -237,6 +245,90 @@ function resourceDrawerBadge(kind: PlatformKind, item: PlatformItem): string {
 
 function DetailSkeleton({ kind }: { kind: PlatformKind }) {
   return <PlatformGridSkeleton kind={kind} />;
+}
+
+/** 广场网格容器：除了布局，还负责给卡片的 3D 倾斜提供透视（perspective 必须在父级）。 */
+const PLATFORM_GRID_CLASS =
+  'grid grid-cols-3 gap-[16px] [perspective:1200px] max-[900px]:grid-cols-2 max-[560px]:grid-cols-1';
+
+/**
+ * 广场类型 tab。
+ *
+ * 动效：成为选中项时用弹簧做一次「回弹入位」（`scale` 0.93 → 1）；右上角计数在
+ * 数值变化时弹一下——角标来自懒加载/聚合接口，弹一下能提示「数字刚到」。
+ * reduced-motion / jsdom 下由 `reveal` / `prefersReducedMotion` 自行落终态，不会卡住。
+ */
+function PlatformTab({
+  label,
+  count,
+  active,
+  onSelect,
+}: {
+  label: string;
+  count?: number;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const badgeRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !active) return;
+    const animation = reveal(el, {
+      y: 0,
+      scale: 0.93,
+      duration: 520,
+      ease: spring({ stiffness: 280, damping: 20 }),
+    });
+    return () => {
+      animation?.pause();
+      settle(el, { y: 0, scale: 0.93 });
+    };
+  }, [active]);
+
+  useEffect(() => {
+    const el = badgeRef.current;
+    if (!el || count === undefined || prefersReducedMotion()) return;
+    const animation = animate(el, {
+      scale: [0.4, 1],
+      duration: 460,
+      ease: spring({ stiffness: 320, damping: 18 }),
+    });
+    return () => {
+      animation.revert();
+    };
+  }, [count]);
+
+  return (
+    <button
+      ref={ref}
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onSelect}
+      className={cn(
+        'flex min-w-[120px] items-center justify-center gap-[8px] whitespace-nowrap rounded-[10px] border-[0.5px] px-[14px] py-[8px] text-[14px] leading-[normal] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#1a71ff] focus-visible:ring-offset-2',
+        active
+          ? 'border-[#1a71ff] bg-[#eef0ff] font-medium text-[#1a71ff]'
+          : 'border-[#e3e7f1] bg-white font-normal text-[#4f5669] hover:border-[#cbd3e6] hover:bg-[#f6f7fa] hover:text-[#18181a]',
+        'max-[560px]:min-w-[88px] max-[560px]:px-[10px] max-[560px]:py-[6px] max-[560px]:text-[12px]',
+      )}
+    >
+      <span>{label}</span>
+      {count !== undefined && (
+        <span
+          ref={badgeRef}
+          className={cn(
+            'rounded-[90px] px-[7px] py-[1px] text-[11px] leading-none',
+            active ? 'bg-white text-[#1a71ff]' : 'bg-[#f2f4f8] text-[#757f9c]',
+          )}
+        >
+          {count}
+        </span>
+      )}
+    </button>
+  );
 }
 
 export default function OpenPlatformPage({
@@ -840,6 +932,14 @@ export default function OpenPlatformPage({
 
   const config = PLATFORM_BY_KIND.get(activeKind) || PLATFORM_CONFIGS[0];
   const PlatformIcon = PLATFORM_ICON[activeKind];
+  // 切 tab 时区块标题 / 信号 chips 做一次轻微错开入场（内容本体由网格波承担）
+  const headerRef = useStaggerReveal<HTMLDivElement>(true, {
+    selector: ':scope > *',
+    replayKey: activeKind,
+    y: 8,
+    stagger: 45,
+    duration: MOTION.base,
+  });
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[20px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
@@ -857,37 +957,15 @@ export default function OpenPlatformPage({
             aria-label="广场类型"
             className="flex flex-wrap gap-[12px] max-[560px]:gap-[8px]"
           >
-            {tabItems.map((item) => {
-              const active = item.value === activeKind;
-              return (
-                <button
-                  key={item.value}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => handleKindChange(item.value)}
-                  className={cn(
-                    'flex min-w-[120px] items-center justify-center gap-[8px] whitespace-nowrap rounded-[10px] border-[0.5px] px-[14px] py-[8px] text-[14px] leading-[normal] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#1a71ff] focus-visible:ring-offset-2',
-                    active
-                      ? 'border-[#1a71ff] bg-[#eef0ff] font-medium text-[#1a71ff]'
-                      : 'border-[#e3e7f1] bg-white font-normal text-[#4f5669] hover:border-[#cbd3e6] hover:bg-[#f6f7fa] hover:text-[#18181a]',
-                    'max-[560px]:min-w-[88px] max-[560px]:px-[10px] max-[560px]:py-[6px] max-[560px]:text-[12px]',
-                  )}
-                >
-                  <span>{item.label}</span>
-                  {item.count !== undefined && (
-                    <span
-                      className={cn(
-                        'rounded-[90px] px-[7px] py-[1px] text-[11px] leading-none',
-                        active ? 'bg-white text-[#1a71ff]' : 'bg-[#f2f4f8] text-[#757f9c]',
-                      )}
-                    >
-                      {item.count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            {tabItems.map((item) => (
+              <PlatformTab
+                key={item.value}
+                label={item.label}
+                count={item.count}
+                active={item.value === activeKind}
+                onSelect={() => handleKindChange(item.value)}
+              />
+            ))}
           </div>
 
           <div className="flex flex-wrap items-center gap-[8px]">
@@ -910,7 +988,7 @@ export default function OpenPlatformPage({
         </div>
 
         <>
-        <div className="flex flex-col gap-[10px] px-[12px]">
+        <div ref={headerRef} className="flex flex-col gap-[10px] px-[12px]">
           <div className="flex items-center gap-[8px] text-[#18181a]">
             <PlatformIcon className="size-[16px] shrink-0" />
             <span className="text-[18px] font-medium leading-none">{config.title}</span>
@@ -972,9 +1050,10 @@ export default function OpenPlatformPage({
             </div>
           ) : activeKind === 'agents' ? (
             <RevealGroup
-              className="grid grid-cols-3 gap-[16px] max-[900px]:grid-cols-2 max-[560px]:grid-cols-1"
+              className={PLATFORM_GRID_CLASS}
               itemCount={filteredItems.length}
               replayKey={activeKind}
+              wave
             >
               {filteredItems.map((item) => item.agent && (
                 <PlatformEmployeeCard
@@ -1005,9 +1084,10 @@ export default function OpenPlatformPage({
             </RevealGroup>
           ) : (
             <RevealGroup
-              className="grid grid-cols-3 gap-[16px] max-[900px]:grid-cols-2 max-[560px]:grid-cols-1"
+              className={PLATFORM_GRID_CLASS}
               itemCount={filteredItems.length}
               replayKey={activeKind}
+              wave
             >
               {filteredItems.map((item) => (
                 // 技能广场比其它模块多一个「标签分类」tag：窄屏下标签会换行，而卡片是

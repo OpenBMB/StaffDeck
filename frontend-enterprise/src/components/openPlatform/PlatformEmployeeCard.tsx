@@ -1,7 +1,8 @@
 import { Ban } from 'lucide-react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
 import { cn } from '@/lib/utils';
+import { usePointerFx } from '@/lib/motion';
 
 import IconArrowRight from '../../assets/icons/arrow-right.svg?react';
 
@@ -41,18 +42,23 @@ export default function PlatformEmployeeCard({
   unpublishing = false,
   className,
 }: PlatformEmployeeCardProps) {
+  // 指针抬起 + 微倾斜 + 跟随光斑（reduced-motion 下 usePointerFx 直接不绑定）
+  const ref = usePointerFx<HTMLElement>({ tilt: 4, lift: 4, scale: 1.008 });
   return (
     <article
+      ref={ref}
+      style={{ '--pointer-fx-glow': 'rgba(109, 63, 212, 0.20)' } as CSSProperties}
       className={cn(
-        'group relative h-[180px] w-full shrink-0 rounded-[20px] border-[0.5px] border-[#dfe4ee] bg-white p-[6px] text-left transition-shadow hover:border-[#cbd3e6] hover:shadow-[0_10px_24px_rgba(0,0,0,0.06)]',
+        'group pointer-fx relative h-[180px] w-full shrink-0 rounded-[20px] border-[0.5px] border-[#dfe4ee] bg-white p-[6px] text-left transition-[box-shadow,border-color] hover:border-[#cbd3e6] hover:shadow-[0_16px_34px_rgba(15,23,42,0.10)]',
         className,
       )}
     >
+      <span aria-hidden className="pointer-fx-spotlight" />
       {freeBadge && <FreeBadge />}
       <button
         type="button"
         onClick={onOpen}
-        className="flex h-full w-full flex-col justify-end gap-[8px] rounded-[16px] text-left outline-none focus-visible:ring-2 focus-visible:ring-[#9dd7cf]"
+        className="relative flex h-full w-full flex-col justify-end gap-[8px] rounded-[16px] text-left outline-none focus-visible:ring-2 focus-visible:ring-[#9dd7cf]"
       >
         <div className="flex w-full flex-col px-[8px] pb-[2px]">
           <div className="flex h-[72px] w-full items-end justify-between rounded-[14px] bg-[#f6f6f6] px-[12px] pb-[6px] pt-[10px]">

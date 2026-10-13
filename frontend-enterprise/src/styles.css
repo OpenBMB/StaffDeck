@@ -7309,3 +7309,37 @@ body,
     scroll-behavior: auto !important;
   }
 }
+
+
+/* ==========================================================================
+   开放广场卡片指针微交互（src/lib/motion.ts 的 usePointerFx）：
+   JS 每个 pointermove 只写 --mx / --my，聚光斑的位置与淡入交给这里；
+   卡片自身的 3D 倾斜由 anime 写内联 transform，所以父级网格需要 perspective。
+   ========================================================================== */
+.pointer-fx {
+  --mx: 50%;
+  --my: 50%;
+}
+
+/* 只在 hover 期间提升合成层：常驻 will-change 会让整页卡片都占显存 */
+.pointer-fx-active {
+  will-change: transform;
+}
+
+.pointer-fx-spotlight {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    240px circle at var(--mx) var(--my),
+    var(--pointer-fx-glow, rgba(26, 113, 255, 0.14)),
+    transparent 68%
+  );
+  transition: opacity 320ms ease;
+}
+
+.pointer-fx-active .pointer-fx-spotlight {
+  opacity: 1;
+}

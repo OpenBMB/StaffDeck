@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 
 import { Sheet, SheetContent } from '@/components/ui';
 import { cn } from '@/lib/utils';
+import { MOTION, useStaggerReveal } from '@/lib/motion';
 import { Download, XIcon } from 'lucide-react';
 
 import IconChevronDown from '../../assets/icons/chevron-down.svg?react';
@@ -112,6 +113,20 @@ export default function PlatformResourceDrawer({
   onUse,
 }: PlatformResourceDrawerProps) {
   const accentStyles = platformResourceAccentStyles[accent];
+  // 抽屉内容分两段错开入场：主体（图标 → 标题 → 信息格 → 说明）与底部操作。
+  // 抽屉每次打开都是重新挂载（调用方用 detailItem 控制渲染），所以只要一次入场。
+  const bodyRef = useStaggerReveal<HTMLDivElement>(open, {
+    selector: ':scope > *',
+    y: 10,
+    stagger: 55,
+    duration: MOTION.base,
+  });
+  const footerRef = useStaggerReveal<HTMLDivElement>(open, {
+    selector: ':scope > *',
+    y: 8,
+    stagger: 45,
+    duration: MOTION.base,
+  });
 
   return (
     <Sheet open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
@@ -137,7 +152,7 @@ export default function PlatformResourceDrawer({
           <DrawerDivider />
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-[10px] overflow-auto px-[4px]">
+        <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col gap-[10px] overflow-auto px-[4px]">
           <div className="size-[36px] shrink-0">{icon}</div>
 
           <div className="flex min-h-[75px] w-full flex-col justify-center gap-[8px] pb-[2px]">
@@ -214,7 +229,7 @@ export default function PlatformResourceDrawer({
           </div>
         )}
 
-        <div className="flex shrink-0 justify-end gap-[10px]">
+        <div ref={footerRef} className="flex shrink-0 justify-end gap-[10px]">
           {onDownload && (
             <button
               type="button"
