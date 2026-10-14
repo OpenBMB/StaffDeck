@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 from staffdeck_sop_core import SopCoreError, SopDefinition, SopState
 from staffdeck_sop_core import prepare as core_prepare, resume as core_resume, submit as core_submit
 from .storage import SqliteStore
+from .management import ManagementService
 from staffdeck_sop_core.nesting import expand
 
 PROTOCOL_VERSION = "3.0"
@@ -53,6 +54,8 @@ def create_app(state_path: str = ":memory:", *, publish_token: str | None = None
         store.close()
     app = FastAPI(title="Independent SOP Runtime", version=PROTOCOL_VERSION, lifespan=lifespan)
     app.state.sop_store = store
+    management = ManagementService(store, _snapshot)
+    app.state.sop_management = management
     for path in sorted(Path(os.environ.get("SOP_DEFINITIONS_DIR", "/nonexistent")).glob("*.json")):
         raw = json.loads(path.read_text())
         for value in raw.get("sops", [raw]):
@@ -107,6 +110,17 @@ def create_app(state_path: str = ":memory:", *, publish_token: str | None = None
             store.put(definition)
         return {"ok": True, "definition": definition.to_dict()}
 
+    @app.post("/v1/management/call")
+    def management_call(payload: dict[str, Any], request: Request):
+        if publish_token and not compare_digest(request.headers.get("authorization", ""), f"Bearer {publish_token}"):
+            return _failed("management", "SOP_PUBLISH_UNAUTHORIZED", "Management requires the publisher credential", 401)
+        return {"ok": True, "result": management.call(payload.get("operation"), payload.get("input", {}))}
+
+    @app.get("/v1/management/catalog")
+    def management_catalog():
+        with store._lock:
+            return {"ok": True, **management.catalog()}
+
     @app.get("/v1/sessions/{session_id}")
     def get_session(session_id: str) -> JSONResponse:
         state = store.read(session_id)
@@ -117,7 +131,7 @@ def create_app(state_path: str = ":memory:", *, publish_token: str | None = None
     @app.post("/v1/sessions/{session_id}/prepare")
     def session_prepare(session_id: str, payload: dict[str, Any]) -> JSONResponse:
         envelope, request = _payload(Envelope, SessionPrepare, payload)
-        return _run(store, envelope, session_id, "prepare", payload, lambda: _prepare(store, session_id, envelope, request))
+        return _run(store, envelope, session_id, "prepare", payload, lambda: _prepare(store, session_id, envelope, request, management))
 
     @app.post("/v1/sessions/{session_id}/submit")
     def session_submit(session_id: str, payload: dict[str, Any]) -> JSONResponse:
@@ -139,12 +153,18 @@ def _snapshot(value):
         raise SopCoreError("SOP_DEFINITION_INVALID", "definition digest does not match its content")
     return replace(definition, published_at=definition.published_at or datetime.now(timezone.utc).isoformat(), content_digest=digest)
 
-def _prepare(store: SqliteStore, session_id: str, envelope: Envelope, request: SessionPrepare) -> dict[str, Any]:
+def _prepare(store: SqliteStore, session_id: str, envelope: Envelope, request: SessionPrepare, management=None) -> dict[str, Any]:
     state = store.read(session_id)
     if envelope.expectedRevision is not None and envelope.expectedRevision != (state.revision if state else 0):
         raise SopCoreError("SOP_REVISION_CONFLICT", "session revision is stale")
     if state is None:
+        if management and not management.available(request.sopId):
+            raise SopCoreError("SOP_UNPUBLISHED", "SOP is not available for new executions")
         definition = store.get(request.sopId, request.version)
+        if management and request.version is None:
+            row = store._connection.execute("SELECT sop_id FROM sop_management WHERE sop_id=?", (request.sopId,)).fetchone()
+            if row:
+                definition = management.definition(request.sopId)
         definition = expand(definition, store.definitions())
         prepared = core_prepare(definition, SopState(session_id, definition.sop_id, definition.version))
         state = store.create(SopState.from_dict(prepared["state"]))

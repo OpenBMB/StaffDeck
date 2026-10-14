@@ -1,5 +1,10 @@
 # SOP v3 Local Acceptance, 2026-10-14
 
+Historical dual-host acceptance. The current PD-native delivery and three-service
+deployment are recorded in `ACCEPTANCE-NATIVE-1014.md`. Production migration and
+the old server are excluded by the user's subsequent scope change. StaffDeck
+reviewer and Knowledge evidence below do not prove native PD acceptance.
+
 Delivery branch in both repositories: `standalone_alpha1_decouple_sop_1013`.
 The overall delivery goal remains active until deployment, migration and live
 channel acceptance pass. Local evidence directory:

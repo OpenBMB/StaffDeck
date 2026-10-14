@@ -69,3 +69,28 @@ PilotDeck selects `sop.lifecycle/v3` / `sop-http-v3`. Its local files hold reply
 delivery, tool receipts, and recovery projections; reads refresh Runtime state.
 Node model contexts remain host-owned. SOP-only exports copy `portable_sop`
 without StaffDeck backend and mount a separate Runtime SQLite volume.
+
+## Independent management for PilotDeck
+
+The same Runtime process now mounts `POST /v1/management/call` and
+`GET /v1/management/catalog`. Management owns its own SQLite tables for SOPs,
+revisioned drafts, publication pointers, generation jobs and replayable events.
+Immutable versions use the existing independent definition snapshot store.
+It imports neither `app.*` nor StaffDeck ORM. StaffDeck's existing management
+adapter remains available for existing deployments.
+
+Calls have `{operation, input}` and return `{ok, result}`. Operations include
+`list`, `create`, `import`, `get_draft`, `replace_draft`, `validate`, `publish`,
+`list_versions`, `get_version`, `rollback`, `archive`, and `delete`. Draft
+updates/publication require `sopId`, `draftId`, and `expectedRevision` or `etag`.
+Publication validates and pins child SOP versions, saves a snapshot, and
+updates its pointer in one transaction. Rollback moves only the pointer.
+Archived/deleted SOPs reject new sessions; existing sessions keep their snapshot.
+Set `SOP_PUBLISH_TOKEN` to require the server-side publisher bearer.
+
+PD's generation worker owns model credentials and calls the `job_*` operations
+to save tasks, chunks, cancellation, completion and worker restart interruption.
+Completed generation saves a validated draft, never a publication. PD uses
+`SOP_RUNTIME_PUBLISH_TOKEN` for the matching server-side publisher credential.
+In native mode, `assignee_ref: pilotdeck:owner` is normalized at validation;
+PD authenticates the active owner and owns notification/continuation delivery.
