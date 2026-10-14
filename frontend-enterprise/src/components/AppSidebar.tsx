@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { Fragment, useMemo } from 'react';
 import {
   Badge,
   DropdownMenu,
@@ -28,7 +28,6 @@ import { employeeDisplayNameWithCreator, employeeProfile, staffdeckDisplayText }
 import { EnterpriseRoute } from '../enums/routes';
 import type { AgentProfileRead, ChatSession, TeamRead } from '../types';
 import IconPlatform from '../assets/icons/nav-platform.svg?react';
-import IconHome from '../assets/icons/nav-home.svg?react';
 import IconAgents from '../assets/icons/nav-agents.svg?react';
 import IconTeams from '../assets/icons/nav-teams.svg?react';
 import IconFile from '../assets/icons/profile-file.svg?react';
@@ -66,12 +65,15 @@ type NavItem = {
   adminOnly?: boolean;
 };
 
-const PRIMARY_NAV: NavItem[] = [
-  // 站点默认首页：AI 新闻 + 快捷方式画布（PlazaHomePage 独立页）
-  { route: EnterpriseRoute.Home, label: '首页', Icon: IconHome },
-  { route: EnterpriseRoute.Platform, label: '开放广场平台', Icon: IconPlatform },
+// 主菜单分组：组间以细分隔线区隔（与系统组的分隔样式一致）
+const WORKSPACE_NAV: NavItem[] = [
+  // 站点首页已下线（2026-10-13）：开放广场「全部」tab 成为默认落地（热门总览/快捷访问/新闻并入）
+  { route: EnterpriseRoute.Platform, label: '开放广场平台', Icon: IconPlatform, hot: true },
   { route: EnterpriseRoute.Agents, label: '我的数字员工', Icon: IconAgents },
   { route: EnterpriseRoute.Teams, label: '我的团队', Icon: IconTeams },
+];
+
+const PLATFORM_NAV: NavItem[] = [
   // 决策助手 / AI CodeReviewer 已移入「Agent 广场」清单（agent-catalog.json），
   // 入口随广场走（CodeReviewer 为 adminOnly 条目，仅管理员视角可见），侧边栏不再单列
   // 暂时隐藏渠道接入入口（页面与路由保留，需要时恢复下行即可）
@@ -144,10 +146,22 @@ function IconApiKey({ className, ...props }: { className?: string } & SVGProps<S
   );
 }
 
-function primaryNavItems(isAdmin: boolean): NavItem[] {
-  // adminOnly 条目对普通成员整行隐藏；管理员额外拼上系统管理组
-  const primary = PRIMARY_NAV.filter((item) => !item.adminOnly || isAdmin);
-  return isAdmin ? [...primary, ...SYSTEM_NAV] : primary;
+function navGroups(isAdmin: boolean): NavItem[][] {
+  // 工作区与平台项合为一组（模型配置/平台更新内容不与上边分隔）；
+  // 仅管理员在末尾追加系统组，组间以分隔线区隔。
+  const groups: NavItem[][] = [[...WORKSPACE_NAV, ...PLATFORM_NAV]];
+  if (isAdmin) groups.push(SYSTEM_NAV);
+  return groups;
+}
+
+/** 主菜单组间分隔线：与系统组那条同款（bg-sidebar-border 细线）。 */
+function MenuDivider({ className }: { className?: string }) {
+  return (
+    <div
+      aria-hidden
+      className={cn('h-px w-full bg-sidebar-border group-data-[collapsible=icon]:hidden', className)}
+    />
+  );
 }
 
 export type AppSidebarManagementProps = {
@@ -218,9 +232,9 @@ function PrimaryNavButton({
         isActive={selected === item.route}
         onClick={() => onNavigate(item.route)}
         className={cn(
-          'h-[34px] gap-[10px] rounded-[12px] px-[20px] py-[6px] text-[13px] text-sidebar-foreground',
-          'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-          'data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground data-active:font-normal',
+          'h-[34px] gap-[10px] rounded-[12px] px-[20px] py-[6px] text-[13px] text-[#5b6274]',
+          'hover:bg-sidebar-accent hover:text-[#18181a]',
+          'data-active:bg-sidebar-accent data-active:text-[#18181a] data-active:font-medium',
           attention && selected !== item.route && 'bg-[#fff7e8] text-[#8a4b00] ring-1 ring-[#ffd58a]',
           'group-data-[collapsible=icon]:px-0!',
         )}
@@ -255,9 +269,9 @@ function CardNavButton({
         isActive={selected === item.route}
         onClick={() => onNavigate(item.route)}
         className={cn(
-          'h-[32px] gap-[8px] rounded-[10px] px-[12px] py-[4px] text-[11px] text-sidebar-foreground',
-          'hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-          'data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground data-active:font-normal',
+          'h-[32px] gap-[8px] rounded-[10px] px-[12px] py-[4px] text-[12px] text-[#757f9c]',
+          'hover:bg-sidebar-accent hover:text-[#18181a]',
+          'data-active:bg-sidebar-accent data-active:text-[#18181a] data-active:font-medium',
           'group-data-[collapsible=icon]:px-0!',
         )}
       >
@@ -270,7 +284,7 @@ function CardNavButton({
 
 function GroupLabel({ children }: { children: string }) {
   return (
-    <span className="px-[8px] pt-[4px] pb-[2px] text-[10px] leading-none text-[#464c5e] group-data-[collapsible=icon]:hidden">
+    <span className="px-[8px] pt-[4px] pb-[2px] text-[10px] leading-none tracking-[0.12em] text-[#a2a8b8] group-data-[collapsible=icon]:hidden">
       {children}
     </span>
   );
@@ -434,7 +448,7 @@ function SidebarFooterActions({ onOpenChat }: { onOpenChat: () => void }) {
 
 function CollapsedGroupLabel({ children }: { children: string }) {
   return (
-    <span className="text-[10px] leading-none text-[#464c5e]">
+    <span className="text-[10px] leading-none tracking-[0.12em] text-[#a2a8b8]">
       {children}
     </span>
   );
@@ -574,7 +588,7 @@ function CollapsedSidebar({
         ? '未选择'
         : employeeDisplayNameWithCreator(sidebarAgent)
       : '未选择';
-  const primaryItems = primaryNavItems(isAdmin);
+  const groups = navGroups(isAdmin);
 
   return (
     <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[16px] pt-[42px] pb-[10px]">
@@ -600,16 +614,21 @@ function CollapsedSidebar({
       </div>
 
       <div className="flex w-full flex-col items-center gap-[12px]">
-        {primaryItems.map((item) => (
-          <CollapsedNavButton
-            key={item.route}
-            item={item}
-            selected={selected}
-            onNavigate={onNavigate}
-            radius={10}
-            iconSize={16}
-            attention={modelSetupAttention && item.route === EnterpriseRoute.Models}
-          />
+        {groups.map((group, gi) => (
+          <Fragment key={gi}>
+            {gi > 0 && <div className="h-px w-full bg-sidebar-border" />}
+            {group.map((item) => (
+              <CollapsedNavButton
+                key={item.route}
+                item={item}
+                selected={selected}
+                onNavigate={onNavigate}
+                radius={10}
+                iconSize={16}
+                attention={modelSetupAttention && item.route === EnterpriseRoute.Models}
+              />
+            ))}
+          </Fragment>
         ))}
         <div className="h-px w-full bg-sidebar-border" />
       </div>
@@ -639,6 +658,8 @@ function CollapsedSidebar({
                 iconSize={14}
               />
             ))}
+
+            <div className="my-[6px] h-px w-[28px] bg-sidebar-border" />
 
             <CollapsedGroupLabel>能力</CollapsedGroupLabel>
             {CAPABILITY_NAV.map((item) => (
@@ -690,7 +711,7 @@ function ManagementSidebar({
 }: AppSidebarManagementProps) {
   const { toggleSidebar, state } = useSidebar();
   const brandCollapsed = useMemo(() => state === 'collapsed', [state]);
-  const primaryItems = useMemo(() => primaryNavItems(isAdmin), [isAdmin]);
+  const navGroupList = useMemo(() => navGroups(isAdmin), [isAdmin]);
 
   if (brandCollapsed) {
     return (
@@ -733,19 +754,24 @@ function ManagementSidebar({
           )}
         </div>
 
-        <div className="flex flex-col gap-[12px]">
-          <SidebarMenu className="gap-[6px]">
-            {primaryItems.map((item) => (
-              <PrimaryNavButton
-                key={item.route}
-                item={item}
-                selected={selected}
-                onNavigate={onNavigate}
-                attention={modelSetupAttention && item.route === EnterpriseRoute.Models}
-              />
-            ))}
-          </SidebarMenu>
-          <div className="h-px w-full bg-sidebar-border group-data-[collapsible=icon]:hidden" />
+        <div className="flex flex-col gap-[10px]">
+          {navGroupList.map((group, gi) => (
+            <Fragment key={gi}>
+              {gi > 0 && <MenuDivider className="my-[2px]" />}
+              <SidebarMenu className="gap-[6px]">
+                {group.map((item) => (
+                  <PrimaryNavButton
+                    key={item.route}
+                    item={item}
+                    selected={selected}
+                    onNavigate={onNavigate}
+                    attention={modelSetupAttention && item.route === EnterpriseRoute.Models}
+                  />
+                ))}
+              </SidebarMenu>
+            </Fragment>
+          ))}
+          <MenuDivider />
         </div>
       </SidebarHeader>
 
@@ -772,6 +798,8 @@ function ManagementSidebar({
                 <CardNavButton key={item.route} item={item} selected={selected} onNavigate={onNavigate} />
               ))}
             </SidebarMenu>
+
+            <div className="mx-[2px] my-[8px] h-px bg-sidebar-border group-data-[collapsible=icon]:hidden" />
 
             <GroupLabel>员工能力</GroupLabel>
             <SidebarMenu className="gap-[2px]">

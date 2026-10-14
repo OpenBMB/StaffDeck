@@ -172,22 +172,21 @@ describe('OpenPlatformPage 懒加载', () => {
 
   it('聚合计数接口失败时不显示假角标，加载完成后才出现本地数量', async () => {
     const user = userEvent.setup();
-    stubPlatformFetch(); // gallery/counts 未拦截 -> 静默失败，无假角标
+    stubPlatformFetch(); // gallery/counts 未拦截 -> 静默失败；模块 tab 本身不发该请求（已移到「全部」），无假角标
     renderPlatform();
 
     await screen.findByText('小艾');
-    // 数字员工 tab 已加载 -> 本地角标 1；工具未访问且聚合计数不可用 -> 不显示
+    // 数字员工 tab 已加载 -> 本地角标 1；知识库未访问且聚合计数不可用 -> 不显示
     expect(screen.getByRole('tab', { name: /数字员工广场/ }).textContent).toContain('1');
-    expect(screen.getByRole('tab', { name: /工具广场/ }).textContent).not.toContain('0');
+    expect(screen.getByRole('tab', { name: /知识库广场/ }).textContent).not.toContain('1');
 
-    await user.click(screen.getByRole('tab', { name: /工具广场/ }));
+    await user.click(screen.getByRole('tab', { name: /知识库广场/ }));
     await waitFor(() => {
-      expect(screen.getByRole('tab', { name: /工具广场/ }).textContent).toContain('0');
+      expect(screen.getByRole('tab', { name: /知识库广场/ }).textContent).toContain('1');
     });
   });
 
-  it('聚合计数接口一次填满所有 tab 角标，无需懒加载各模块', async () => {
-    const user = userEvent.setup();
+  it('「全部」tab 落地即拉聚合计数，一次填满所有 tab 角标', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/enterprise/gallery/counts')) {
@@ -198,17 +197,17 @@ describe('OpenPlatformPage 懒加载', () => {
       return jsonResponse({});
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderPlatform();
+    renderPlatform('/enterprise/platform/all');
 
-    await screen.findByText('小艾');
     // 未访问的模块也直接显示聚合计数
     await waitFor(() => {
-      expect(screen.getByRole('tab', { name: /工具广场/ }).textContent).toContain('6');
+      expect(screen.getByRole('tab', { name: /知识库广场/ }).textContent).toContain('2');
     });
     expect(
       screen.getByRole('tab', { name: /技能广场/ }).textContent,
     ).toContain('5');
     expect(screen.getByRole('tab', { name: /SOP 广场/ }).textContent).toContain('4');
+    expect(requestedPaths(fetchMock).some((url) => url.includes('/api/enterprise/gallery/counts'))).toBe(true);
   });
 
   it('深链到某个模块时只拉它自己', async () => {

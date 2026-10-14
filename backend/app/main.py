@@ -28,6 +28,7 @@ from app.api import (
     model_configs,
     oa_assistant,
     persona,
+    plaza_hot,
     plaza_news,
     scheduled_task_monitor,
     scheduled_tasks,
@@ -175,6 +176,7 @@ app.include_router(knowledge.router)
 app.include_router(skills.router)
 app.include_router(model_configs.router)
 app.include_router(plaza_news.router)
+app.include_router(plaza_hot.router)
 app.include_router(api_key_applications.router)
 app.include_router(laya.router)
 app.include_router(oa_assistant.router)

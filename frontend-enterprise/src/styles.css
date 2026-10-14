@@ -7343,3 +7343,11 @@ body,
 .pointer-fx-active .pointer-fx-spotlight {
   opacity: 1;
 }
+
+/* 开放广场「全部」tab：极光光斑漂移（PlazaAllTab Atmosphere） */
+@keyframes sd-drift-a {
+  to { transform: translate(60px, -30px); }
+}
+@keyframes sd-drift-b {
+  to { transform: translate(-50px, 40px); }
+}

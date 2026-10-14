@@ -5,24 +5,22 @@ import {
   useRef,
   useState,
 } from 'react';
-import IconAdd from '@/assets/icons/add.svg?react';
+import { useNavigate } from 'react-router-dom';
 import IconRefresh from '@/assets/icons/refresh.svg?react';
 import { api, TENANT_ID } from '@/api/client';
 import { notify } from '@/components/ui';
+import { prefersReducedMotion } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 import { AGENT_CATALOG, findAgentCatalogEntry } from '@/lib/agentCatalog';
 import type { AgentProfileRead } from '@/types';
 
 /**
- * 开放广场首页（默认页）：
+ * 「全部」tab 右列组件（原站点「首页」页拆解而来，2026-10-13 首页下线后并入开放广场）：
  *
- * 左侧「我的工作台」——快捷方式画布。两种模式：
- * - 浏览（默认）：卡片只读，点击即打开（数字员工 → 对话；Agent 应用 → 工作台；链接 → 新标签页）
- * - 编辑：可拖拽摆放（16px 网格吸附）、悬停删除、添加候选、重置；「保存」写 localStorage
- *   后回到只读。
- *
- * 右侧「AI 圈 / 旅文圈」新闻 TOP——后端按天缓存 RSS 抓取结果，一日一更新；
- * 前端只渲染两组各 3 条（共 6 条，数量按整页排版定）。
+ * - `QuickAccessTiles`——快捷访问磁贴网格（demo qtile 同款：两列行卡 + 追光 3D 倾斜 +
+ *   虚线「添加快捷方式」格）。「管理 →」进入编辑：悬停删除、添加候选、重置；「保存」写 localStorage。
+ * - `NewsPanel`——「AI 圈 / 旅文圈」新闻 TOP，后端按天缓存 RSS 抓取结果，一日一更新；
+ *   前端只渲染两组各 3 条（共 6 条，数量按整页排版定）。
  */
 
 // ---------- 类型 ----------
@@ -31,8 +29,6 @@ type PlazaChip =
   | { kind: 'employee'; agentId: string; name: string; color: string }
   | { kind: 'agent-app'; entryId: string; name: string; color: string }
   | { kind: 'link'; url: string; name: string; color: string };
-
-type ChipLayout = { chip: PlazaChip; x: number; y: number };
 
 type NewsItem = {
   category: 'ai' | 'travel';
@@ -48,45 +44,45 @@ type NewsPayload = { date: string; items: { ai?: NewsItem[]; travel?: NewsItem[]
 // ---------- 常量 ----------
 
 const LAYOUT_STORAGE_KEY = 'ultrarag_plaza_home_layout_v1';
-const GRID = 16;
-const CANVAS_HEIGHT = 620;
-// 画布四周内边距：卡片不贴边，预留一道网格线
-const CANVAS_PAD = GRID;
 
 const PALETTE = ['#0f7268', '#c2703e', '#6f7b42', '#5b6fa8', '#8a5aa8'];
 
-// 默认布局：Agent 应用前三个（本地清单即时可得，不依赖接口）。
-function defaultLayout(): ChipLayout[] {
-  return AGENT_CATALOG.slice(0, 3).map((entry, index) => ({
-    chip: { kind: 'agent-app', entryId: entry.entry, name: entry.name, color: PALETTE[index % PALETTE.length] },
-    x: CANVAS_PAD + index * (104 + GRID),
-    y: CANVAS_PAD,
+// 默认磁贴：Agent 应用清单全部上墙（本地清单即时可得，不依赖接口）。
+function defaultChips(): PlazaChip[] {
+  return AGENT_CATALOG.slice(0, 6).map((entry, index) => ({
+    kind: 'agent-app',
+    entryId: entry.entry,
+    name: entry.name,
+    color: PALETTE[index % PALETTE.length],
   }));
 }
 
-function loadLayout(): ChipLayout[] | null {
+// 兼容两代存储：v1 = { chips: [{chip, x, y}] }（自由画布），v2 = { chips: [chip] }（磁贴）。
+function loadChips(): PlazaChip[] | null {
   try {
     const raw = JSON.parse(window.localStorage.getItem(LAYOUT_STORAGE_KEY) || 'null');
     if (!Array.isArray(raw?.chips)) return null;
-    const chips = raw.chips.filter(
-      (row: ChipLayout): row is ChipLayout =>
-        row && row.chip && typeof row.x === 'number' && typeof row.y === 'number',
-    );
+    const chips = raw.chips
+      .map((row: unknown): PlazaChip | null => {
+        const chip = row && typeof row === 'object' && 'chip' in (row as Record<string, unknown>)
+          ? (row as { chip: PlazaChip }).chip
+          : (row as PlazaChip);
+        return chip && typeof chip.kind === 'string' ? chip : null;
+      })
+      .filter((chip: PlazaChip | null): chip is PlazaChip => chip !== null);
     return chips.length > 0 ? chips : null;
   } catch {
     return null;
   }
 }
 
-function saveLayout(chips: ChipLayout[]) {
+function saveChips(chips: PlazaChip[]) {
   try {
-    window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({ v: 1, chips }));
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({ v: 2, chips }));
   } catch {
     // 隐私模式等场景写不进就算了，布局丢不了数据
   }
 }
-
-const snap = (value: number) => Math.round(value / GRID) * GRID;
 
 function chipKey(chip: PlazaChip): string {
   if (chip.kind === 'employee') return `employee:${chip.agentId}`;
@@ -94,86 +90,143 @@ function chipKey(chip: PlazaChip): string {
   return `link:${chip.url}`;
 }
 
+const KIND_LABEL: Record<PlazaChip['kind'], string> = {
+  employee: 'WORKER',
+  'agent-app': 'AGENT APP',
+  link: 'LINK',
+};
+
+/** 磁贴线性图标（demo 描边风格，颜色跟随磁贴色）。 */
+function ChipIcon({ chip, className }: { chip: PlazaChip; className?: string }) {
+  const common = {
+    className,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true,
+  };
+  if (chip.kind === 'employee') {
+    return (
+      <svg {...common}>
+        <circle cx="9" cy="8" r="3.5" />
+        <path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5" />
+        <circle cx="17.5" cy="9.5" r="2.5" />
+        <path d="M16 14.7c2.9.2 4.9 1.9 5.5 5.3" />
+      </svg>
+    );
+  }
+  if (chip.kind === 'link') {
+    return (
+      <svg {...common}>
+        <path d="M10 14 20.5 3.5M15 4h5.5v5.5" />
+        <path d="M19 13.5V19a1.5 1.5 0 0 1-1.5 1.5h-12A1.5 1.5 0 0 1 4 19V7a1.5 1.5 0 0 1 1.5-1.5H11" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...common}>
+      <path d="m14.5 5.5 4 4L8 20H4v-4z" />
+      <path d="m12.5 7.5 4 4" />
+    </svg>
+  );
+}
+
 // ---------- 子组件 ----------
 
-function ChipCard({
-  layout,
-  index,
+function QuickTile({
+  chip,
   editing,
-  dragging,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
   onRemove,
   onOpen,
 }: {
-  layout: ChipLayout;
-  index: number;
+  chip: PlazaChip;
   editing: boolean;
-  dragging: boolean;
-  onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
-  onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
-  onPointerUp: (event: React.PointerEvent<HTMLDivElement>) => void;
   onRemove: () => void;
   onOpen: () => void;
 }) {
-  const { chip } = layout;
-  const label = chip.kind === 'employee' ? '数字员工' : chip.kind === 'agent-app' ? 'Agent 应用' : '链接';
-  const icon = chip.kind === 'link' ? chip.name.slice(0, 1).toUpperCase() : chip.name.slice(0, 1);
+  const reduce = prefersReducedMotion();
+
   return (
     <div
-      data-plaza-chip
-      style={{ left: layout.x, top: layout.y, ['--chip-color' as string]: chip.color }}
-      // setPointerCapture 在卡片上，move/up 事件会重定向回卡片元素，
-      // 所以拖动三件套必须都挂在卡片本体上（currentTarget 才是卡片）。
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-      onClick={() => {
-        if (!editing) onOpen();
+      className="group relative"
+      onMouseMove={(event) => {
+        if (editing) return;
+        const el = event.currentTarget.querySelector<HTMLElement>('[data-tile]');
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const px = (event.clientX - rect.left) / rect.width;
+        const py = (event.clientY - rect.top) / rect.height;
+        el.style.setProperty('--mx', `${px * 100}%`);
+        el.style.setProperty('--my', `${py * 100}%`);
+        if (!reduce) {
+          el.style.transform = `perspective(600px) rotateX(${(0.5 - py) * 5}deg) rotateY(${(px - 0.5) * 5}deg)`;
+        }
       }}
-      className={cn(
-        'group absolute z-[2] w-[104px] cursor-pointer touch-none rounded-[14px] border border-black/[0.05] bg-white p-[12px_8px_10px] text-center shadow-[0_1px_2px_rgba(17,17,17,0.04),0_6px_20px_rgba(17,17,17,0.07)] transition-shadow',
-        editing && 'cursor-grab',
-        dragging && 'z-[20] scale-[1.06] cursor-grabbing border-[#0f7268] shadow-[0_6px_12px_rgba(28,28,30,0.12),0_24px_44px_-16px_rgba(28,28,30,0.35)]',
-      )}
-      title={editing ? '拖动摆放' : chip.name}
+      onMouseLeave={(event) => {
+        const el = event.currentTarget.querySelector<HTMLElement>('[data-tile]');
+        if (el) el.style.transform = '';
+      }}
     >
+      <button
+        type="button"
+        data-tile
+        onClick={() => {
+          if (!editing) onOpen();
+        }}
+        className={cn(
+          'relative flex w-full items-center gap-[12px] overflow-hidden rounded-[16px] border border-black/[0.07] bg-white p-[14px] text-left shadow-[0_2px_8px_rgba(17,17,17,0.04)] transition-[box-shadow,border-color] duration-300 hover:border-[rgba(15,114,110,0.3)] hover:shadow-[0_24px_56px_rgba(17,17,17,0.10)]',
+          editing && 'cursor-default',
+        )}
+        title={chip.name}
+      >
+        {/* 追光：radial 渐变跟随鼠标（--mx/--my 写在磁贴元素上） */}
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+          style={{ background: `radial-gradient(180px circle at var(--mx,50%) var(--my,50%), color-mix(in srgb, ${chip.color} 10%, transparent), transparent 60%)` }}
+        />
+        <span
+          className="flex h-[38px] w-[38px] flex-none items-center justify-center rounded-[12px] border border-black/[0.07] bg-[#fbfbfa]"
+          style={{ color: chip.color }}
+        >
+          <ChipIcon chip={chip} className="size-[17px]" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <b className="block overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-bold text-[#18181a]">
+            {chip.name}
+          </b>
+          <small className="mt-[1px] block font-mono text-[10px] tracking-[0.05em] text-[#757f9c]">
+            {KIND_LABEL[chip.kind]}
+          </small>
+        </span>
+        <span
+          aria-hidden
+          className="absolute right-[12px] top-1/2 -translate-x-[5px] -translate-y-1/2 font-mono text-[12px] font-medium text-[#0f7268] opacity-0 transition-all duration-300 group-hover:translate-x-0 group-hover:opacity-100"
+        >
+          →
+        </span>
+      </button>
       {editing && (
         <button
           type="button"
           aria-label={`移除 ${chip.name}`}
-          onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
             onRemove();
           }}
-          className="absolute -right-[7px] -top-[7px] hidden h-[20px] w-[20px] items-center justify-center rounded-full border border-black/[0.08] bg-white text-[11px] text-[#757f9c] group-hover:flex hover:border-[#c0392b] hover:text-[#c0392b]"
+          className="absolute -right-[7px] -top-[7px] z-[2] hidden h-[20px] w-[20px] items-center justify-center rounded-full border border-black/[0.08] bg-white text-[11px] text-[#757f9c] hover:border-[#c0392b] hover:text-[#c0392b] group-hover:flex"
         >
           ✕
         </button>
       )}
-      <div
-        className="mx-auto mb-[8px] flex h-[42px] w-[42px] items-center justify-center rounded-[12px] text-[17px] font-semibold text-white"
-        style={{ backgroundColor: chip.color }}
-      >
-        {icon}
-      </div>
-      <div className="overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] font-semibold leading-[1.35] text-[#18181a]">
-        {chip.name}
-      </div>
-      <span
-        className="mt-[5px] inline-block rounded-full px-[7px] py-[3px] text-[10px] font-medium leading-none"
-        style={{ backgroundColor: `color-mix(in srgb, ${chip.color} 10%, #fff)`, color: chip.color }}
-      >
-        {label}
-      </span>
     </div>
   );
 }
 
-function NewsPanel() {
+export function NewsPanel() {
   const [payload, setPayload] = useState<NewsPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -204,7 +257,7 @@ function NewsPanel() {
   let rank = 0;
 
   return (
-    <section className="flex w-[380px] shrink-0 flex-col overflow-hidden rounded-[16px] border border-black/[0.05] bg-white/85 shadow-[0_6px_20px_rgba(17,17,17,0.05)] backdrop-blur max-[1200px]:w-[320px]">
+    <section className="flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-[20px] border border-black/[0.06] bg-white/85 shadow-[0_6px_20px_rgba(17,17,17,0.05)] backdrop-blur max-[1200px]:w-[320px]">
       <div className="flex items-center justify-between border-b border-black/[0.05] px-[18px] py-[14px]">
         <div className="flex items-center gap-[9px] text-[14.5px] font-semibold text-[#18181a]">
           🔥 AI 圈 · 旅文圈
@@ -220,7 +273,7 @@ function NewsPanel() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-[6px]">
+      <div className="min-h-0 flex-1 overflow-y-auto py-[6px]">
         {loading && !payload && (
           <div className="flex flex-col gap-[12px] px-[18px] py-[14px]">
             {Array.from({ length: 6 }).map((_, index) => (
@@ -474,7 +527,7 @@ function AddChipDialog({
                 setLinkUrl('');
               }}
             >
-              添加到画布
+              添加到快捷访问
             </button>
           </div>
         )}
@@ -483,34 +536,17 @@ function AddChipDialog({
   );
 }
 
-// ---------- 主组件 ----------
+// ---------- 快捷访问磁贴网格（demo qtile 同款） ----------
 
-export default function PlazaHomePage({
-  onUseEmployee,
-  onOpenAgentApp,
-}: {
-  /** 点击数字员工快捷方式（父组件复用广场「使用此员工」的完整链路）。 */
-  onUseEmployee: (agentId: string) => void;
-  /** 点击 Agent 应用快捷方式 → 打开对应工作台。 */
-  onOpenAgentApp: (entryId: string) => void;
-}) {
+export function QuickAccessTiles() {
+  const navigate = useNavigate();
   const [mode, setMode] = useState<'view' | 'edit'>('view');
-  const [chips, setChips] = useState<ChipLayout[]>(() => loadLayout() || defaultLayout());
-  const [draggingKey, setDraggingKey] = useState('');
+  const [chips, setChips] = useState<PlazaChip[]>(() => loadChips() || defaultChips());
   const [addOpen, setAddOpen] = useState(false);
   const [employees, setEmployees] = useState<AgentProfileRead[]>([]);
 
-  const canvasRef = useRef<HTMLDivElement>(null);
   // 编辑进入时的快照，「取消」恢复
-  const snapshotRef = useRef<ChipLayout[]>([]);
-  const dragRef = useRef<{
-    key: string;
-    moved: boolean;
-    startX: number;
-    startY: number;
-    originX: number;
-    originY: number;
-  } | null>(null);
+  const snapshotRef = useRef<PlazaChip[]>([]);
 
   // 数字员工候选（进页面拉一次；失败静默——只影响候选列表）
   useEffect(() => {
@@ -523,7 +559,37 @@ export default function PlazaHomePage({
       .catch(() => setEmployees([]));
   }, []);
 
-  const existingKeys = useMemo(() => new Set(chips.map((row) => chipKey(row.chip))), [chips]);
+  // 复用广场「使用此员工」的完整链路：标记 used → 写入员工作用域 → 进员工档案。
+  // 接口失败（已用过/网络抖动）不拦跳转，保证快捷方式始终可达。
+  const handleUseEmployee = useCallback(
+    (agentId: string) => {
+      void (async () => {
+        try {
+          await api.post(`/api/chat/agents/${agentId}/use?tenant_id=${TENANT_ID}`, {});
+        } catch {
+          // 忽略：是否已用过不影响后续跳转
+        }
+        window.localStorage.setItem('ultrarag_enterprise_agent_scope', agentId);
+        window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
+        window.dispatchEvent(
+          new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId } }),
+        );
+        navigate('/enterprise/dashboard');
+      })();
+    },
+    [navigate],
+  );
+
+  const openChip = useCallback(
+    (chip: PlazaChip) => {
+      if (chip.kind === 'employee') handleUseEmployee(chip.agentId);
+      else if (chip.kind === 'agent-app') navigate(`/enterprise/agent-apps/${encodeURIComponent(chip.entryId)}`);
+      else window.open(chip.url, '_blank', 'noopener');
+    },
+    [handleUseEmployee, navigate],
+  );
+
+  const existingKeys = useMemo(() => new Set(chips.map((row) => chipKey(row))), [chips]);
 
   const startEdit = useCallback(() => {
     snapshotRef.current = chips;
@@ -533,236 +599,98 @@ export default function PlazaHomePage({
   const cancelEdit = useCallback(() => {
     setChips(snapshotRef.current);
     setMode('view');
-    setDraggingKey('');
   }, []);
 
-  // 保存前自动对齐整理：不改变用户排的行列归属——y 相近的视为同一排，
-  // 行内按 x 从左到右等距排列（左右间隔 1 条网格线 16px），各排按原上下顺序
-  // 等距对齐（上下间隔 2 条网格线 32px），并收敛进画布边界。
-  const CHIP_W = 104;
-  const CHIP_H = 118;
-  const CHIP_PITCH_X = CHIP_W + GRID; // 左右间隔一条线
-  const CHIP_PITCH_Y = CHIP_H + GRID * 2; // 上下间隔两条线
   const saveEdit = useCallback(() => {
-    const canvas = canvasRef.current;
-    const width = canvas ? canvas.clientWidth : 720;
-    const height = canvas ? canvas.clientHeight : CANVAS_HEIGHT;
-    // 四周留一道边距，卡片不贴画布边缘
-    const maxX = Math.max(CANVAS_PAD, snap(width - CHIP_W - CANVAS_PAD));
-    const maxY = Math.max(CANVAS_PAD, snap(height - CHIP_H - CANVAS_PAD));
-    const sorted = [...chips].sort((a, b) => a.y - b.y || a.x - b.x);
-    const rows: ChipLayout[][] = [];
-    for (const item of sorted) {
-      const last = rows[rows.length - 1];
-      if (last && Math.abs(item.y - last[0].y) < CHIP_H) {
-        last.push(item);
-      } else {
-        rows.push([item]);
-      }
-    }
-    const aligned = rows.flatMap((group, rowIndex) =>
-      [...group]
-        .sort((a, b) => a.x - b.x)
-        .map((row, colIndex) => ({
-          ...row,
-          x: Math.min(CANVAS_PAD + colIndex * CHIP_PITCH_X, maxX),
-          y: Math.min(CANVAS_PAD + rowIndex * CHIP_PITCH_Y, maxY),
-        })),
-    );
-    setChips(aligned);
-    saveLayout(aligned);
+    saveChips(chips);
     setMode('view');
-    setDraggingKey('');
-    notify.success('工作台布局已保存（卡片已自动对齐）');
+    notify.success('快捷访问已保存');
   }, [chips]);
 
   const resetLayout = useCallback(() => {
-    setChips(defaultLayout());
+    setChips(defaultChips());
     notify.success('已重置为默认布局，保存后生效');
   }, []);
 
   const addChip = useCallback((chip: PlazaChip) => {
-    const canvas = canvasRef.current;
-    const width = canvas ? canvas.clientWidth : 720;
-    const height = canvas ? canvas.clientHeight : CANVAS_HEIGHT;
-    const x = snap(CANVAS_PAD + Math.random() * Math.max(60, width - CHIP_W - 2 * CANVAS_PAD));
-    const y = snap(CANVAS_PAD + Math.random() * Math.max(60, height - CHIP_H - 2 * CANVAS_PAD));
-    setChips((current) => [...current, { chip, x, y }]);
+    setChips((current) => [...current, chip]);
     setAddOpen(false);
   }, []);
 
   const removeChip = useCallback((key: string) => {
-    setChips((current) => current.filter((row) => chipKey(row.chip) !== key));
-  }, []);
-
-  const openChip = useCallback(
-    (chip: PlazaChip) => {
-      if (chip.kind === 'employee') onUseEmployee(chip.agentId);
-      else if (chip.kind === 'agent-app') onOpenAgentApp(chip.entryId);
-      else window.open(chip.url, '_blank', 'noopener');
-    },
-    [onOpenAgentApp, onUseEmployee],
-  );
-
-  // 拖拽（编辑模式）：pointer capture + 网格吸附
-  const handlePointerDown = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>, key: string) => {
-      if (mode !== 'edit' || event.button !== 0) return;
-      const el = event.currentTarget;
-      dragRef.current = {
-        key,
-        moved: false,
-        startX: event.clientX,
-        startY: event.clientY,
-        originX: el.offsetLeft,
-        originY: el.offsetTop,
-      };
-      el.setPointerCapture(event.pointerId);
-    },
-    [mode],
-  );
-
-  const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag) return;
-    const dx = event.clientX - drag.startX;
-    const dy = event.clientY - drag.startY;
-    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
-    if (!drag.moved) {
-      drag.moved = true;
-      setDraggingKey(drag.key);
-    }
-    const canvas = canvasRef.current;
-    const el = event.currentTarget;
-    if (!canvas) return;
-    const nx = Math.min(Math.max(CANVAS_PAD, drag.originX + dx), canvas.clientWidth - el.offsetWidth - CANVAS_PAD);
-    const ny = Math.min(Math.max(CANVAS_PAD, drag.originY + dy), canvas.clientHeight - el.offsetHeight - CANVAS_PAD);
-    el.style.left = `${nx}px`;
-    el.style.top = `${ny}px`;
-  }, []);
-
-  const handlePointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag) return;
-    dragRef.current = null;
-    const el = event.currentTarget;
-    if (drag.moved) {
-      const x = snap(el.offsetLeft);
-      const y = snap(el.offsetTop);
-      el.style.left = `${x}px`;
-      el.style.top = `${y}px`;
-      setDraggingKey('');
-      setChips((current) => current.map((row) => (chipKey(row.chip) === drag.key ? { ...row, x, y } : row)));
-    }
+    setChips((current) => current.filter((row) => chipKey(row) !== key));
   }, []);
 
   return (
-    <div className="flex flex-col gap-[16px]">
-      {/* 问候行（编辑操作已收进「我的工作台」卡片头部右侧） */}
-      <div className="px-[12px]">
-        <h2 className="text-[22px] font-bold tracking-[0.5px] text-[#18181a]">
-          下午好，<span className="text-[#0f7268]">欢迎回来</span>
-        </h2>
-        <p className="mt-[6px] text-[13px] text-[#5b6274]">
-          从工作台直达你的数字员工与 Agent，或看看 AI 圈与旅文圈今天发生了什么。
-        </p>
+    <section
+      className="w-full rounded-[20px] border border-black/[0.06] bg-white/85 shadow-[0_6px_20px_rgba(17,17,17,0.05)] backdrop-blur"
+      aria-label="快捷访问"
+    >
+      <div className="flex items-center justify-between px-[24px] pb-[14px] pt-[22px]">
+        <h2 className="text-[19px] font-black tracking-[-0.02em] text-[#18181a]">快捷访问</h2>
+        <div className="flex items-center gap-[6px]">
+          {mode === 'edit' ? (
+            <>
+              <button
+                type="button"
+                onClick={resetLayout}
+                className="rounded-[9px] px-[9px] py-[5px] font-mono text-[11px] text-[#5b6274] transition-colors hover:bg-[#f4f2ec]"
+              >
+                ↺ 重置
+              </button>
+              <button
+                type="button"
+                onClick={cancelEdit}
+                className="rounded-[9px] border border-[#e3e7f1] bg-white px-[12px] py-[5px] font-mono text-[11px] text-[#5b6274] transition-colors hover:border-[#cbd3e6]"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={saveEdit}
+                className="rounded-[9px] bg-[#18181a] px-[12px] py-[5px] font-mono text-[11px] font-medium text-white transition-colors hover:bg-[#18181a]/90"
+              >
+                保存
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={startEdit}
+              className="inline-flex items-center gap-[5px] font-mono text-[11px] font-medium text-[#0f7268] transition-opacity hover:opacity-70"
+            >
+              管理 →
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="flex gap-[18px] max-[1200px]:flex-col">
-        {/* 画布 */}
-        <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[16px] border border-black/[0.05] bg-white/85 shadow-[0_6px_20px_rgba(17,17,17,0.05)] backdrop-blur">
-          <div className="flex items-center justify-between border-b border-black/[0.05] px-[18px] py-[14px]">
-            <div className="flex items-center gap-[9px] text-[14.5px] font-semibold text-[#18181a]">
-              <span className="flex h-[26px] w-[26px] items-center justify-center rounded-[8px] bg-[#e3efed] text-[13px] text-[#0f7268]">▦</span>
-              我的工作台
-              {mode === 'edit' && (
-                <span className="rounded-full bg-[#f7ece4] px-[9px] py-[2px] text-[11px] font-medium text-[#c2703e]">
-                  编辑中
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-[8px]">
-              {mode === 'edit' ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={resetLayout}
-                    className="rounded-[9px] px-[10px] py-[6px] text-[12.5px] text-[#5b6274] hover:bg-[#f4f2ec]"
-                  >
-                    ↺ 重置
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAddOpen(true)}
-                    className="flex items-center gap-[6px] rounded-[9px] bg-[#0f7268] px-[12px] py-[6px] text-[12.5px] font-medium text-white hover:bg-[#0c6158]"
-                  >
-                    <IconAdd className="size-[13px]" />
-                    添加快捷方式
-                  </button>
-                  <button
-                    type="button"
-                    onClick={cancelEdit}
-                    className="rounded-[9px] border border-[#e3e7f1] bg-white px-[14px] py-[6px] text-[12.5px] text-[#5b6274] hover:border-[#cbd3e6]"
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    onClick={saveEdit}
-                    className="rounded-[9px] bg-[#18181a] px-[14px] py-[6px] text-[12.5px] font-medium text-white hover:bg-[#18181a]/90"
-                  >
-                    保存布局
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  onClick={startEdit}
-                  className="rounded-[9px] border border-[#e3e7f1] bg-white px-[14px] py-[6px] text-[12.5px] text-[#5b6274] hover:border-[#cbd3e6] hover:text-[#18181a]"
-                >
-                  ✎ 编辑布局
-                </button>
-              )}
-            </div>
+      <div className="grid grid-cols-1 gap-[10px] px-[24px] pb-[20px] min-[460px]:grid-cols-2">
+        {chips.map((chip) => {
+          const key = chipKey(chip);
+          return (
+            <QuickTile
+              key={key}
+              chip={chip}
+              editing={mode === 'edit'}
+              onRemove={() => removeChip(key)}
+              onOpen={() => openChip(chip)}
+            />
+          );
+        })}
+        {chips.length === 0 && (
+          <div className="col-span-full py-[18px] text-center text-[12.5px] text-[#757f9c]">
+            还没有快捷方式——点下方虚线格添加
           </div>
-
-          <div
-            ref={canvasRef}
-            style={{ height: CANVAS_HEIGHT, backgroundSize: `${GRID}px ${GRID}px` }}
-            className="relative overflow-hidden bg-[radial-gradient(circle,rgba(24,24,26,0.07)_1px,transparent_1.2px)] [background-position:0_0] [background-image:radial-gradient(circle,rgba(24,24,26,0.07)_1px,transparent_1.2px)]"
-          >
-            {chips.length === 0 && (
-              <div className="pointer-events-none absolute inset-0 z-[1] flex flex-col items-center justify-center gap-[10px] text-[13px] text-[#757f9c]">
-                <span className="flex h-[44px] w-[44px] items-center justify-center rounded-[14px] border-[1.5px] border-dashed border-black/[0.12] text-[20px]">
-                  ＋
-                </span>
-                {mode === 'edit' ? '点击右上角「添加快捷方式」开始布置' : '工作台是空的——点「编辑布局」添加快捷方式'}
-              </div>
-            )}
-            {chips.map((row) => {
-              const key = chipKey(row.chip);
-              return (
-                <ChipCard
-                  key={key}
-                  layout={row}
-                  index={0}
-                  editing={mode === 'edit'}
-                  dragging={draggingKey === key}
-                  onPointerDown={(event) => handlePointerDown(event, key)}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                  onRemove={() => removeChip(key)}
-                  onOpen={() => openChip(row.chip)}
-                />
-              );
-            })}
-            <div className="pointer-events-none absolute bottom-[12px] right-[14px] z-[3] rounded-full border border-black/[0.05] bg-[rgba(255,255,255,0.82)] px-[10px] py-[4px] text-[11.5px] text-[#757f9c]">
-              {mode === 'edit' ? '拖动卡片自由摆放（16px 网格吸附）· 悬停删除' : '点击卡片直接打开 · 点「编辑布局」调整'}
-            </div>
-          </div>
-        </section>
-
-        <NewsPanel />
+        )}
+        {/* 虚线添加格（demo 同款，两种模式都在；浏览态点击直达添加弹层） */}
+        <button
+          type="button"
+          onClick={() => setAddOpen(true)}
+          className="grid min-h-[66px] place-items-center rounded-[16px] border border-dashed border-black/[0.12] font-mono text-[11px] text-[#757f9c] transition-colors hover:border-[rgba(15,114,110,0.45)] hover:text-[#0f7268]"
+        >
+          + 添加快捷方式
+        </button>
       </div>
 
       <AddChipDialog
@@ -781,6 +709,6 @@ export default function PlazaHomePage({
           addChip({ kind: 'link', url, name, color: PALETTE[chips.length % PALETTE.length] })
         }
       />
-    </div>
+    </section>
   );
 }

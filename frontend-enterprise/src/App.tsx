@@ -57,7 +57,6 @@ import ModelsPage from "./pages/ModelsPage";
 import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
 import ApiKeyApprovalsPage from "./pages/ApiKeyApprovalsPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
-import HomePage from "./pages/HomePage";
 import PlatformUpdatesPage from "./pages/PlatformUpdatesPage";
 import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
@@ -174,10 +173,8 @@ function Shell({
     location.pathname === "/enterprise/platform" ||
     location.pathname.startsWith("/enterprise/platform/");
   const selected =
-    location.pathname === "/enterprise"
-      ? EnterpriseRoute.Home
-      : isOpenPlatformRoute
-        ? "/enterprise/platform"
+    location.pathname === "/enterprise" || isOpenPlatformRoute
+      ? "/enterprise/platform"
         : location.pathname.startsWith("/enterprise/knowledge")
           ? "/enterprise/knowledge"
           : location.pathname.startsWith("/enterprise/general-skills")
@@ -581,21 +578,17 @@ function Shell({
             <Routes>
               <Route
                 path="/enterprise"
-                element={<Navigate to={EnterpriseRoute.Home} replace />}
+                element={<Navigate to={EnterpriseRoute.Platform} replace />}
               />
+              {/* 站点首页已下线（2026-10-13）：首页能力（热门总览/快捷访问/新闻）并入开放广场「全部」tab */}
               <Route
                 path={EnterpriseRoute.Home}
-                element={
-                  <HomePage
-                    currentUser={auth.user}
-                    onLogout={onLogout}
-                  />
-                }
+                element={<Navigate to={EnterpriseRoute.Platform} replace />}
               />
-              {/* 广场首页已独立为站点首页：旧链接 /enterprise/platform/home 301 到新地址 */}
+              {/* 旧广场首页链接一并落到广场 */}
               <Route
                 path="/enterprise/platform/home"
-                element={<Navigate to={EnterpriseRoute.Home} replace />}
+                element={<Navigate to={EnterpriseRoute.Platform} replace />}
               />
               <Route
                 path="/enterprise/platform"
@@ -1049,8 +1042,8 @@ function AuthedApp({
 }) {
   const location = useLocation();
   if (location.pathname === "/") {
-    // 站点默认首页是「首页」（AI 新闻 + 快捷方式画布）。
-    return <Navigate to={EnterpriseRoute.Home} replace />;
+    // 站点默认落地 = 开放广场「全部」tab（原首页能力已并入）。
+    return <Navigate to={EnterpriseRoute.Platform} replace />;
   }
   if (location.pathname === "/chat" || location.pathname === "/chat/") {
     return <Navigate to={EnterpriseRoute.Gallery} replace />;

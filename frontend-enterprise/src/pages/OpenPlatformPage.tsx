@@ -52,6 +52,7 @@ import {
   type PlatformStat,
 } from '@/components/openPlatform';
 import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
+import PlazaAllTab from '@/components/openPlatform/PlazaAllTab';
 import {
   GENERAL_SKILL_CATEGORY_ALL,
   GENERAL_SKILL_CATEGORY_NONE,
@@ -72,6 +73,9 @@ const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 // 广场模块标识只保留一处定义（PlatformKindDetailView 里那份），这里只是本页的别名，
 // 避免两处字面量联合类型各自漂移。
 type PlatformKind = PlatformDetailKind;
+
+/** 广场 tab 值：各资源模块 + 「全部」热门总览 tab（默认落地，2026-10-13 吸收原站点首页）。 */
+type TabKind = PlatformKind | 'all';
 
 /** 每个广场模块各自的数据加载状态：进页面只拉当前 tab 用到的接口。 */
 type KindLoadState = 'idle' | 'loading' | 'ready' | 'error';
@@ -337,11 +341,11 @@ function PlatformTab({
       aria-selected={active}
       onClick={onSelect}
       className={cn(
-        'flex min-w-[120px] items-center justify-center gap-[8px] whitespace-nowrap rounded-[10px] border-[0.5px] px-[14px] py-[8px] text-[14px] leading-[normal] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#1a71ff] focus-visible:ring-offset-2',
+        'flex items-center justify-center gap-[7px] whitespace-nowrap rounded-full px-[15px] py-[8px] text-[14px] leading-[normal] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#1a71ff] focus-visible:ring-offset-2',
         active
-          ? 'border-[#1a71ff] bg-[#eef0ff] font-medium text-[#1a71ff]'
-          : 'border-[#e3e7f1] bg-white font-normal text-[#4f5669] hover:border-[#cbd3e6] hover:bg-[#f6f7fa] hover:text-[#18181a]',
-        'max-[560px]:min-w-[88px] max-[560px]:px-[10px] max-[560px]:py-[6px] max-[560px]:text-[12px]',
+          ? 'bg-[#18181a] font-medium text-white shadow-[0_2px_8px_rgba(24,24,26,0.18)]'
+          : 'font-normal text-[#4f5669] hover:bg-[#f4f4f2] hover:text-[#18181a]',
+        'max-[560px]:px-[11px] max-[560px]:py-[6px] max-[560px]:text-[12px]',
       )}
     >
       <span>{label}</span>
@@ -349,8 +353,8 @@ function PlatformTab({
         <span
           ref={badgeRef}
           className={cn(
-            'rounded-[90px] px-[7px] py-[1px] text-[11px] leading-none',
-            active ? 'bg-white text-[#1a71ff]' : 'bg-[#f2f4f8] text-[#757f9c]',
+            'text-[12px] leading-none tabular-nums',
+            active ? 'text-white/55' : 'text-[#a2a8b8]',
           )}
         >
           {count}
@@ -370,10 +374,13 @@ export default function OpenPlatformPage({
   onLogout?: () => void;
 }) {
   const navigate = useNavigate();
-  const { kind } = useParams<{ kind?: PlatformKind }>();
-  const initialKind = kind && PLATFORM_BY_KIND.has(kind) ? kind : 'agents';
-  const [activeKind, setActiveKind] = useState<PlatformKind>(initialKind);
-  // 广场首页已独立为侧边栏「首页」（/enterprise/home，HomePage.tsx），广场页只承载各资源列表。
+  const { kind } = useParams<{ kind?: string }>();
+  // 默认落「全部」热门总览 tab；深链 :kind 仍可直达各模块。
+  const initialKind: TabKind = kind && (kind === 'all' || PLATFORM_BY_KIND.has(kind as PlatformKind))
+    ? (kind as TabKind)
+    : 'all';
+  const [activeKind, setActiveKind] = useState<TabKind>(initialKind);
+  // 「全部」tab 已吸收原站点首页（快捷访问 + 新闻），广场成为站点默认落地页。
   // 支持 ?q= 深链（技能分享页「去技能广场查看」带上技能名）：进页面即预填搜索词，
   // 广场自动过滤出目标技能；用户可随时清空改查。
   const [searchText, setSearchText] = useState(() => new URLSearchParams(window.location.search).get('q') || '');
@@ -396,6 +403,9 @@ export default function OpenPlatformPage({
   const [downloadingSkill, setDownloadingSkill] = useState('');
   // 大包下载进度浮层，与技能广场/档案页同一套交互
   const [transfer, setTransfer] = useState<{ label: string; percent: number | null; receivedBytes?: number } | null>(null);
+  // 「全部」tab 无模块数据可刷：刷新按钮通过 key 重挂载 PlazaAllTab 重新拉热门数据
+  // 「全部」tab 的刷新按钮已移除；key 仅保留重挂载能力
+  const [allRefreshKey] = useState(0);
   const [confirmTarget, setConfirmTarget] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
 
   // 已加载过的模块不重复拉；同一模块并发只发一次请求（ref 与 state 同步写，保证守卫是同步准确的）。
@@ -408,8 +418,8 @@ export default function OpenPlatformPage({
   }, []);
 
   useEffect(() => {
-    if (kind && PLATFORM_BY_KIND.has(kind)) {
-      setActiveKind(kind);
+    if (kind && (kind === 'all' || PLATFORM_BY_KIND.has(kind as PlatformKind))) {
+      setActiveKind(kind as TabKind);
     }
   }, [kind]);
 
@@ -464,15 +474,21 @@ export default function OpenPlatformPage({
       });
   }, []);
 
+  // 各模块角标的聚合计数改在「全部」tab 拉取（一次填满所有角标）；
+  // 其他模块 tab 不拉——原挂在 agents 拉取里会让落地「全部」时数字缺失。
+  useEffect(() => {
+    if (activeKind === 'all') {
+      void fetchGalleryCounts();
+    }
+  }, [activeKind, fetchGalleryCounts]);
+
   const fetchAgents = useCallback(async (): Promise<AgentProfileRead[]> => {
     if (agentsCacheRef.current) return agentsCacheRef.current;
     const rows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
     agentsCacheRef.current = rows;
     setAgents(rows);
-    // 角标数量随 agents 列表一起取：与模块列表同周期，依次闹一次（成功后不再重复拉）。
-    void fetchGalleryCounts();
     return rows;
-  }, [fetchGalleryCounts]);
+  }, []);
 
   /**
    * 加载某个广场模块的数据。
@@ -520,10 +536,11 @@ export default function OpenPlatformPage({
   }, [fetchAgents, fetchGalleryCounts, setKindState]);
 
   useEffect(() => {
-    void loadKindData(activeKind);
+    // 「全部」tab 不拉模块列表（热门总览由 PlazaAllTab 自取）
+    if (activeKind !== 'all') void loadKindData(activeKind);
   }, [activeKind, loadKindData]);
 
-  const activeKindState = kindStates[activeKind] || 'idle';
+  const activeKindState = activeKind === 'all' ? 'ready' : (kindStates[activeKind] || 'idle');
   const loading = activeKindState === 'idle' || activeKindState === 'loading';
 
   const visibleAgents = useMemo(
@@ -618,6 +635,8 @@ export default function OpenPlatformPage({
   }), [generalSkills, knowledgeBases, isAdmin, skills, tools, visibleAgents]);
 
   const filteredItems = useMemo(() => {
+    // 「全部」tab 不消费模块列表（渲染走 PlazaAllTab）
+    if (activeKind === 'all') return [];
     const items = platformItems[activeKind];
     const scoped = activeKind === 'general-skills' && skillCategoryFilter !== GENERAL_SKILL_CATEGORY_ALL
       ? items.filter((item) => (skillCategoryFilter === GENERAL_SKILL_CATEGORY_NONE
@@ -636,14 +655,13 @@ export default function OpenPlatformPage({
   }, [activeKind, platformItems, searchText, skillCategoryFilter]);
 
   const tabItems = useMemo(
-    () =>
-      PLATFORM_CONFIGS.map((config) => ({
-        value: config.kind,
+    () => {
+      // 各模块角标：Agent 广场是本地清单永远即时可得；其余模块加载就绪时用本地
+      // 列表长度（最准且随增删变化），否则用聚合计数接口的数字填满未访问模块。
+      const moduleItems = PLATFORM_CONFIGS.map((config) => ({
+        value: config.kind as TabKind,
         label: config.title,
-        // 模块自身加载就绪时用本地列表长度（最准且随增删变化）；
-        // 否则用聚合计数接口的数字填满未访问模块的角标；两者都不可用则不显示。
         count:
-          // Agent 广场是本地清单，永远即时可得，不依赖懒加载状态与聚合计数
           config.kind === 'agent-apps'
             ? platformItems['agent-apps'].length
             : kindStates[config.kind] === 'ready'
@@ -651,7 +669,21 @@ export default function OpenPlatformPage({
               : galleryCounts && galleryCounts[config.kind] !== undefined
                 ? galleryCounts[config.kind]
                 : undefined,
-      })),
+      }));
+      // 「全部」角标 = 各模块角标之和（口径与页面展示的分类数字严格一致）；
+      // 一个模块数字都没有时（聚合接口未返回且未加载）不显示，避免假 0。
+      const defined = moduleItems.filter((item) => typeof item.count === 'number');
+      return [
+        {
+          value: 'all' as TabKind,
+          label: '全部',
+          count: defined.length
+            ? defined.reduce<number>((acc, item) => acc + (item.count as number), 0)
+            : undefined,
+        },
+        ...moduleItems,
+      ];
+    },
     [galleryCounts, kindStates, platformItems],
   );
 
@@ -860,9 +892,9 @@ export default function OpenPlatformPage({
     navigate('/enterprise/general-skills/new?scope=gallery');
   }
 
-  function handleKindChange(next: PlatformKind) {
+  function handleKindChange(next: TabKind) {
     setActiveKind(next);
-    navigate(`/enterprise/platform/${next}`);
+    navigate(next === 'all' ? '/enterprise/platform' : `/enterprise/platform/${next}`);
   }
 
   function renderItemDrawer() {
@@ -976,8 +1008,8 @@ export default function OpenPlatformPage({
     );
   }
 
-  const config = PLATFORM_BY_KIND.get(activeKind) || PLATFORM_CONFIGS[0];
-  const PlatformIcon = PLATFORM_ICON[activeKind];
+  const config = activeKind === 'all' ? null : (PLATFORM_BY_KIND.get(activeKind) || PLATFORM_CONFIGS[0]);
+  const PlatformIcon = activeKind === 'all' ? null : PLATFORM_ICON[activeKind];
   // 切 tab 时区块标题 / 信号 chips 做一次轻微错开入场（内容本体由网格波承担）
   const headerRef = useStaggerReveal<HTMLDivElement>(true, {
     selector: ':scope > *',
@@ -986,6 +1018,50 @@ export default function OpenPlatformPage({
     stagger: 45,
     duration: MOTION.base,
   });
+
+  // 广场分类胶囊栏 + 右侧操作按钮：「全部」tab 时作为插槽传给 PlazaAllTab
+  // 渲染在编辑式大标题之下（demo 同序）；其他模块 tab 仍渲染在内容区顶部。
+  const toolbar = (
+    <div className="flex flex-wrap items-center justify-between gap-[12px]">
+      <div
+        role="tablist"
+        aria-label="广场类型"
+        className="inline-flex max-w-full flex-wrap items-center gap-[2px] rounded-full border border-black/[0.06] bg-white p-[4px] shadow-[0_1px_2px_rgba(17,17,17,0.04),0_6px_20px_rgba(17,17,17,0.05)] max-[560px]:rounded-[22px]"
+      >
+        {tabItems.map((item) => (
+          <PlatformTab
+            key={item.value}
+            label={item.label}
+            count={item.count}
+            active={item.value === activeKind}
+            onSelect={() => handleKindChange(item.value)}
+          />
+        ))}
+      </div>
+
+      {activeKind !== 'all' && (
+        <div className="flex flex-wrap items-center gap-[8px]">
+          {activeKind === 'general-skills' && (
+                <UIButton onClick={handleCreateGeneralSkill} className="h-8 gap-1 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]">
+                  <IconAdd className="size-3.5" />
+                  创建开放 Skill
+                </UIButton>
+              )}
+              <UIButton
+                variant="outline"
+                onClick={() => {
+                  void loadKindData(activeKind, { force: true });
+                }}
+                disabled={loading}
+                className="h-8 gap-1 rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-5 text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
+              >
+                <IconRefresh className={cn('size-[14px]', loading && 'animate-spin')} />
+                刷新
+              </UIButton>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[20px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
@@ -997,42 +1073,15 @@ export default function OpenPlatformPage({
       />
 
       <div className="flex flex-col gap-[20px] rounded-[20px] bg-white p-[18px_18px_24px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
-        <div className="flex flex-wrap items-center justify-between gap-[12px]">
-          <div
-            role="tablist"
-            aria-label="广场类型"
-            className="flex flex-wrap gap-[12px] max-[560px]:gap-[8px]"
-          >
-            {tabItems.map((item) => (
-              <PlatformTab
-                key={item.value}
-                label={item.label}
-                count={item.count}
-                active={item.value === activeKind}
-                onSelect={() => handleKindChange(item.value)}
-              />
-            ))}
-          </div>
+        {activeKind === 'all' ? (
+          // 「全部」热门总览：№1 主推卡 + Top10 排行榜 + 快捷访问 + 新闻（原站点首页能力并入）；
+          // 分类胶囊栏插到大标题之下，由 PlazaAllTab 统一排版。
+          <PlazaAllTab key={allRefreshKey} toolbar={toolbar} />
+        ) : (
+        <>
+        {toolbar}
 
-          <div className="flex flex-wrap items-center gap-[8px]">
-            {activeKind === 'general-skills' && (
-                  <UIButton onClick={handleCreateGeneralSkill} className="h-8 gap-1 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]">
-                    <IconAdd className="size-3.5" />
-                    创建开放 Skill
-                  </UIButton>
-                )}
-                <UIButton
-                  variant="outline"
-                  onClick={() => void loadKindData(activeKind, { force: true })}
-                  disabled={loading}
-                  className="h-8 gap-1 rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-5 text-[12px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
-                >
-                  <IconRefresh className={cn('size-[14px]', loading && 'animate-spin')} />
-                  刷新
-                </UIButton>
-          </div>
-        </div>
-
+        {config && PlatformIcon && (
         <>
         <div ref={headerRef} className="flex flex-col gap-[10px] px-[12px]">
           <div className="flex items-center gap-[8px] text-[#18181a]">
@@ -1168,6 +1217,9 @@ export default function OpenPlatformPage({
           )}
         </div>
         </>
+        )}
+        </>
+        )}
       </div>
 
       {renderItemDrawer()}

@@ -179,23 +179,24 @@ describe('App team scope selection', () => {
 });
 
 describe('App default landing route', () => {
-  it('sends the site root to the plaza home instead of the chat gallery', async () => {
+  it('sends the site root to the plaza instead of the chat gallery', async () => {
     stubAppFetch();
     window.history.pushState({}, '', '/');
     render(<I18nProvider><App /></I18nProvider>);
 
     await waitFor(() => {
-      expect(window.location.pathname).toBe('/enterprise/home');
+      // 站点首页已下线：默认落地开放广场
+      expect(window.location.pathname).toBe('/enterprise/platform');
     });
   });
 
-  it('sends the bare /enterprise path to the plaza home', async () => {
+  it('sends the bare /enterprise path to the plaza', async () => {
     stubAppFetch();
     window.history.pushState({}, '', '/enterprise');
     render(<I18nProvider><App /></I18nProvider>);
 
     await waitFor(() => {
-      expect(window.location.pathname).toBe('/enterprise/home');
+      expect(window.location.pathname).toBe('/enterprise/platform');
     });
   });
 
@@ -210,7 +211,8 @@ describe('App default landing route', () => {
     // 侧边栏高亮必须落在「平台更新内容」而不是同样以 /enterprise/platform 开头的「开放广场平台」
     const navItem = await screen.findByRole('button', { name: '平台更新内容' });
     expect(navItem.getAttribute('data-active')).toBe('true');
-    const platformItem = await screen.findByRole('button', { name: '开放广场平台' });
+    // 「开放广场平台」导航项带火苗角标（aria-label=热门），可访问名不是纯文本，用正则匹配
+    const platformItem = await screen.findByRole('button', { name: /开放广场平台/ });
     expect(platformItem.getAttribute('data-active')).toBe('false');
   });
 
