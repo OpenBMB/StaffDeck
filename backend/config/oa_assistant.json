@@ -391,6 +391,7 @@
       "line_items": {
         "initial_rows": 1,
         "add_row_selector": "[title*='添加'], [title*='新增'], a[class*='add'], i[class*='add'], span[class*='add'], a:has-text('添加'), a:has-text('新增')",
+        "del_row_selector": "[title*='删除'], [title*='移除'], a[class*='delete'], i[class*='delete'], span[class*='delete'], a[class*='remove'], i[class*='remove'], a:has-text('－'), i:has-text('－')",
         "group_by": "tax_rate",
         "item_desc_template": "{scene}费",
         "row_fields": {
@@ -469,6 +470,7 @@
       "line_items": {
         "initial_rows": 1,
         "add_row_selector": "[title*='添加'], [title*='新增'], a[class*='add'], i[class*='add'], span[class*='add'], a:has-text('添加'), a:has-text('新增')",
+        "del_row_selector": "[title*='删除'], [title*='移除'], a[class*='delete'], i[class*='delete'], span[class*='delete'], a[class*='remove'], i[class*='remove'], a:has-text('－'), i:has-text('－')",
         "group_by": "tax_rate",
         "scene_value": "IT服务外包",
         "scene_options": [

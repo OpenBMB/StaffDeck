@@ -98,6 +98,31 @@
     } catch (e) {}
   }
 
+  /** 清空一个输入框：先真的按退格键（合成 keydown/keyup，走框架自己的事件链），再兜底置空。
+   *  用户可能填错了想「重新执行代填」，OA 上会残留上次填的值或预填默认值，必须清干净再写，
+   *  否则会「追加」进去或受控组件回滚，表现就是「填了没生效」。 */
+  function clearByBackspace(node) {
+    try { node.focus(); } catch (e) {}
+    var len = String(node.value === undefined || node.value === null ? '' : node.value).length;
+    // 光标兜到末尾：有的组件按 selectionStart 决定退格删什么
+    try { if (node.setSelectionRange) node.setSelectionRange(len, len); } catch (e) {}
+    var rounds = Math.max(len + 1, 1);
+    for (var i = 0; i < rounds; i++) {
+      var before = String(node.value || '');
+      fireKey(node, 'keydown', 'Backspace');
+      fireKey(node, 'keyup', 'Backspace');
+      // 已经是空的：这一下只是「所有字段先退格」的形式（空字段也可能挂着组件内部状态）
+      if (!before.length) break;
+      if (String(node.value || '') === before) {
+        // 纯 native input：合成按键不会产生默认动作，自己截掉一个字符
+        setNative(node, before.slice(0, -1));
+        fireEvent(node, 'input');
+      }
+    }
+    setNative(node, '');
+    fireInput(node);
+  }
+
   function fireHover(node) {
     var W = winOf(node);
     try { node.dispatchEvent(new W.MouseEvent('mouseover', { bubbles: true })); } catch (e) {}
@@ -421,8 +446,8 @@
 
   function fillText(node, value, mode) {
     try { node.focus(); } catch (e) {}
-    setNative(node, '');
-    fireInput(node);
+    // 重新代填时会残留上次填的值 / 预填默认值 → 先退格清空
+    clearByBackspace(node);
     if (mode === 'autocomplete') {
       // 逐字写入，触发受控组件的 input 同步，再等联想下拉
       var buf = '';
@@ -617,6 +642,10 @@
     //    antd/wea 在输入为空时会用 Backspace 取消已选项（合成 keydown 会走 React onKeyDown）
     if (search) { try { search.focus(); } catch (e) {} }
     var target = search || container;
+    // 至少按一次退格（空组件也一样）：守「所有字段先退格」这条规则，
+    // 也让组件把自己的内部选中状态放掉。
+    fireKey(target, 'keydown', 'Backspace');
+    fireKey(target, 'keyup', 'Backspace');
     for (var i = 0; i < 8; i++) {
       if (selectionEmpty(container)) break;
       if (search) { setNative(search, ''); fireEvent(search, 'input'); }
@@ -652,12 +681,11 @@
         }
       }
 
-      // ② 清预填值（OA 会给「费用承担部门」之类预填默认值）
-      if (spec.clear_first) {
-        clearSelection(container, search);
-        await sleep(150);
-        search = visibleIn(container, '.ant-select-search__field');
-      }
+      // ② 先清掉已选项：OA 会给「费用承担部门」之类预填默认值，重新代填时也会残留上次的选值。
+      //    clearSelection 对空组件是 no-op（先找清除图标/chip，再按退格），无条件调用是安全的。
+      clearSelection(container, search);
+      await sleep(150);
+      search = visibleIn(container, '.ant-select-search__field');
 
       // ③ 写入搜索词：读该组件实测，必须走「填值 + input 事件」，逐字键入不触发联想过滤
       if (search) {
@@ -734,12 +762,59 @@
       input = resolveInput();
     }
     if (!input) throw new Error('未找到文件输入框（selector 是否指向上传区？）');
+    // 重新代填时 OA 上会留着上次挂的附件 → 先清空，避免新旧附件叠在一起
+    await clearFileInput(container, input);
+    await sleep(200);
     var W = winOf(input);
     var dt = new W.DataTransfer();
     for (var k = 0; k < files.length; k++) dt.items.add(files[k]);
     input.files = dt.files;
     fireEvent(input, 'change');
     await sleep(300);
+  }
+
+  /** 清空上传组件上已挂的附件：先点掉列表里的删除图标（自定义上传组件只认这个），
+   *  再把 file input 的值置空并派发 change（原生 input 会因此清空文件列表）。 */
+  async function clearFileInput(container, input) {
+    var stale = (input.files && input.files.length) || 0;
+    var listItems;
+    try { listItems = container.querySelectorAll('[class*="upload-list"] [class*="item"]'); } catch (e) { listItems = []; }
+    if (!stale && !listItems.length) return; // 本来就没挂附件，不用清
+    var killSel = [
+      '[class*="upload-list"] [class*="delete"]',
+      '[class*="upload-list"] [class*="remove"]',
+      '[class*="upload-list"] [class*="close"]',
+      '[title*="删除"]', '[title*="移除"]',
+      '[aria-label*="删除"]', '[aria-label*="移除"]',
+    ].join(',');
+    var kills;
+    try { kills = container.querySelectorAll(killSel); } catch (e) { kills = []; }
+    var clicked = false;
+    for (var i = 0; i < kills.length && i < 12; i++) {
+      if (!isVisible(kills[i])) continue;
+      clickEl(kills[i]);
+      clicked = true;
+    }
+    if (clicked) await confirmDeleteDialog();
+    try { setNative(input, ''); } catch (e) { try { input.value = ''; } catch (e2) {} }
+    try { input.files = new (winOf(input).DataTransfer)().files; } catch (e) {}
+    fireEvent(input, 'change');
+  }
+
+  /** 删除附件时 OA 有时弹二次确认：出现就点「确定」，别让弹窗挡住后面的字段。
+   *  只在确认框里点「确定/确认/是」，避免误触表单的「保存」。 */
+  async function confirmDeleteDialog() {
+    await sleep(300);
+    var docs = collectDocs();
+    for (var d = 0; d < docs.length; d++) {
+      var btns;
+      try { btns = docs[d].querySelectorAll('.ant-modal-confirm-btns button, .wea-dialog-footer button'); } catch (e) { continue; }
+      for (var i = 0; i < btns.length; i++) {
+        if (!isVisible(btns[i])) continue;
+        var txt = (btns[i].innerText || btns[i].textContent || '').trim();
+        if (/^(确定|确认|是|OK|Yes)$/i.test(txt)) { clickEl(btns[i]); await sleep(300); }
+      }
+    }
   }
 
   /** 单个字段：返回 {field, status, detail}，不抛异常（异常由调用方兜住）。 */
@@ -1756,19 +1831,264 @@
     return picked;
   }
 
+  /** 明细行「-」删除按钮候选（选择器兜底之外，还会按文本/属性找，见 findDeleteButtonIn）。 */
+  var DEFAULT_DEL_ROW_SELECTOR = [
+    "[title*='删除']", "[title*='移除']", "[title='-']", "[title*='减']",
+    "a[class*='delete']", "i[class*='delete']", "span[class*='delete']", "td[class*='delete']",
+    "a[class*='remove']", "i[class*='remove']", "span[class*='remove']",
+    "a[class*='del']", "i[class*='del']", "span[class*='del']",
+    "a[class*='minus']", "i[class*='minus']", "span[class*='minus']",
+    "a:has-text('－')", "i:has-text('－')", "span:has-text('－')", "a:has-text('-')",
+    "a:has-text('删除')", "i:has-text('删除')", "span:has-text('删除')",
+  ].join(',');
+
+  /** 明细行「{i}」字段定位符（优先用「报销场景」，没有就用「金额」「事项描述」）。 */
+  function rowFieldSelector(li) {
+    var fields = li.row_fields || {};
+    var spec = fields.scene || fields.amount || fields.item_desc;
+    var sel = spec && spec.selector;
+    if (!sel || sel === TODO || String(sel).indexOf('{i}') < 0) return null;
+    return String(sel);
+  }
+
+  /** 当前 OA 上实际存在的明细行下标（探测 {i}；删除/新增后可能不从 0 开始或有缺口）。 */
+  function lineItemRowIndexes(li) {
+    var sel = rowFieldSelector(li);
+    if (!sel) return null;
+    var out = [];
+    for (var i = 0; i < 20; i++) {
+      if (findEl(sel.replace(/\{i\}/g, String(i)))) out.push(i);
+    }
+    return out;
+  }
+
+  /** 第 i 行的「行容器」：表格行就是 tr；div 版明细则取「包含本行字段、不再包含下一行字段」的那层。 */
+  function rowContainerOf(li, i, indexes) {
+    var sel = rowFieldSelector(li);
+    var own = sel ? findEl(sel.replace(/\{i\}/g, String(i))) : null;
+    if (!own) return null;
+    var later = (indexes || []).filter(function (x) { return x > i; })[0];
+    var next = later === undefined ? null : findEl(sel.replace(/\{i\}/g, String(later)));
+    var node = own;
+    var last = own;
+    for (var d = 0; d < 8 && node && node.parentElement; d++) {
+      node = node.parentElement;
+      if (node.tagName === 'TR') return node;
+      if (next && !node.contains(next)) return last; // 再往上就跨到下一行了 → 上一层就是行容器
+      last = node;
+    }
+    return last;
+  }
+
+  /** 行的搜索范围：行容器 + 紧邻的兄弟 tr（有的 OA 把一行拆在多条 tr 里，
+   *  复选框/「-」在下一行 tr 上）。兄弟 tr 里一旦出现「别的行」的明细字段就停。 */
+  function rowScopeOf(li, i, indexes) {
+    var box = rowContainerOf(li, i, indexes);
+    if (!box) return [];
+    var scopes = [box];
+    var sel = rowFieldSelector(li);
+    function hasOtherRow(node) {
+      if (!sel) return false;
+      for (var t = 0; t < (indexes || []).length; t++) {
+        if (indexes[t] === i) continue;
+        if (queryInDoc(node, sel.replace(/\{i\}/g, String(indexes[t]))).length) return true;
+      }
+      return false;
+    }
+    function hasControls(node) {
+      try {
+        return !!node.querySelector("input[type='checkbox'], .ant-checkbox, .ant-checkbox-wrapper,"
+          + " [title*='删除'], [class*='del'], [class*='remove']");
+      } catch (e) { return false; }
+    }
+    if (box.tagName === 'TR') {
+      var next = box.nextElementSibling;
+      for (var hops = 0; next && next.tagName === 'TR' && hops < 3; hops++) {
+        if (hasOtherRow(next)) break;
+        scopes.push(next);
+        if (hasControls(next)) break;
+        next = next.nextElementSibling;
+      }
+    }
+    return scopes;
+  }
+
+  /** 第 i 行前面的复选框：OA 的「-」按钮要先勾中该行才生效。
+   *  优先取行范围内的复选框；取不到就退到整片明细区域里按「第几行」取第几个（跳过表头）。 */
+  function rowCheckboxOf(li, i, indexes) {
+    var scopes = rowScopeOf(li, i, indexes);
+    var box = rowContainerOf(li, i, indexes);
+    var sel = "input[type='checkbox'], .ant-checkbox, .ant-checkbox-wrapper, [class*='checkbox']";
+    for (var s = 0; s < scopes.length; s++) {
+      var list = queryInDoc(scopes[s], sel);
+      for (var j = 0; j < list.length; j++) {
+        if (isVisible(list[j]) && !list[j].disabled) return list[j];
+      }
+    }
+    var scope = box && box.parentElement;
+    if (!scope) return null;
+    var all;
+    try { all = scope.querySelectorAll("input[type='checkbox'], .ant-checkbox, .ant-checkbox-wrapper"); } catch (e) { return null; }
+    var visible = [];
+    for (var k = 0; k < all.length; k++) {
+      if (!isVisible(all[k]) || all[k].disabled) continue;
+      if (all[k].closest && all[k].closest('th, thead')) continue; // 表头的「全选」不算
+      visible.push(all[k]);
+    }
+    var ordinal = (indexes || []).filter(function (x) { return x <= i; }).length - 1;
+    return visible[ordinal] || null;
+  }
+
+  /** 勾选第 i 行前面的复选框（点不中就再点一次真正的 input）。 */
+  async function selectRowForDelete(li, i, indexes) {
+    var cb = rowCheckboxOf(li, i, indexes);
+    if (!cb) return false;
+    clickEl(cb);
+    await sleep(250);
+    var real = cb.tagName === 'INPUT' ? cb : cb.querySelector("input[type='checkbox']");
+    if (real && !real.checked && real.click) {
+      try { real.click(); } catch (e) {}
+      await sleep(250);
+    }
+    return true;
+  }
+
+  /** 在一个范围里找「删除本行」的按钮：先按选择器，再按文本/属性兜底（e-cology 的图标没 title 也能认）。 */
+  function findDeleteButtonIn(scope, delSel, clicked, accept) {
+    if (!scope) return null;
+    function usable(el) {
+      return el && !clicked[el] && isVisible(el) && !el.disabled && (!accept || accept(el));
+    }
+    var cands = queryInDoc(scope, delSel);
+    for (var c = 0; c < cands.length; c++) if (usable(cands[c])) return cands[c];
+    // 兜底②：文本是「- / － / × / 删除 / 移除」的可见小元素
+    var all;
+    try { all = scope.querySelectorAll('a, i, span, button, em, td, div'); } catch (e) { all = []; }
+    for (var i = 0; i < all.length; i++) {
+      if (!usable(all[i])) continue;
+      var t = normText(all[i].innerText || all[i].textContent || '');
+      if (t === '-' || t === '－' || t === '−' || t === '×' || t === '✕' || t === '删除' || t === '移除') return all[i];
+    }
+    // 兜底③：class/title 里带 del/delete/remove/minus 的图标元素
+    for (var j = 0; j < all.length; j++) {
+      if (!usable(all[j])) continue;
+      var attr = (all[j].getAttribute('title') || '') + ' ' + (all[j].getAttribute('aria-label') || '')
+        + ' ' + String(all[j].className || '');
+      if (/(^|[\s_-])(del|delete|remove|minus|reduce)([\s_-]|$)/i.test(attr)) return all[j];
+    }
+    return null;
+  }
+
+  /** 第 i 行是否已经有内容（上一次代填留下的）。空行不用删——留着直接复用，
+   *  既少点一次「新增」，也避免「删掉最后一行后表单不允许」的坑。 */
+  function rowHasContent(li, i) {
+    var fields = li.row_fields || {};
+    var keys = ['scene', 'invoice_type', 'item_desc', 'amount'];
+    for (var k = 0; k < keys.length; k++) {
+      var spec = fields[keys[k]];
+      if (!spec || !spec.selector || spec.selector === TODO) continue;
+      var node = findEl(String(spec.selector).replace(/\{i\}/g, String(i)));
+      if (!node) continue;
+      if (keys[k] === 'scene' || keys[k] === 'invoice_type') {
+        var box = selectContainerOf(node);
+        var hidden = box.querySelector ? box.querySelector("input[type='hidden']") : null;
+        if (hidden && String(hidden.value || '').trim()) return true;
+        var rendered = box.querySelector ? box.querySelector('.ant-select-selection__rendered, .wea-select-selection') : null;
+        if (rendered && String(rendered.innerText || rendered.textContent || '').trim()) return true;
+      } else {
+        var v = node.value !== undefined ? node.value : (node.innerText || node.textContent || '');
+        if (String(v || '').trim()) return true;
+      }
+    }
+    return false;
+  }
+
+  /** 候选元素是否属于第 i 行：所在 tr 含本行的明细字段，且不含别的行的明细字段。 */
+  function belongsToRow(li, i, indexes, node) {
+    var tr = node.closest ? node.closest('tr') : null;
+    if (!tr) return true; // 不是表格行（div 版明细）→ 交给行范围本身判断
+    var sel = rowFieldSelector(li);
+    if (!sel) return true;
+    for (var t = 0; t < (indexes || []).length; t++) {
+      if (indexes[t] === i) continue;
+      if (queryInDoc(tr, sel.replace(/\{i\}/g, String(indexes[t]))).length) return false;
+    }
+    return true;
+  }
+
+  /** 删掉 OA 上已经存在的明细行（用户可能填错了想重来；第一次没有明细时自然删不到）。
+   *  从最后一行往前删：先在该行容器里找「-」，再退到整片明细区域里找（仍要求命中行内）。
+   *  点不动（不可见 / 点完行数不变）就停手，并把该行 HTML 片段打到日志里方便排查。 */
+  async function clearLineItemRows(li, steps) {
+    var delSel = li.del_row_selector && li.del_row_selector !== TODO ? li.del_row_selector : DEFAULT_DEL_ROW_SELECTOR;
+    var clicked = {};
+    var removed = 0;
+    var warned = false;
+    for (var guard = 0; guard < 20; guard++) {
+      var idxs = lineItemRowIndexes(li);
+      if (!idxs || !idxs.length) break;
+      // 只删「有内容」的行（上次代填留下的）；空行留着复用
+      var last = null;
+      for (var r = idxs.length - 1; r >= 0; r--) {
+        if (rowHasContent(li, idxs[r])) { last = idxs[r]; break; }
+      }
+      if (last === null) break;
+      var scopes = rowScopeOf(li, last, idxs);
+      if (!scopes.length) break;
+      var box = scopes[0];
+      // OA 的「-」要先勾中该行：先点复选框，再找删除按钮（勾选后按钮才可点）
+      var checked = await selectRowForDelete(li, last, idxs);
+      if (checked && !removed) logLine('－ 「-」需先勾选行：已勾选第 ' + (last + 1) + ' 行', 'dim');
+      // 「属于第 last 行」的过滤：其所在 tr 若含「别的行」的明细字段就否掉，
+      // 这样即使退到整张明细表里找，也不会误点成别人那一行的「-」。
+      var accept = function (el) { return belongsToRow(li, last, idxs, el); };
+      var btn = null;
+      for (var sc = 0; sc < scopes.length && !btn; sc++) btn = findDeleteButtonIn(scopes[sc], delSel, clicked, accept);
+      if (!btn && box.parentElement) btn = findDeleteButtonIn(box.parentElement, delSel, clicked, accept);
+      if (!btn && box.parentElement && box.parentElement.parentElement) {
+        btn = findDeleteButtonIn(box.parentElement.parentElement, delSel, clicked, accept);
+      }
+      if (!btn) {
+        if (!warned) {
+          warned = true;
+          var html = String(box.outerHTML || box.innerHTML || '').replace(/\s+/g, ' ').slice(0, 240);
+          logLine('! 报销明细：没找到行内「-」删除按钮，' + (removed ? '已删 ' + removed + ' 行，' : '')
+            + (checked ? '（已勾选该行仍未出现）' : '（该行也没找到可勾的复选框）') + '剩余明细行请手动删除', 'warn');
+          logLine('  第 ' + (last + 1) + ' 行 HTML 片段：' + html, 'dim');
+        }
+        break;
+      }
+      clicked[btn] = true;
+      clickEl(btn);
+      removed++;
+      await sleep(600);
+      var after = lineItemRowIndexes(li);
+      if (!after || after.length >= idxs.length) break; // 点了没减少，别死循环
+    }
+    if (removed) {
+      steps.push({ field: '报销明细', status: 'filled', detail: '删除已有明细 ' + removed + ' 行' });
+      logLine('－ 已删除 ' + removed + ' 行已有明细', 'dim');
+    }
+    return removed;
+  }
+
   async function fillLineItems(scenario, rows, steps) {
     var li = scenario.line_items || {};
     var rowFields = li.row_fields || {};
     var order = ['scene', 'invoice_type', 'item_desc', 'amount'];
 
-    var initial = Number(li.initial_rows || 1);
-    if (rows.length > initial) {
+    // 先清掉 OA 上已有的明细行（重新代填时别把旧的留着）
+    await clearLineItemRows(li, steps);
+
+    var idxs = lineItemRowIndexes(li);
+    var have = idxs ? idxs.length : Number(li.initial_rows || 1);
+    if (rows.length > have) {
       var addSel = li.add_row_selector;
       if (!addSel || addSel === TODO) {
         steps.push({ field: '报销明细', status: 'todo', detail: '「新增」按钮定位器待配置' });
         logLine('! 报销明细：「新增」按钮定位器待配置，只填第 1 行', 'warn');
       } else {
-        for (var k = initial; k < rows.length; k++) {
+        for (var k = have; k < rows.length; k++) {
           var addNode = findEl(addSel);
           if (!addNode) {
             steps.push({ field: '报销明细', status: 'error', detail: '未找到「新增」按钮（页面按钮：' + sampleButtons().join('、') + '）' });
@@ -1779,6 +2099,14 @@
           await sleep(700);
           logLine('＋ 已点「新增」，准备填第 ' + (k + 1) + ' 行', 'dim');
         }
+      }
+    }
+    // 补行后重新探测一次：行下标可能不从 0 开始（有的 OA 删行后不重排）
+    if (idxs) {
+      idxs = lineItemRowIndexes(li) || idxs;
+      if (have < rows.length && idxs.length > have) have = idxs.length;
+      if (have > rows.length) {
+        logLine('! 报销明细：OA 上还剩 ' + have + ' 行，只填前 ' + rows.length + ' 行，多余的行请手动删除', 'warn');
       }
     }
 
@@ -1796,7 +2124,10 @@
           continue;
         }
         var node = null;
-        var sel = String(spec.selector || '').replace(/\{i\}/g, String(i));
+        // 用实际存在的行下标：删行后 OA 可能不重排（删掉第 1 行后剩下的仍是 _2），
+        // 补行后新行下标也可能不从 0 开始——按探测到的下标集合对齐。
+        var rowIdx = (idxs && idxs[i] !== undefined) ? idxs[i] : i;
+        var sel = String(spec.selector || '').replace(/\{i\}/g, String(rowIdx));
         if (spec.selector && spec.selector !== TODO) node = findEl(sel);
         // fieldmark 找不到时，回退到按标签（第 i 个）定位
         if (!node && spec.by_label) {

@@ -17,6 +17,7 @@
  */
 
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 
 const requireBase = process.env.PW_DIR ? process.env.PW_DIR.replace(/\/?$/, '/') + 'x.js' : import.meta.url;
 const { chromium } = createRequire(requireBase)('playwright');
@@ -38,6 +39,32 @@ async function injectPanel(page) {
   const host = page.locator('#sd-oa-panel-host');
   await host.waitFor({ state: 'attached' });
   return host;
+}
+
+async function readOa(page) {
+  const frame = page.frames().find((f) => f.url().includes('/oa-form'));
+  return frame.evaluate(() => {
+    const hidden = (fm) => { const e = document.querySelector('[data-fieldmark="' + fm + '"] input[type=hidden]'); return e ? e.value : null; };
+    const val = (sel) => { const e = document.querySelector(sel); return e ? (e.value !== undefined ? e.value : e.textContent) : null; };
+    const files = (fm) => { const e = document.querySelector('[data-fieldmark="' + fm + '"] input[type=file]'); return e ? e.files.length : null; };
+    return {
+      expense: hidden('field6970'), taxExceeded: hidden('field7014'), travel: hidden('field6974'),
+      reason: val('#field6946'), company: hidden('field6969'), costDept: hidden('field7012'),
+      eticket: hidden('field29328'), relTickets: files('field6951'),
+      scene0: hidden('field6926_0'), itype0: hidden('field6925_0'), desc0: val('#field6920_0'), amt0: val('#field6932_0'),
+      scene1: hidden('field6926_1'), amt1: val('#field6932_1'),
+      cpScene0: hidden('field6827_0'), cpScene1: hidden('field6827_1'),
+      payee: (() => { const c = [...document.querySelectorAll('td')].find((t) => t.textContent.trim() === '收款单位名称'); if (!c || !c.nextElementSibling) return null; const h = c.nextElementSibling.querySelector('input[type=hidden]'); return h ? h.value : null; })(),
+      cpItype0: hidden('field6826_0'), cpItype1: hidden('field6826_1'),
+      cpDesc0: val('#field6821_0'), cpAmt0: val('#field6829_0'),
+      cpDesc1: val('#field6821_1'), cpAmt1: val('#field6829_1'),
+      relatedFlow: (() => { const c = [...document.querySelectorAll('td')].find((t) => t.textContent.trim() === '相关流程'); if (!c || !c.nextElementSibling) return null; const h = c.nextElementSibling.querySelector('input[type=hidden]'); return h ? h.value : null; })(),
+      trace: window.__sdTrace || null,
+      scene2: hidden('field6926_2'), amt2: val('#field6932_2'),
+      btRows: document.querySelectorAll('[data-fieldmark^="field6926_"]').length,
+      cpRows: document.querySelectorAll('[data-fieldmark^="field6827_"]').length,
+    };
+  });
 }
 
 async function runScenario(page, host, id, opts = {}) {
@@ -66,27 +93,12 @@ async function runScenario(page, host, id, opts = {}) {
     await host.getByText('税率相同的合并到同一明细中').first().click();
     await page.waitForTimeout(1800);
   }
+  // 重置 mock 侧埋点，便于断言「先清空再填」
+  const resetFrame = page.frames().find((f) => f.url().includes('/oa-form'));
+  if (resetFrame) await resetFrame.evaluate(() => window.__sdResetTrace && window.__sdResetTrace()).catch(() => {});
   await host.locator('button:has-text("代填")').first().click();
   await page.waitForTimeout(opts.wait || 9000);
-  const frame = page.frames().find((f) => f.url().includes('/oa-form'));
-  const oa = await frame.evaluate(() => {
-    const hidden = (fm) => { const e = document.querySelector('[data-fieldmark="' + fm + '"] input[type=hidden]'); return e ? e.value : null; };
-    const val = (sel) => { const e = document.querySelector(sel); return e ? (e.value !== undefined ? e.value : e.textContent) : null; };
-    const files = (fm) => { const e = document.querySelector('[data-fieldmark="' + fm + '"] input[type=file]'); return e ? e.files.length : null; };
-    return {
-      expense: hidden('field6970'), taxExceeded: hidden('field7014'), travel: hidden('field6974'),
-      reason: val('#field6946'), company: hidden('field6969'), costDept: hidden('field7012'),
-      eticket: hidden('field29328'), relTickets: files('field6951'),
-      scene0: hidden('field6926_0'), itype0: hidden('field6925_0'), desc0: val('#field6920_0'), amt0: val('#field6932_0'),
-      scene1: hidden('field6926_1'), amt1: val('#field6932_1'),
-      cpScene0: hidden('field6827_0'), cpScene1: hidden('field6827_1'),
-      payee: (() => { const c = [...document.querySelectorAll('td')].find((t) => t.textContent.trim() === '收款单位名称'); if (!c || !c.nextElementSibling) return null; const h = c.nextElementSibling.querySelector('input[type=hidden]'); return h ? h.value : null; })(),
-      cpItype0: hidden('field6826_0'), cpItype1: hidden('field6826_1'),
-      cpDesc0: val('#field6821_0'), cpAmt0: val('#field6829_0'),
-      cpDesc1: val('#field6821_1'), cpAmt1: val('#field6829_1'),
-      relatedFlow: (() => { const c = [...document.querySelectorAll('td')].find((t) => t.textContent.trim() === '相关流程'); if (!c || !c.nextElementSibling) return null; const h = c.nextElementSibling.querySelector('input[type=hidden]'); return h ? h.value : null; })(),
-    };
-  });
+  const oa = await readOa(page);
   const log = await host.evaluate((el) => {
     const box = [...el.shadowRoot.querySelectorAll('div')].find((d) => (d.style.fontFamily || '').includes('monospace'));
     return box ? box.textContent.replace(/\s+/g, ' ') : '';
@@ -253,7 +265,7 @@ if (MAC) {
       method: 'POST',
       body: (() => {
         const fd = new FormData();
-        fd.append('files', new Blob([require('node:fs').readFileSync(MAC)]), 'mac.pdf');
+        fd.append('files', new Blob([readFileSync(MAC)]), 'mac.pdf');
         return fd;
       })(),
     });
@@ -271,6 +283,80 @@ if (MAC) {
   check('13% 电子专票 明细金额=13925.00', oa.cpAmt0 === '13925.00', oa.cpAmt0);
   check('13% 电子专票 发票类型含 13%', !!oa.cpItype0 && oa.cpItype0.indexOf('13%') >= 0, oa.cpItype0);
   check('13% 电子专票 报销场景=IT硬件设备', oa.cpScene0 === 'IT硬件设备', oa.cpScene0);
+}
+
+// 11) 先清空再代填：文本先退格、下拉先清已选、附件先清空再挂
+{
+  const host = await injectPanel(page);
+  const { oa, summary } = await runScenario(page, host, 'communication', { files: HOTEL ? [HOTEL] : [] });
+  const keys = (oa.trace && oa.trace.backspace) || {};
+  check('先清空再填 报销事由收到退格键', (keys['field6946'] || 0) >= 1, JSON.stringify(keys));
+  check('先清空再填 下拉搜索框收到退格键', (keys['ant-select-search__field'] || 0) >= 1, JSON.stringify(keys));
+  check('先清空再填 附件已挂上（change 触发）', oa.trace && oa.trace.fileChanges >= 1, oa.trace && oa.trace.fileChanges);
+  check('先清空再填 附件最终仍=1', oa.relTickets === 1, oa.relTickets);
+  check('先清空再填 报销场景=通讯费用', oa.scene0 === '通讯费用', oa.scene0);
+  check('先清空再填 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
+
+  // 同一个面板、同一个 OA 表单上再点一次「代填」（用户填错了想重来）
+  const frame2 = page.frames().find((f) => f.url().includes('/oa-form'));
+  if (frame2) await frame2.evaluate(() => window.__sdResetTrace && window.__sdResetTrace()).catch(() => {});
+  await host.locator('button:has-text("代填")').first().click();
+  await page.waitForTimeout(9000);
+  const again = await frame2.evaluate(() => {
+    const hidden = (fm) => { const e = document.querySelector('[data-fieldmark="' + fm + '"] input[type=hidden]'); return e ? e.value : null; };
+    return {
+      scene0: hidden('field6926_0'),
+      reason: (() => { const e = document.querySelector('#field6946'); return e ? e.value : null; })(),
+      relTickets: (() => { const e = document.querySelector('[data-fieldmark="field6951"] input[type=file]'); return e ? e.files.length : null; })(),
+      trace: window.__sdTrace || null,
+    };
+  });
+  check('重复代填 报销场景仍是通讯费用（不是空/叠加）', again.scene0 === '通讯费用', again.scene0);
+  check('重复代填 报销事由不叠加', again.reason === oa.reason, again.reason + ' vs ' + oa.reason);
+  check('重复代填 相关票据仍=1（不叠加）', again.relTickets === 1, again.relTickets);
+  check('重复代填 第二次也先清空附件', again.trace && again.trace.fileCleared >= 1, again.trace && again.trace.fileCleared);
+}
+
+// 12) 重新代填：先把上次生成的明细行删掉（2 行 ×2 次 ≠ 4 行）
+if (HOTEL && TRAIN) {
+  const host = await injectPanel(page);
+  const files = [HOTEL, TRAIN];
+  const first = await runScenario(page, host, 'business_trip', { files, numberFirst: '2', wait: 14000 });
+  check('重复代填 第一次 2 行', first.oa.btRows === 2, 'btRows=' + first.oa.btRows);
+  // 首次代填时 OA 上的初始明细行是空的 → 不该去删它（只删「有内容」的旧行）
+  check('首次代填 不删空行（日志无「已删除」）', !/已删除/.test(first.log), first.log.slice(-120));
+  // 同一个面板、同一个 OA 表单上再点一次「代填」
+  const fr = page.frames().find((f) => f.url().includes('/oa-form'));
+  await host.locator('button:has-text("代填")').first().click();
+  await page.waitForTimeout(14000);
+  const again = await readOa(page);
+  const log2 = await host.evaluate((el) => {
+    const box = [...el.shadowRoot.querySelectorAll('div')].find((d) => (d.style.fontFamily || '').includes('monospace'));
+    return box ? box.textContent.replace(/\s+/g, ' ') : '';
+  });
+  check('重复代填 明细仍是 2 行（旧行已删）', again.btRows === 2, 'btRows=' + again.btRows);
+  check('重复代填 行1/行2 金额仍是 750.00 / 87.00', again.amt0 === '750.00' && again.amt1 === '87.00', again.amt0 + ' / ' + again.amt1);
+  check('重复代填 日志出现「已删除 N 行已有明细」', /已删除 \d+ 行已有明细/.test(log2), log2.slice(-160));
+  check('删行前先勾选该行（日志有「已勾选第 N 行」）', /已勾选第 \d+ 行/.test(log2), log2.slice(-200));
+}
+
+// 13) 需要更少的行时（2 行 → 1 行）：多出来的那行要被「-」删掉
+if (HOTEL && OTHER) {
+  const host = await injectPanel(page);
+  const files = [HOTEL, OTHER];
+  const first = await runScenario(page, host, 'company_payment', {
+    files, wait: 16000, mergeOff: true, fill: { '收款单位名称': '上海测试科技' },
+  });
+  check('明细 2 行 → 1 行：第一次 2 行', first.oa.cpRows === 2, 'cpRows=' + first.oa.cpRows);
+  // 勾回「税率相同的合并到同一明细中」→ 只需要 1 行
+  await host.getByText('税率相同的合并到同一明细中').first().click();
+  await page.waitForTimeout(1800);
+  await host.locator('button:has-text("代填")').first().click();
+  await page.waitForTimeout(16000);
+  const second = await readOa(page);
+  check('明细 2 行 → 1 行：第二行已被删除', second.cpRows === 1, 'cpRows=' + second.cpRows);
+  check('明细 2 行 → 1 行：行1=32672.46', second.cpAmt0 === '32672.46', second.cpAmt0);
+  check('明细 2 行 → 1 行：第二行金额已清空', !second.cpAmt1, second.cpAmt1);
 }
 
 await browser.close();

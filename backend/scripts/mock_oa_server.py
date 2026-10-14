@@ -73,18 +73,34 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
   <tr><td class="lb">收款单位名称</td><td><div class="ant-select" data-options="上海测试科技有限公司|某某网络有限公司|上海测试"></div></td><td></td><td></td></tr>
   <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_0" data-options="通讯费用|交通费用|飞机|火车汽车船|IT服务外包|相关票据|境内住宿|境内机票|境内火车票"></div></td>
       <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td></tr>
-  <tr><td class="lb">事项描述</td><td><input id="field6920_0"></td>
-      <td class="lb">金额</td><td><input id="field6932_0"></td></tr>
+  <tr><td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="0"><input id="field6920_0"></td>
+      <td class="lb">金额</td><td><input id="field6932_0"><a href="#" class="row-del" data-row="0" title="删除">－</a></td></tr>
   <!-- 境内公司付款（workflow 56）明细：fieldmark 直用 -->
   <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_0" data-options="IT服务外包|IT硬件设备|普通发票|相关票据"></div></td>
       <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6826_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td></tr>
-  <tr><td class="lb">事项描述</td><td><input id="field6821_0"></td>
-      <td class="lb">金额</td><td><input id="field6829_0"></td></tr>
+  <tr><td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="0"><input id="field6821_0"></td>
+      <td class="lb">金额</td><td><input id="field6829_0"><a href="#" class="row-del" data-row="0" title="删除">－</a></td></tr>
 </table>
 <a href="#" id="addrow">＋ 新增</a>
 <button class="ant-btn">保 存</button>
 <pre id="saved"></pre>
 <script>
+// 回归埋点：记录代填过程中的退格键与附件变化（面板要求「先清空再填」）
+window.__sdTrace = { backspace: {}, fileChanges: 0, fileCleared: 0 };
+window.__sdResetTrace = function () { window.__sdTrace = { backspace: {}, fileChanges: 0, fileCleared: 0 }; };
+document.addEventListener('keydown', function (e) {
+  if ((e.key || '') !== 'Backspace') return;
+  var t = e.target || {};
+  var name = t.id || t.className || t.tagName || '?';
+  var m = window.__sdTrace.backspace;
+  m[name] = (m[name] || 0) + 1;
+}, true);
+document.addEventListener('change', function (e) {
+  var t = e.target || {};
+  if (t.type !== 'file') return;
+  window.__sdTrace.fileChanges++;
+  if (!t.files || !t.files.length) window.__sdTrace.fileCleared++;
+}, true);
 function setupSelect(root){
   var options = (root.getAttribute('data-options')||'').split('|').filter(Boolean);
   var selection = document.createElement('div'); selection.className='ant-select-selection';
@@ -121,20 +137,66 @@ function setupSelect(root){
 Array.prototype.forEach.call(document.querySelectorAll('.ant-select'), setupSelect);
 
 var rowCount = 1;
+// 删/加行后把明细行号重排成 0..n-1（真实 OA 的明细是按位置渲染的）
+function renumberRows() {
+  var seen = {};
+  Array.prototype.forEach.call(document.querySelectorAll('.row-del'), function (a) { seen[a.getAttribute('data-row')] = 1; });
+  var uniq = Object.keys(seen).map(Number).sort(function (x, y) { return x - y; });
+  uniq.forEach(function (oldIdx, newIdx) {
+    if (oldIdx === newIdx) return;
+    ['field6926_', 'field6827_'].forEach(function (m) {
+      var el = document.querySelector('[data-fieldmark="' + m + oldIdx + '"]');
+      if (el) el.setAttribute('data-fieldmark', m + newIdx);
+    });
+    ['field6920_', 'field6932_', 'field6821_', 'field6829_'].forEach(function (m) {
+      var el = document.getElementById(m + oldIdx);
+      if (el) el.id = m + newIdx;
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.row-del[data-row="' + oldIdx + '"], .row-check[data-row="' + oldIdx + '"]'), function (a) {
+      a.setAttribute('data-row', String(newIdx));
+    });
+  });
+  rowCount = uniq.length;
+  return uniq.length;
+}
+document.addEventListener('click', function (e) {
+  var a = e.target && e.target.closest ? e.target.closest('.row-del') : null;
+  if (!a) return;
+  e.preventDefault();
+  var i = a.getAttribute('data-row');
+  // 真实 OA：「-」要先勾中该行才生效 —— mock 也照这个规则来，否则回归测不出这一步
+  var tr = a.closest('tr');
+  var cb = tr ? tr.querySelector('.row-check') : null;
+  if (cb && !cb.checked) return;
+  var marks = ['field6926_', 'field6827_'];   // ant-select 容器（无 id，按 fieldmark 找）
+  var ids = ['field6920_', 'field6932_', 'field6821_', 'field6829_'];  // 普通 input
+  marks.forEach(function (m) {
+    var el = document.querySelector('[data-fieldmark="' + m + i + '"]');
+    var tr = el && el.closest('tr');
+    if (tr) tr.remove();
+  });
+  ids.forEach(function (m) {
+    var el = document.getElementById(m + i);
+    var tr = el && el.closest('tr');
+    if (tr) tr.remove();
+  });
+  renumberRows();
+});
 document.getElementById('addrow').addEventListener('click', function(e){
   e.preventDefault();
+  renumberRows();
   var i = rowCount++;
   var table = document.querySelector('table');
   var tr1 = document.createElement('tr');
   tr1.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_'+i+'" data-options="IT服务外包|交通费用|相关票据|境内住宿|境内机票|境内火车票"></div></td>'
     + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_'+i+'" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td>';
   var tr2 = document.createElement('tr');
-  tr2.innerHTML = '<td class="lb">事项描述</td><td><input id="field6920_'+i+'"></td><td class="lb">金额</td><td><input id="field6932_'+i+'"></td>';
+  tr2.innerHTML = '<td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="'+i+'"><input id="field6920_'+i+'"></td><td class="lb">金额</td><td><input id="field6932_'+i+'"><a href="#" class="row-del" data-row="'+i+'" title="删除">－</a></td>';
   var tr3 = document.createElement('tr');
-  tr3.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_'+i+'" data-options="IT服务外包|普通发票"></div></td>'
+  tr3.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_'+i+'" data-options="IT服务外包|IT硬件设备|普通发票"></div></td>'
     + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6826_'+i+'" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td>';
   var tr4 = document.createElement('tr');
-  tr4.innerHTML = '<td class="lb">事项描述</td><td><input id="field6821_'+i+'"></td><td class="lb">金额</td><td><input id="field6829_'+i+'"></td>';
+  tr4.innerHTML = '<td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="'+i+'"><input id="field6821_'+i+'"></td><td class="lb">金额</td><td><input id="field6829_'+i+'"><a href="#" class="row-del" data-row="'+i+'" title="删除">－</a></td>';
   table.appendChild(tr1); table.appendChild(tr2); table.appendChild(tr3); table.appendChild(tr4);
   Array.prototype.forEach.call(tr1.querySelectorAll('.ant-select'), setupSelect);
   Array.prototype.forEach.call(tr3.querySelectorAll('.ant-select'), setupSelect);
