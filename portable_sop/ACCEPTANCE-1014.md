@@ -34,7 +34,9 @@ channel acceptance pass. Local evidence directory:
 | Historical submit/resume replay after restart | PASS | `live-replay.json`; 66 original responses returned unchanged |
 | SQLite process restart, old revision, receipt/slot rejection, nesting cycle/depth | PASS | Runtime session/Core/process tests |
 | StaffDeck browser approval, desktop 1440 and mobile 390 | PASS | `browser-staffdeck.json`, screenshots; reply session IDs match created sessions, no horizontal overflow |
-| PilotDeck browser bearer approval | BLOCKED | Candidate StaffDeck lacks PilotDeckProjectBinding model required by existing binding QA; no end-to-end public approval claim |
+| PilotDeck browser bearer approval, desktop 1440 and mobile 390 | PASS | `pilotdeck-public-approval.json`; normal installation-owner registration, original session admission, real discovery/model callback, normal StaffDeck reviewer login, original inbox, reply replay and browser send; both sessions complete at revision 3 |
+| PilotDeck host restart at human wait | PASS | Same browser evidence; Gateway and StaffDeck processes have new PIDs, original approval status stays identical, model continuation completes |
+| StaffDeck own session restart at human wait | PASS | `staffdeck-process-restart.json`; session `session_14b7fde092804e89`, handoff `handoff_c9f163e081194029`; host PID 61884 to 62064, normal reviewer reply, Runtime completed revision 3 |
 | PilotDeck real Feishu inbound, model/tool, wait, host-control resume, final delivery | PASS (host-control scope) | `feishu.json`; incoming `om_x100b63c57fdb88acb0bbeab6f4007e7`, outgoing `om_x100b63c579088ca4cefaeb4b3716d74`, Runtime revision 3; browser reviewer approval is not covered |
 | StaffDeck real Feishu inbound, wait notification, reviewer API resume and final delivery | PASS (delivery record scope) | `staffdeck-feishu.json`; session `session_2fd7b89933ec499e`, handoff `handoff_97671e36a2184b15`, inbound `om_x100b63c539e69938b0f95cd4929de85`, Runtime revision 5, final delivery `chdlv_cca3bba558dd47da`; provider history permission denied, remote reply ID unavailable |
 | Production /dsh deployment and real migration | BLOCKED | SSH user/alias and verified server access unavailable |
@@ -49,6 +51,9 @@ Independent package test entry point: 26 passed with only its source on PYTHONPA
 independent HTTP Runtime recovery test passes with the configured Python/source.
 Final management/adapter/resume regression: 22 passed; PilotDeck export/config/
 project binding regression: 35 passed. These overlap earlier suites.
+Public approval follow-up: independent HTTP Runtime regression 1 passed (including
+scoped definition projection/repeated prepare), frontend assembly/wait/inbox 12
+passed; TypeScript build, UI typecheck, UI production build and diff checks pass.
 
 ## Acceptance Fixes
 
@@ -62,6 +67,14 @@ project binding regression: 35 passed. These overlap earlier suites.
 - PilotDeck real acceptance config supplies Knowledge tenant/actor scope from the
   host binding, matching the model-visible tool contract.
 - PilotDeck project bindings select v3 and explicitly map tenant/agent SOP IDs.
+- PilotDeck Runtime snapshot projection retains the local SOP ID in the host
+  bundle, so scoped prepare requests preserve the pinned version across reads.
+- Existing SOP management/approval UI can assemble against lifecycle v3. The
+  public inbox waits for normal reviewer login; external-task controls do not
+  report the human approval route's missing bearer as their own failure.
+- `run-public-approval-v3.mjs` records real desktop/mobile browser approval and
+  both process-restart cases. PilotDeck's current interaction prepares the
+  continuation in the composer; the browser test clicks the ordinary send button.
 - StaffDeck mobile chat starts with the icon sidebar and constrains header and
   statistics layout; browser tests use unique session markers.
 - Seed scripts target only the isolated acceptance SQLite and preserve the first
