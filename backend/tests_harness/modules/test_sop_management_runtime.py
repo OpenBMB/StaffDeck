@@ -345,6 +345,87 @@ def test_internal_published_create_also_exports_in_compat_mode(management, monke
     )
 
 
+def test_migration_cli_covers_all_tenants_gallery_employees_and_drafts(
+    management, monkeypatch, tmp_path
+):
+    import json
+    import sys
+
+    from app.skills import migrate_sop_runtime as cli
+
+    db, user, client = management
+    monkeypatch.setenv("SOP_RUNTIME_LEGACY_WRITES", "compat")
+    db.add_all(
+        [
+            Tenant(id="other", name="Other"),
+            AgentProfile(id="overall", tenant_id="t", name="Gallery", is_overall=True),
+            AgentProfile(id="other-agent", tenant_id="other", name="Other employee"),
+        ]
+    )
+    db.commit()
+    for tenant_id, agent_id, actor in [
+        ("t", "a", user),
+        ("t", "overall", user),
+        (
+            "other",
+            "other-agent",
+            User(
+                id="other-user",
+                tenant_id="other",
+                username="other",
+                password_hash="x",
+                role="admin",
+            ),
+        ),
+    ]:
+        content = {**deepcopy(CONTENT), "skill_id": f"flow-{agent_id}"}
+        skills.create_skill(
+            SkillCreateRequest(tenant_id=tenant_id, content=content), agent_id, db, actor
+        )
+        skills.publish_skill(content["skill_id"], tenant_id, agent_id, db, actor)
+        sops._new_draft(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            credential_id=None,
+            content=content,
+            source="structured",
+        )
+    monkeypatch.setattr(cli, "engine", db.get_bind())
+    report = tmp_path / "migration.json"
+    monkeypatch.setattr(sys, "argv", ["migration", "--all-tenants", "--report", str(report)])
+    cli.main()
+    result = json.loads(report.read_text())
+    assert result["status"] == "passed"
+    assert {(row["tenant_id"], row["agent_id"]) for row in result["scopes"]} == {
+        ("t", None),
+        ("t", "overall"),
+        ("t", "a"),
+        ("other", None),
+        ("other", "other-agent"),
+    }
+    assert len(db.exec(select(SopDraftRecord)).all()) == 3
+    assert len(db.exec(select(SopDefinitionRecord)).all()) == 3
+    assert len(db.exec(select(SopVersionRecord)).all()) == 3
+    cli.main()
+    assert len(db.exec(select(SopDraftRecord)).all()) == 3
+    for tenant_id, agent_id in [
+        ("t", "a"),
+        ("t", None),
+        ("t", "overall"),
+        ("other", "other-agent"),
+    ]:
+        local_id = "flow-overall" if agent_id in {None, "overall"} else f"flow-{agent_id}"
+        snapshot = client.operation(
+            f"migration-{agent_id}",
+            "prepare",
+            request_id="p",
+            turn_id="t",
+            sopId=json.dumps(["staffdeck", tenant_id, agent_id, local_id], separators=(",", ":")),
+        )
+        assert snapshot["state"]["status"] == "active"
+
+
 def test_knowledge_snapshot_converts_required_capability_to_host_tool():
     content = {
         "skill_id": "knowledge",

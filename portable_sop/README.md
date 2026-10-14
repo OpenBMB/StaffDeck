@@ -35,6 +35,18 @@ setting `SOP_RUNTIME_ENDPOINT`. Publish existing definitions first:
 python -m app.skills.migrate_sop_runtime --tenant-id TENANT --agent-id AGENT
 ```
 
+For the deployment cutover, migrate every tenant's gallery and non-archived
+employee/overall-agent scope and write per-scope publication/management counts:
+
+```bash
+SOP_RUNTIME_LEGACY_WRITES=compat python -m app.skills.migrate_sop_runtime \
+  --all-tenants --report /private/deploy/sop-migration.json
+```
+
+Inspect archived employees separately before cutover: they are excluded by the
+host's existing resource visibility policy. A failed run records completed
+scopes and fails the command; repeat with management writes still paused.
+
 This command exports definitions only. Existing live host-owned sessions must
 finish before cutover; it does not import mutable session rows. Internal and
 public publication use `SopManagementService`. The command also copies visible

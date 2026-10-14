@@ -41,6 +41,7 @@ channel acceptance pass. Local evidence directory:
 | StaffDeck real Feishu inbound, wait notification, reviewer API resume and final delivery | PASS (delivery record scope) | `staffdeck-feishu.json`; session `session_2fd7b89933ec499e`, handoff `handoff_97671e36a2184b15`, inbound `om_x100b63c539e69938b0f95cd4929de85`, Runtime revision 5, final delivery `chdlv_cca3bba558dd47da`; provider history permission denied, remote reply ID unavailable |
 | Production /dsh deployment and real migration | BLOCKED | SSH user/alias and verified server access unavailable |
 | Main instance cutover | NOT STARTED | Requires accepted deployment, migration, cutover window and rollback plan |
+| All-tenant migration command preparation | PASS (local fixture scope) | `--all-tenants --report` covers gallery/overall/employee scopes; 14 management tests pass, including two tenants and preserved drafts/repeated migration. Real CLI against isolated DB copy publishes one definition; gallery fixture remains empty. Production migration is separate |
 
 Current focused validation: Python 135 passed; latest adapter/resume regression 8 passed;
 StaffDeck UI 8 passed and production build passed; PilotDeck TypeScript build
