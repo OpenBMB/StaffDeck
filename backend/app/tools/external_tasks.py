@@ -606,6 +606,12 @@ def _poll_task(db: Session, task: ExternalBusinessTask, *, owner: str) -> None:
         )
     except Exception as exc:
         db.rollback()
+        # The rollback above expires the session and reverts the pending
+        # poll_attempts/next_poll_at updates made before the request. Re-apply
+        # them so a failing provider still gets the configured poll backoff
+        # instead of being retried on every worker pass.
+        task.poll_attempts += 1
+        task.next_poll_at = utc_now() + timedelta(seconds=task.poll_interval_seconds)
         task.error_json = {"code": "POLL_ERROR", "message": str(exc)}
         task.updated_at = utc_now()
         db.add(task)
