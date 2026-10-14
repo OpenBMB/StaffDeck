@@ -60,6 +60,11 @@ def _session_policy(db: Session, tenant_id: str, agent: AgentProfile | None) -> 
 
 
 def _sop_binding_row(db: Session, tenant_id: str, agent_id: str, skill: Skill) -> AgentResourceBinding | None:
+    from app.db.models import SopDefinitionRecord
+    if isinstance(skill, SopDefinitionRecord):
+        from types import SimpleNamespace
+        return SimpleNamespace(id=skill.id, metadata_json=skill.metadata_json,
+            status="active" if skill.status == "published" else "inactive")
     # Legacy bindings key on the Skill row id; older data may carry the logical skill_id.
     ids = [skill.id] + ([skill.skill_id] if skill.skill_id and skill.skill_id != skill.id else [])
     return db.exec(

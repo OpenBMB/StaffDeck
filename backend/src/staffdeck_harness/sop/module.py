@@ -11,6 +11,16 @@ class SopRuntimeModule:
         return SopResultValidator(requirement)
 
     def build(self, dependencies: SopDependencies):
+        import os
+        endpoint = os.environ.get("SOP_RUNTIME_ENDPOINT")
+        if endpoint:
+            from .http_runtime import HttpSopRuntime
+            from .runtime_client import RuntimeClient
+            return HttpSopRuntime(RuntimeClient(endpoint), dependencies)
+        from app.skills.sop_management import legacy_sop_writes_disabled
+        if legacy_sop_writes_disabled():
+            from staffdeck_harness.contracts.errors import ModuleSdkError
+            raise ModuleSdkError("SOP Runtime endpoint is required after cutover", code="SOP_RUNTIME_UNAVAILABLE")
         from staffdeck_harness.sop.lifecycle import SopRuntime
 
         return SopRuntime(

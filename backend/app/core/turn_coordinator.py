@@ -546,10 +546,11 @@ class TurnCoordinator:
             ),
             None,
         )
-        if ready_frame is not None and plan.decision not in {
+        runtime_resume = bool((session.awaiting_input_json or {}).get("runtime_session_id"))
+        if ready_frame is not None and (runtime_resume or plan.decision not in {
             "complete_task",
             "handoff_human",
-        }:
+        }):
             resume = planned_frame_from_record(
                 self.db.exec(
                     select(HarnessTaskFrameRecord).where(

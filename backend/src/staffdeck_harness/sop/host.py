@@ -100,7 +100,11 @@ class SopHost:
                     self.dependencies.events.record(*payload)
                 else:
                     tenant, _, definition, step = payload
+                    runtime_pointer = {key: deepcopy(value) for key, value in dict(session.awaiting_input_json or {}).items()
+                        if key in {"runtime_session_id", "runtime_revision", "wait_id", "task_id", "local_sop_id"}}
                     self.dependencies.create_handoff(tenant, session, definition, step)
+                    if runtime_pointer:
+                        session.awaiting_input_json = {**dict(session.awaiting_input_json or {}), **runtime_pointer}
             return session if result is state else result
         finally:
             self._effects.clear()

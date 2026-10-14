@@ -53,6 +53,7 @@ class SkillGraphNode(BaseModel):
     retry_policy: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     sub_sop_id: Optional[str] = None
+    sub_sop_version: Optional[str] = None
     # 人工节点指定处理人(handoff / handoff_human 节点)。None 表示未指定,
     # 运行时回退到渠道默认处理人 → 数字员工负责人 → 租户管理员。
     assignee_user_id: Optional[str] = None
@@ -77,6 +78,8 @@ class SkillCard(BaseModel):
     version: str = "1.0.0"
     business_domain: Optional[str] = None
     description: str = ""
+    definition_schema: str = "sop.definition/v1"
+    capability_requirements: list[dict[str, Any]] = Field(default_factory=list)
     capability_scope: CapabilityScope = "general"
     step_timeout_seconds: Optional[int] = Field(default=None, ge=1, le=3600)
     trigger_intents: list[str] = Field(default_factory=list)

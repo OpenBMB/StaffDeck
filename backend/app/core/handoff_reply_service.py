@@ -40,9 +40,29 @@ def apply_handoff_reply(
 
     chat_session = db.get(ChatSession, row.session_id)
     if chat_session and chat_session.tenant_id == row.tenant_id:
+        import os
+        endpoint = os.environ.get("SOP_RUNTIME_ENDPOINT")
+        pointer = dict(chat_session.awaiting_input_json or {}).get("runtime_session_id")
+        runtime_state = None
+        if endpoint and pointer:
+            from staffdeck_harness.sop.runtime_client import RuntimeClient
+            client = RuntimeClient(endpoint)
+            state = client.session(pointer)["state"]
+            wait = state.get("pending_wait")
+            if wait:
+                runtime_state = client.operation(pointer, "resume", request_id=f"handoff:{row.id}", turn_id=row.id,
+                    revision=state["revision"], waitId=wait["wait_id"],
+                    slotUpdates={"handoff_requested": False, "handoff_completed": True},
+                    response={"source": source, "subject_id": answered_by_user_id, "message": reply})["state"]
+            else:
+                runtime_state = state
         chat_session.status = "active"
-        chat_session.awaiting_input_json = None
-        chat_session.slots_json = {
+        chat_session.awaiting_input_json = ({
+            **{key: value for key, value in dict(chat_session.awaiting_input_json or {}).items()
+               if key in {"runtime_session_id", "task_id", "local_sop_id"}},
+            "runtime_revision": runtime_state["revision"],
+        } if runtime_state else None)
+        chat_session.slots_json = runtime_state["slots"] if runtime_state else {
             **dict(chat_session.slots_json or {}),
             "handoff_requested": False,
             "handoff_completed": True,
@@ -50,6 +70,21 @@ def apply_handoff_reply(
         chat_session.summary = f"最近回复：{reply[:120]}"
         chat_session.updated_at = now
         db.add(chat_session)
+        if runtime_state:
+            from app.db.models import HarnessTaskFrameRecord
+            from sqlmodel import select
+
+            task_id = (chat_session.awaiting_input_json or {}).get("task_id")
+            frame = db.exec(select(HarnessTaskFrameRecord).where(
+                HarnessTaskFrameRecord.tenant_id == row.tenant_id,
+                HarnessTaskFrameRecord.session_id == row.session_id,
+                HarnessTaskFrameRecord.task_id == task_id,
+            )).first() if task_id else None
+            if frame is not None:
+                frame.status = "ready_to_resume"
+                frame.step_id = runtime_state["active_node_id"]
+                frame.slots_json = dict(runtime_state["slots"])
+                db.add(frame)
     db.add(
         AgentEvent(
             tenant_id=row.tenant_id,

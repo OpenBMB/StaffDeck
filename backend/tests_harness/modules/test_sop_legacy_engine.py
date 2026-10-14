@@ -1,7 +1,7 @@
 import pytest
 
 from app.session.slot_policy import slot_is_filled
-from staffdeck_sop_runtime.original_runtime import SopRuntimeError, prepare, submit
+from staffdeck_harness.sop.legacy_http import SopRuntimeError, prepare, submit
 
 
 BUNDLE = {

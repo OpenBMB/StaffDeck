@@ -67,6 +67,7 @@ from app.db.models import (
     ModelConfig,
     ScheduledTask,
     Skill,
+    SopDefinitionRecord,
     TeamMember,
     Tool,
     utc_now,
@@ -82,6 +83,7 @@ from app.security.auth import get_current_user
 from app.security.permissions import agent_owned_by_user as _agent_owned_by_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
+from app.skills.sop_management import SopManagementService, legacy_sop_writes_disabled
 from app.session.cleanup import (
     purge_chat_session_records,
     remove_chat_session_workspace,
@@ -692,6 +694,18 @@ def _import_agent_resources_once(
         raise HTTPException(status_code=400, detail="No resources selected")
     imported: list[dict[str, object]] = []
     missing: list[dict[str, str]] = []
+    if request.resource_type == "skill" and legacy_sop_writes_disabled():
+        sources = SopManagementService.rows(db, request.tenant_id, source_agent.id)
+        for identifier in resource_ids:
+            source = next((r for r in sources if identifier in {r.id, r.skill_id}), None)
+            if source is None or source.status != "published":
+                missing.append({"resource_id": identifier, "reason": "resource_not_found" if source is None else "inactive_in_source_agent"})
+                continue
+            row = SopManagementService.copy(db, request.tenant_id, source_agent.id, target_agent.id, source.skill_id)
+            imported.append({"resource_type": "skill", "resource_id": row.id, "display_id": row.skill_id, "name": row.name})
+        db.commit()
+        return {"status": "imported", "target_agent_id": target_agent.id,
+                "source_agent_id": source_agent.id, "imported": imported, "missing": missing}
     for identifier in resource_ids:
         resolved = _resolve_resource(db, request.tenant_id, request.resource_type, identifier)
         if not resolved:
@@ -772,6 +786,10 @@ def sync_agent_skill_from_overall(
     _ensure_can_manage_agent(agent, current_user)
     if agent.is_overall:
         raise HTTPException(status_code=400, detail="Overall agent is already the trunk")
+    if legacy_sop_writes_disabled():
+        row = SopManagementService.copy(db, tenant_id, None, agent_id, skill_id)
+        db.commit()
+        return {"status": "synced", "skill_id": skill_id, "head_version": row.version}
     skill = _get_global_skill(db, tenant_id, skill_id)
     if skill.status != "published":
         raise HTTPException(
@@ -796,6 +814,10 @@ def promote_agent_skill_to_overall(
         raise HTTPException(
             status_code=400, detail="Overall agent does not have a branch to promote"
         )
+    if legacy_sop_writes_disabled():
+        row = SopManagementService.copy(db, tenant_id, agent_id, None, skill_id)
+        db.commit()
+        return {"status": "promoted", "skill_id": skill_id, "version": row.version}
     branch = db.exec(
         select(AgentSkillBranch).where(
             AgentSkillBranch.tenant_id == tenant_id,
@@ -826,6 +848,9 @@ def rollback_agent_skill(
         raise HTTPException(
             status_code=400, detail="Use the global skill rollback endpoint for overall agent"
         )
+    if legacy_sop_writes_disabled():
+        row = SopManagementService.rollback(db, request.tenant_id, agent_id, skill_id, request.version)
+        return {"status": "rolled_back", "skill_id": skill_id, "head_version": row.version}
     branch = rollback_branch(db, request.tenant_id, agent_id, skill_id, request.version)
     db.commit()
     return {"status": "rolled_back", "skill_id": skill_id, "head_version": branch.head_version}
@@ -840,6 +865,13 @@ def list_agent_skill_versions(
     current_user: User = Depends(get_current_user),
 ) -> list[dict[str, object]]:
     _ensure_can_access_agent(_get_agent(db, tenant_id, agent_id), current_user)
+    if legacy_sop_writes_disabled():
+        return [{"id": r.id, "tenant_id": r.tenant_id, "agent_id": r.agent_id,
+                 "skill_id": r.skill_id, "version": r.version, "base_version": r.version,
+                 "sync_state": "synced", "status": r.status, "content": r.content_json,
+                 "change_summary": None, "created_at": r.created_at.isoformat(),
+                 "updated_at": r.updated_at.isoformat()}
+                for r in SopManagementService.versions(db, tenant_id, agent_id, skill_id)]
     return [
         {
             "id": row.id,
@@ -951,12 +983,13 @@ def _local_agent_resource_timeline_events(
         }
         for resource_type in ("skill", "general_skill", "knowledge_base", "tool")
     }
+    sop_model = SopDefinitionRecord if legacy_sop_writes_disabled() else Skill
     skills = {
         row.id: row
         for row in db.exec(
-            select(Skill).where(
-                Skill.tenant_id == tenant_id,
-                Skill.id.in_(ids_by_type["skill"]),
+            select(sop_model).where(
+                sop_model.tenant_id == tenant_id,
+                sop_model.id.in_(ids_by_type["skill"]),
             )
         ).all()
     } if ids_by_type["skill"] else {}
@@ -987,7 +1020,7 @@ def _local_agent_resource_timeline_events(
             )
         ).all()
     } if ids_by_type["tool"] else {}
-    skill_branches = {
+    skill_branches = {} if legacy_sop_writes_disabled() else {
         row.skill_id: row
         for row in db.exec(
             select(AgentSkillBranch).where(
@@ -1393,6 +1426,8 @@ def binding_read(row: AgentResourceBinding) -> AgentResourceBindingRead:
 def _copy_agent_scope_from_source(
     db: Session, tenant_id: str, source: AgentProfile, target: AgentProfile
 ) -> None:
+    if legacy_sop_writes_disabled() and not source.is_overall:
+        SopManagementService.copy_scope(db, tenant_id, source.id, target.id)
     if source.is_overall:
         copy_overall_scope_to_agent(db, tenant_id, target)
     else:
@@ -1415,6 +1450,8 @@ def _copy_resource_binding(
     binding: AgentResourceBinding,
 ) -> None:
     if binding.status != "active":
+        return
+    if binding.resource_type == "skill" and legacy_sop_writes_disabled():
         return
     resource_id = binding.resource_id
     metadata = dict(binding.metadata_json or {})
@@ -1988,7 +2025,7 @@ def _resource_binding_visible_in_agent_summary(
         return False
 
     model_by_type = {
-        "skill": Skill,
+        "skill": SopDefinitionRecord if legacy_sop_writes_disabled() else Skill,
         "general_skill": GeneralSkill,
         "knowledge_base": KnowledgeBase,
         "tool": Tool,
@@ -1999,6 +2036,8 @@ def _resource_binding_visible_in_agent_summary(
     resource = facts['resources'].get((binding.resource_type, binding.resource_id)) if facts is not None else db.get(model, binding.resource_id)
     if not resource or resource.tenant_id != tenant_id:
         return False
+    if isinstance(resource, SopDefinitionRecord):
+        return resource.agent_id == ("" if agent.is_overall else agent.id) and resource.status != "deleted"
     if isinstance(resource, KnowledgeBase):
         meta = resource.metadata_json or {}
         empty = (resource.id not in facts['populated'] and (
@@ -2077,7 +2116,7 @@ def _is_empty_default_knowledge_base(db: Session, tenant_id: str, kb: KnowledgeB
 
 def _ensure_resource_exists(db: Session, tenant_id: str, item: AgentResourceBindingInput) -> None:
     model = {
-        "skill": Skill,
+        "skill": SopDefinitionRecord if legacy_sop_writes_disabled() else Skill,
         "general_skill": GeneralSkill,
         "knowledge_base": KnowledgeBase,
         "tool": Tool,
@@ -2100,6 +2139,10 @@ def _get_global_skill(db: Session, tenant_id: str, skill_id: str) -> Skill:
 
 def _skill_branch_read(skill: Skill) -> dict[str, object]:
     metadata = getattr(skill, "agent_branch_meta", {}) or {}
+    if isinstance(skill, SopDefinitionRecord):
+        metadata = {"agent_id": skill.agent_id, "status": skill.status,
+                    "sync_state": "synced", "base_version": skill.version,
+                    "head_version": skill.version, "metadata": skill.metadata_json}
     content = skill.content_json or {}
     if not metadata and isinstance(content.get("metadata"), dict):
         metadata = content.get("metadata", {}).get("agent_branch", {}) or {}

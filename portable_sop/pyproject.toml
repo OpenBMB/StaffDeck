@@ -5,14 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "staffdeck-sop-runtime"
 version = "0.1.0"
-description = "HTTP adapter for the existing StaffDeck SOP runtime"
+description = "Independent SOP lifecycle runtime"
 requires-python = ">=3.11"
-# Production image dependencies come from ../backend. The adapter is shipped
-# beside that existing StaffDeck module rather than as a second SOP engine.
-dependencies = []
+dependencies = ["fastapi>=0.115", "uvicorn>=0.30"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.2.0"]
+dev = ["pytest>=8.2.0", "httpx>=0.27"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

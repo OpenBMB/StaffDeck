@@ -37,6 +37,7 @@ from app.public_api.sessions import ensure_public_agent
 from app.security.permissions import ensure_agent_scope_manager, require_agent_scope_viewer
 from app.public_api.utils import etag_for
 from app.skills import SkillDistiller, SkillEditor
+from app.skills.sop_management import normalize_sop_write, legacy_sop_writes_disabled, SopManagementService
 from app.skills.skill_schema import (
     SkillCard,
     SkillCreateRequest,
@@ -52,12 +53,25 @@ from app.core.turn_planner import TurnPlanner
 router = APIRouter(tags=["sops"])
 
 
+def _draft_model():
+    from app.db.models import SopDraftRecord
+    return SopDraftRecord if legacy_sop_writes_disabled() else APISOPDraft
+
+
+def _normalize_draft(content):
+    return SopManagementService.normalize(content) if legacy_sop_writes_disabled() else normalize_sop_write(content)
+
+
 def _draft_etag(content: dict[str, Any]) -> str:
     return etag_for(content)
 
 
 def _routing_skill_snapshot(skill: Skill) -> Skill:
     """Detach visible DB rows before nesting expansion mutates a routing copy."""
+    from app.db.models import SopDefinitionRecord
+    if isinstance(skill, SopDefinitionRecord):
+        from types import SimpleNamespace
+        return SimpleNamespace(**deepcopy(skill.model_dump()))
     return Skill(
         id=skill.id,
         tenant_id=skill.tenant_id,
@@ -101,7 +115,10 @@ def _next_version(version: str | None) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
-def _runtime_skill(db: Session, tenant_id: str, skill_id: str) -> Skill | None:
+def _runtime_skill(db: Session, tenant_id: str, skill_id: str, agent_id: str | None = None) -> Skill | None:
+    if legacy_sop_writes_disabled():
+        return next((row for row in SopManagementService.rows(db, tenant_id, agent_id)
+            if row.skill_id == skill_id), None)
     return db.exec(
         select(Skill).where(Skill.tenant_id == tenant_id, Skill.skill_id == skill_id)
     ).first()
@@ -119,12 +136,12 @@ def _new_draft(
     base_version: str | None = None,
 ) -> APISOPDraft:
     card = SkillCard.model_validate(content)
-    normalized = card.model_dump(mode="json")
+    normalized = _normalize_draft(card.model_dump(mode="json"))
     runtime = next((row for row in visible_published_skills(db, tenant_id, agent_id)
                     if row.skill_id == card.skill_id), None)
     base = base_version if base_version is not None else (runtime.version if runtime else None)
     normalized["version"] = _next_version(base) if base else normalized.get("version", "1.0.0")
-    row = APISOPDraft(
+    row = _draft_model()(
         tenant_id=tenant_id,
         agent_id=agent_id,
         skill_id=card.skill_id,
@@ -149,15 +166,16 @@ def _owned_draft(
     sop_id: str,
     draft_id: str | None = None,
 ) -> APISOPDraft:
-    statement = select(APISOPDraft).where(
-        APISOPDraft.tenant_id == principal.tenant_id,
-        APISOPDraft.agent_id == agent_id,
-        APISOPDraft.skill_id == sop_id,
-        APISOPDraft.status == "draft",
+    model = _draft_model()
+    statement = select(model).where(
+        model.tenant_id == principal.tenant_id,
+        model.agent_id == agent_id,
+        model.skill_id == sop_id,
+        model.status == "draft",
     )
     if draft_id:
-        statement = statement.where(APISOPDraft.id == draft_id)
-    row = db.exec(statement.order_by(APISOPDraft.updated_at.desc())).first()
+        statement = statement.where(model.id == draft_id)
+    row = db.exec(statement.order_by(model.updated_at.desc())).first()
     if not row:
         raise PublicAPIError(404, "SOP_DRAFT_NOT_FOUND", "SOP draft not found.")
     return row
@@ -263,11 +281,12 @@ def list_sops(
     ensure_public_agent(db, principal, agent_id)
     require_agent_scope_viewer(principal.tenant_id, agent_id, principal.actor_user, db)
     published = internal_skills.list_skills(principal.tenant_id, db, agent_id)
+    model = _draft_model()
     drafts = db.exec(
-        select(APISOPDraft).where(
-            APISOPDraft.tenant_id == principal.tenant_id,
-            APISOPDraft.agent_id == agent_id,
-        ).order_by(APISOPDraft.updated_at.desc())
+        select(model).where(
+            model.tenant_id == principal.tenant_id,
+            model.agent_id == agent_id,
+        ).order_by(model.updated_at.desc())
     ).all()
     # Agent-scoped visibility may create or normalize a branch projection. Commit
     # that intentional read-side projection before the audit middleware opens its
@@ -467,7 +486,7 @@ def rewrite_sop(
     if body.draft_id:
         current = _owned_draft(db, principal, agent_id, sop_id, body.draft_id).content_json
     else:
-        runtime = _runtime_skill(db, principal.tenant_id, sop_id)
+        runtime = _runtime_skill(db, principal.tenant_id, sop_id, agent_id)
         if not runtime:
             raise PublicAPIError(404, "SOP_NOT_FOUND", "SOP not found.")
         current = internal_skills.get_skill(sop_id, principal.tenant_id, agent_id, db).content.model_dump(mode="json")
@@ -562,7 +581,7 @@ def replace_sop_draft(
         raise PublicAPIError(422, "INVALID_SOP", "The SOP graph is invalid.", errors=exc.errors()) from exc
     if card.skill_id != sop_id:
         raise PublicAPIError(422, "SOP_ID_IMMUTABLE", "skill_id cannot be changed.")
-    row.content_json = card.model_dump(mode="json")
+    row.content_json = _normalize_draft(card.model_dump(mode="json"))
     row.draft_version = card.version
     row.etag = _draft_etag(row.content_json)
     row.validation_json = {}
@@ -600,7 +619,7 @@ def patch_sop_draft(
         raise PublicAPIError(422, "INVALID_JSON_PATCH", "The JSON Patch is invalid.", errors=errors) from exc
     if card.skill_id != sop_id:
         raise PublicAPIError(422, "SOP_ID_IMMUTABLE", "skill_id cannot be changed.")
-    row.content_json = card.model_dump(mode="json")
+    row.content_json = _normalize_draft(card.model_dump(mode="json"))
     row.draft_version = card.version
     row.etag = _draft_etag(row.content_json)
     row.validation_json = {}
@@ -641,7 +660,7 @@ def publish_sop(
     if not validation["valid"]:
         raise PublicAPIError(422, "SOP_VALIDATION_FAILED", "The SOP cannot be published.", errors=validation["errors"])
     card = skill_card_from_persisted(row.content_json)
-    runtime = _runtime_skill(db, principal.tenant_id, sop_id)
+    runtime = _runtime_skill(db, principal.tenant_id, sop_id, agent_id)
     if runtime:
         internal_skills.update_skill(
             sop_id,
