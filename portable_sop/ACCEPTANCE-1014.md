@@ -36,7 +36,7 @@ channel acceptance pass. Local evidence directory:
 | StaffDeck browser approval, desktop 1440 and mobile 390 | PASS | `browser-staffdeck.json`, screenshots; reply session IDs match created sessions, no horizontal overflow |
 | PilotDeck browser bearer approval | BLOCKED | Candidate StaffDeck lacks PilotDeckProjectBinding model required by existing binding QA; no end-to-end public approval claim |
 | PilotDeck real Feishu inbound, model/tool, wait, host-control resume, final delivery | PASS (host-control scope) | `feishu.json`; incoming `om_x100b63c57fdb88acb0bbeab6f4007e7`, outgoing `om_x100b63c579088ca4cefaeb4b3716d74`, Runtime revision 3; browser reviewer approval is not covered |
-| StaffDeck real Feishu flow | PENDING | Isolated binding connected; waiting for a dedicated real test message |
+| StaffDeck real Feishu inbound, wait notification, reviewer API resume and final delivery | PASS (delivery record scope) | `staffdeck-feishu.json`; session `session_2fd7b89933ec499e`, handoff `handoff_97671e36a2184b15`, inbound `om_x100b63c539e69938b0f95cd4929de85`, Runtime revision 5, final delivery `chdlv_cca3bba558dd47da`; provider history permission denied, remote reply ID unavailable |
 | Production /dsh deployment and real migration | BLOCKED | SSH user/alias and verified server access unavailable |
 | Main instance cutover | NOT STARTED | Requires accepted deployment, migration, cutover window and rollback plan |
 
@@ -47,6 +47,8 @@ actual StaffDeck source path. Historical earlier counts are not added to these.
 Independent package test entry point: 26 passed with only its source on PYTHONPATH;
 53 legacy compatibility tests pass in the host test directory. The PilotDeck
 independent HTTP Runtime recovery test passes with the configured Python/source.
+Final management/adapter/resume regression: 22 passed; PilotDeck export/config/
+project binding regression: 35 passed. These overlap earlier suites.
 
 ## Acceptance Fixes
 
@@ -64,8 +66,12 @@ independent HTTP Runtime recovery test passes with the configured Python/source.
   statistics layout; browser tests use unique session markers.
 - Seed scripts target only the isolated acceptance SQLite and preserve the first
   migration backup. Evidence remains outside git.
-- cc-connect was suspended only during channel isolation and restored after the
-  PilotDeck test. The shared app-server and supervisor were kept running.
+- cc-connect was suspended only during channel isolation and restored after each
+  host test. The isolated StaffDeck binding is disabled; the shared app-server
+  and supervisor were kept running.
+- Feishu reaction calls and message-history reads are denied by bot permissions.
+  Both hosts delivered workflow replies. StaffDeck's successful send is recorded
+  by its durable outbox; its remote reply ID still needs permission or API evidence.
 
 ## Deployment Gate
 

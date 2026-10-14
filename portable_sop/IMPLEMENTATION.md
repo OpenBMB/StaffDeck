@@ -56,9 +56,9 @@ on every worker. Compatibility mode exists only for this migration window.
 
 Real-model local HTTP acceptance now covers both hosts, real host capability
 execution, StaffDeck management and browser approvals. Production deployment,
-live business database migration, StaffDeck Feishu and PilotDeck public browser
-approval remain incomplete. PilotDeck real Feishu delivery and four-node business
-execution are verified in ACCEPTANCE-1014.md.
+live business database migration and PilotDeck public browser approval remain
+incomplete. Both hosts' real Feishu flows and four-node business execution are
+verified within the evidence limits recorded in ACCEPTANCE-1014.md.
 Existing mutable legacy sessions are not imported; they must finish before cutover.
 
 Runtime publication and the StaffDeck management database are separate stores.
