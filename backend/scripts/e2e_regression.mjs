@@ -185,6 +185,7 @@ const page = await browser.newPage();
   });
   check('境内公司付款 相关流程 排在「收款单位名称」下面', Number(cpPanel.flowOrder) > Number(cpPanel.payeeOrder), cpPanel.flowOrder + ' > ' + cpPanel.payeeOrder);
   check('境内公司付款 明细「报销场景」多选一含 IT硬件设备', (cpPanel.sceneOpts || []).indexOf('IT硬件设备') >= 0, JSON.stringify(cpPanel.sceneOpts));
+  check('境内公司付款 明细「报销场景」多选一含 公司通讯费', (cpPanel.sceneOpts || []).indexOf('公司通讯费') >= 0, JSON.stringify(cpPanel.sceneOpts));
 }
 
 // 5) 境内公司付款：票面类目任意的发票（阿里云「*生产生活服务*软件服务费」6%）也要出明细行
@@ -301,7 +302,7 @@ if (MAC) {
   const frame2 = page.frames().find((f) => f.url().includes('/oa-form'));
   if (frame2) await frame2.evaluate(() => window.__sdResetTrace && window.__sdResetTrace()).catch(() => {});
   await host.locator('button:has-text("代填")').first().click();
-  await page.waitForTimeout(9000);
+  await page.waitForTimeout(16000);
   const again = await frame2.evaluate(() => {
     const hidden = (fm) => { const e = document.querySelector('[data-fieldmark="' + fm + '"] input[type=hidden]'); return e ? e.value : null; };
     return {
@@ -328,7 +329,7 @@ if (HOTEL && TRAIN) {
   // 同一个面板、同一个 OA 表单上再点一次「代填」
   const fr = page.frames().find((f) => f.url().includes('/oa-form'));
   await host.locator('button:has-text("代填")').first().click();
-  await page.waitForTimeout(14000);
+  await page.waitForTimeout(24000);
   const again = await readOa(page);
   const log2 = await host.evaluate((el) => {
     const box = [...el.shadowRoot.querySelectorAll('div')].find((d) => (d.style.fontFamily || '').includes('monospace'));
@@ -352,11 +353,31 @@ if (HOTEL && OTHER) {
   await host.getByText('税率相同的合并到同一明细中').first().click();
   await page.waitForTimeout(1800);
   await host.locator('button:has-text("代填")').first().click();
-  await page.waitForTimeout(16000);
+  await page.waitForTimeout(24000);
   const second = await readOa(page);
   check('明细 2 行 → 1 行：第二行已被删除', second.cpRows === 1, 'cpRows=' + second.cpRows);
+  // 点是「明细的 -」而不是页面上别的删除键（附件的 × 就踩过这个坑）
+  const logSecond = await host.evaluate((el) => {
+    const box = [...el.shadowRoot.querySelectorAll('div')].find((d) => (d.style.fontFamily || '').includes('monospace'));
+    return box ? box.textContent.replace(/\s+/g, ' ') : '';
+  });
+  check('明细删除 点的是明细按钮行的 delbutton', /点「-」：<i#delbutton0/.test(logSecond), (logSecond.match(/点「-」：[^－]{0,80}/) || [''])[0]);
+  check('明细删除 弹窗已确认（日志有「已删除 N 行已有明细」）', /已删除 \d+ 行已有明细/.test(logSecond), '');
   check('明细 2 行 → 1 行：行1=32672.46', second.cpAmt0 === '32672.46', second.cpAmt0);
   check('明细 2 行 → 1 行：第二行金额已清空', !second.cpAmt1, second.cpAmt1);
+}
+
+// 14) 境内公司付款：明细行可切到「公司通讯费」（事项描述不重复拼「费」）
+if (HOTEL) {
+  const host = await injectPanel(page);
+  const { oa } = await runScenario(page, host, 'company_payment', {
+    files: [HOTEL],
+    wait: 14000,
+    rowScene: '公司通讯费',
+    fill: { '收款单位名称': '上海测试科技' },
+  });
+  check('境内公司付款 明细行1 报销场景=公司通讯费', oa.cpScene0 === '公司通讯费', oa.cpScene0);
+  check('境内公司付款 行1 事项描述=公司通讯费（不拼成「费费」）', oa.cpDesc0 === '公司通讯费', oa.cpDesc0);
 }
 
 await browser.close();

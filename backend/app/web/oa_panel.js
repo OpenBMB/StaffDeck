@@ -49,6 +49,25 @@
     return r.width > 1 && r.height > 1;
   }
 
+  /** 元素的简短描述（日志用）：tag#id.class[title]。 */
+  function nodeBrief(el) {
+    if (!el) return '(null)';
+    var cls = String(el.getAttribute && el.getAttribute('class') || '').trim().split(/\s+/).slice(0, 2).join('.');
+    var title = (el.getAttribute && (el.getAttribute('title') || el.getAttribute('aria-label'))) || '';
+    return '<' + String(el.tagName || '').toLowerCase() + (el.id ? '#' + el.id : '') + (cls ? '.' + cls : '') + (title ? ' title=' + title : '') + '>';
+  }
+
+  /** 图标按钮的可见性：图标字体 / 背景图按钮自身可能是空内容、尺寸为 0，
+   *  这时看它所在容器是否可见（并且它得像个控件：有 title/class/onclick）。 */
+  function isVisibleControl(node) {
+    if (!node) return false;
+    if (isVisible(node)) return true;
+    var box = node.parentElement;
+    if (!box || !isVisible(box)) return false;
+    var hint = String(node.getAttribute('title') || node.getAttribute('aria-label') || '') + ' ' + String(node.className || '');
+    return /del|remove|close|cross|minus|删除|移除|checkbox|anticon/i.test(hint) || !!node.getAttribute('onclick');
+  }
+
   function visibleIn(root, selector) {
     var list = root.querySelectorAll(selector);
     for (var i = 0; i < list.length; i++) {
@@ -776,29 +795,173 @@
   /** 清空上传组件上已挂的附件：先点掉列表里的删除图标（自定义上传组件只认这个），
    *  再把 file input 的值置空并派发 change（原生 input 会因此清空文件列表）。 */
   async function clearFileInput(container, input) {
-    var stale = (input.files && input.files.length) || 0;
-    var listItems;
-    try { listItems = container.querySelectorAll('[class*="upload-list"] [class*="item"]'); } catch (e) { listItems = []; }
-    if (!stale && !listItems.length) return; // 本来就没挂附件，不用清
-    var killSel = [
-      '[class*="upload-list"] [class*="delete"]',
-      '[class*="upload-list"] [class*="remove"]',
-      '[class*="upload-list"] [class*="close"]',
-      '[title*="删除"]', '[title*="移除"]',
-      '[aria-label*="删除"]', '[aria-label*="移除"]',
-    ].join(',');
-    var kills;
-    try { kills = container.querySelectorAll(killSel); } catch (e) { kills = []; }
-    var clicked = false;
-    for (var i = 0; i < kills.length && i < 12; i++) {
-      if (!isVisible(kills[i])) continue;
-      clickEl(kills[i]);
-      clicked = true;
+    var staleFiles = [];
+    try { staleFiles = Array.prototype.slice.call(input.files || []); } catch (e) {}
+    var names = [];
+    for (var n = 0; n < staleFiles.length; n++) {
+      var nm = String(staleFiles[n] && staleFiles[n].name || '');
+      if (nm) names.push(nm);
     }
-    if (clicked) await confirmDeleteDialog();
+    var roots = fileClearRoots(container, input);
+    var items = fileItemsAnywhere(roots);
+    var preKills = collectFileKills(roots, names);
+    var visKills = 0;
+    for (var pk = 0; pk < preKills.length; pk++) if (isVisibleControl(preKills[pk])) visKills++;
+    logLine('－ 附件区：input=' + nodeBrief(input) + '，列表项 ' + items.length + ' 个，'
+      + '「×」候选 ' + preKills.length + ' 个（可见 ' + visKills + ' 个）', 'dim');
+    // 真实 OA：列表里「一个文件一个 ×」，点掉一个少一个（每次还会弹「确定要删除…」）
+    // → 循环点，直到再也找不到可见的「×」。
+    var clicked = 0;
+    for (var round = 0; round < 12; round++) {
+      var target = null;
+      // ① 主路径：找到「还挂着的文件项」（.wea-upload-list-item），直接点它内部的「×」
+      var item = firstFileItem(roots);
+      if (item) target = findDeleteInItem(item);
+      // ② 兜底：全局候选（精确选择器 → 宽松选择器）
+      if (!target) {
+        var kills = collectFileKills(roots, names, FILE_DEL_SELECTOR).concat(collectFileKills(roots, names));
+        for (var i = 0; i < kills.length; i++) {
+          if (isVisibleControl(kills[i]) && !/disabled/i.test(String(kills[i].className || ''))) { target = kills[i]; break; }
+        }
+      }
+      if (!target) break;
+      logLine('－ 点附件「×」：' + nodeBrief(target), 'dim');
+      clickEl(target);
+      clicked++;
+      await sleep(400);
+      await confirmDeleteDialog();
+      await sleep(300);
+    }
+    if (clicked) logLine('－ 已清掉 ' + clicked + ' 个旧附件', 'dim');
     try { setNative(input, ''); } catch (e) { try { input.value = ''; } catch (e2) {} }
     try { input.files = new (winOf(input).DataTransfer)().files; } catch (e) {}
     fireEvent(input, 'change');
+  }
+
+  /** 第一个「还挂着的文件项」（真实：div.wea-upload-list-item，里面有文件名）。 */
+  function firstFileItem(roots) {
+    for (var r = 0; r < roots.length; r++) {
+      var items;
+      try {
+        items = roots[r].querySelectorAll('[class*="upload-list"] [class*="item"], [class*="file-item"], [class*="attach-item"]');
+      } catch (e) { items = []; }
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (!String(it.innerText || it.textContent || '').trim()) continue;
+        if (!isVisible(it) && !isVisibleControl(it)) continue;
+        return it;
+      }
+    }
+    return null;
+  }
+
+  /** 在「文件项」里找删除图标：title=删除 / anticon-cross / 类名带 delete|remove|close。
+   *  不会点到同一格里的「下载」「编辑」「拖动」。 */
+  function findDeleteInItem(item) {
+    if (!item) return null;
+    var sel = "[title*='删除'], [title*='移除'], [title*='清空'], .anticon-cross, .anticon-close,"
+      + " [class*='delete'], [class*='remove'], [class*='close'], img[src*='del'], img[src*='close']";
+    var list = queryInDoc(item, sel);
+    for (var i = 0; i < list.length; i++) {
+      if (isVisibleControl(list[i]) && !/disabled/i.test(String(list[i].className || ''))) return list[i];
+    }
+    var all;
+    try { all = item.querySelectorAll('a, i, span, em, button'); } catch (e) { return null; }
+    for (var j = 0; j < all.length; j++) {
+      var t = normText(all[j].innerText || all[j].textContent || '');
+      if ((t === '×' || t === '✕' || t === '✖' || t === '删除' || t === '移除') && isVisibleControl(all[j])) return all[j];
+    }
+    return null;
+  }
+
+  /** 上传组件里「挂着的文件」列表项（诊断 + 判断要不要清）。 */
+  function fileItemsAnywhere(roots) {
+    var out = [];
+    for (var r = 0; r < roots.length; r++) {
+      var items;
+      try {
+        items = roots[r].querySelectorAll('.wea-upload-list-item, [class*="upload-list"] > [class*="item"],'
+          + ' [class*="file-item"], [class*="attach-item"]');
+      } catch (e) { items = []; }
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].querySelector && items[i].querySelector('[class*="upload-list"] .wea-upload-list-item')) continue;
+        if (String(items[i].innerText || items[i].textContent || '').trim()) out.push(items[i]);
+      }
+    }
+    return out;
+  }
+
+  /** 「清空附件」的搜索范围：字段容器 → 所在 tr → 最近的上传类祖先 → 表单根。
+   *  真实 OA 的上传列表常常不在字段容器里（单独一列 / 挂到别处），所以范围要放宽。 */
+  function fileClearRoots(container, input) {
+    var roots = [];
+    function push(node) { if (node && roots.indexOf(node) < 0) roots.push(node); }
+    // 上传组件根（列表 + 「×」都在里面）：真实是 div#fieldXXXX_....wea-upload.wea-field
+    try { push(input && input.closest('.wea-upload, [class*="upload-list"], [class*="upload"]')); } catch (e) {}
+    try { push(container.closest('.wea-upload, [class*="upload-list"], [class*="upload"]')); } catch (e) {}
+    push(container);
+    try { push(container.closest('tr')); } catch (e) {}
+    if (container.ownerDocument) {
+      push(container.closest('form') || container.ownerDocument.body);
+    }
+    return roots;
+  }
+
+  /** 候选删除图标。放宽范围后必须加约束：只在「看起来挂着文件」的容器里点，
+   *  否则会把页面别处的关闭/删除按钮点掉。 */
+  var FILE_DEL_SELECTOR = ".wea-upload-list-item-ops .anticon-cross, .wea-upload-list-item-ops [title*='删除'],"
+    + " [class*='upload-list-item-ops'] [title*='删除'], .anticon-cross[title*='删除']";
+
+  function collectFileKills(roots, names, only) {
+    var killSel = only || [
+      '[class*="upload-list"] [class*="delete"]', '[class*="upload-list"] [class*="remove"]', '[class*="upload-list"] [class*="close"]',
+      '[class*="upload"] [class*="clear"]', '[class*="file-list"] [class*="delete"]', '[class*="file-item"] [class*="delete"]',
+      '[class*="attachment"] [class*="delete"]', '[class*="attach"] [class*="remove"]',
+      '[title*="删除"]', '[title*="移除"]', '[title*="清空"]', '[title*="取消"]',
+      '[aria-label*="删除"]', '[aria-label*="移除"]',
+      'i[class*="close"]', 'span[class*="close"]', 'a[class*="close"]', 'svg[class*="close"]', '[class*="icon-close"]',
+      '.anticon-cross', '.anticon-close', '[class*="upload-list-item-ops"] [title*="删除"]',
+      '.ant-upload-list-item-card-actions-btn',
+      'img[src*="del"]', 'img[src*="close"]', 'img[src*="remove"]',
+    ].join(',');
+    /** 这个元素是否落在「挂文件」的容器里：容器带 upload-list 类名，或文字里有已知文件名。 */
+    function fileish(node) {
+      var box = node;
+      for (var d = 0; d < 5 && box && box.parentElement; d++) {
+        box = box.parentElement;
+        var cls = String(box.className || '');
+        if (/upload-list|file-item|file-list|attachment|attach-item|annex/i.test(cls)) return true;
+        var txt = String(box.innerText || box.textContent || '');
+        for (var n = 0; n < names.length; n++) {
+          if (names[n] && txt.indexOf(names[n]) >= 0) return true;
+        }
+        if (/[^\s]{2,}\.(pdf|png|jpe?g|gif|xlsx?|docx?|zip)\b/i.test(txt)) return true;
+      }
+      return false;
+    }
+    var hits = [];
+    for (var r = 0; r < roots.length; r++) {
+      var found;
+      try { found = roots[r].querySelectorAll(killSel); } catch (e) { found = []; }
+      for (var f = 0; f < found.length; f++) {
+        // 字段容器本身/所在 tr 里的候选不要求 fileish（用户可能就在上传区里点了 ×）
+        if (r === 0 || fileish(found[f])) hits.push(found[f]);
+      }
+      // 文本兜底：× / ✕ / 删除 / 移除 / 清空
+      var all;
+      try { all = roots[r].querySelectorAll('a, i, span, button, em, b'); } catch (e) { all = []; }
+      for (var a = 0; a < all.length; a++) {
+        if (!isVisible(all[a])) continue;
+        var t = normText(all[a].innerText || all[a].textContent || '');
+        if (t !== '×' && t !== '✕' && t !== '✖' && t !== '删除' && t !== '移除' && t !== '清空') continue;
+        if (r === 0 || fileish(all[a])) hits.push(all[a]);
+      }
+    }
+    // 先点「文件项里的删除」（更精确），再点其它候选
+    hits.sort(function (x, y) {
+      return (fileish(y) ? 1 : 0) - (fileish(x) ? 1 : 0);
+    });
+    return hits;
   }
 
   /** 删除附件时 OA 有时弹二次确认：出现就点「确定」，别让弹窗挡住后面的字段。
@@ -806,15 +969,23 @@
   async function confirmDeleteDialog() {
     await sleep(300);
     var docs = collectDocs();
+    var hit = false;
     for (var d = 0; d < docs.length; d++) {
-      var btns;
-      try { btns = docs[d].querySelectorAll('.ant-modal-confirm-btns button, .wea-dialog-footer button'); } catch (e) { continue; }
-      for (var i = 0; i < btns.length; i++) {
-        if (!isVisible(btns[i])) continue;
-        var txt = (btns[i].innerText || btns[i].textContent || '').trim();
-        if (/^(确定|确认|是|OK|Yes)$/i.test(txt)) { clickEl(btns[i]); await sleep(300); }
+      var modals;
+      try { modals = docs[d].querySelectorAll('.ant-modal-confirm, .ant-modal-wrap, .wea-dialog, [role="dialog"]'); } catch (e) { continue; }
+      for (var m = 0; m < modals.length; m++) {
+        if (!isVisible(modals[m])) continue;
+        var btns;
+        try { btns = modals[m].querySelectorAll('button, .ant-btn'); } catch (e) { continue; }
+        for (var i = 0; i < btns.length; i++) {
+          if (!isVisible(btns[i])) continue;
+          // 真实按钮文案是「确 定」「确 认」（带空格）→ 归一化后再比
+          var txt = normText(btns[i].innerText || btns[i].textContent || '');
+          if (/^(确定|确认|是|ok|yes)$/i.test(txt)) { clickEl(btns[i]); hit = true; await sleep(400); }
+        }
       }
     }
+    return hit;
   }
 
   /** 单个字段：返回 {field, status, detail}，不抛异常（异常由调用方兜住）。 */
@@ -1281,7 +1452,10 @@
   function rowItemDesc(scene) {
     var li = (currentScenario() || {}).line_items || {};
     var tpl = li.item_desc_template || '{scene}费';
-    return tpl.replace('{scene}', scene || '');
+    var name = scene || '';
+    // 场景本身已带「费」时不再重复拼（「公司通讯费」→ 不是「公司通讯费费」）
+    if (tpl === '{scene}费' && /费$/.test(name)) return name;
+    return tpl.replace('{scene}', name);
   }
 
   function renderRows() {
@@ -1603,10 +1777,37 @@
   // 执行过程日志：放在「代填」按钮正上方的固定一层（不随表单滚动，单独可滚）
   var logBox = el('div', LOG + 'margin:0 12px 10px;flex:0 0 auto;display:none;', '');
 
-  var footer = el('div', 'display:flex;gap:8px;padding:0 12px 12px;');
+  var footer = el('div', 'display:flex;gap:8px;padding:0 12px 12px;align-items:center;');
   var runBtn = el('button', BTN_PRIMARY, '代填');
   runBtn.type = 'button';
   footer.appendChild(runBtn);
+
+  // 一键清理（只清不填）：验证 / 补救「附件 ×→确认」「勾选 → - →确认」这两步
+  var clearOaBtn = el('button', 'border:1px solid #e3e7f1;background:#fff;color:#5b6274;font-size:12px;'
+    + 'cursor:pointer;font-family:inherit;padding:6px 10px;border-radius:8px;white-space:nowrap;', '清空 附件/明细');
+  clearOaBtn.type = 'button';
+  clearOaBtn.title = '只做两件事：点掉相关票据里每个附件的「×」（含二次确认）、'
+    + '勾选明细行后点「-」（含二次确认）——不填任何字段。用来验证这两步在真实 OA 上通不通。';
+  clearOaBtn.addEventListener('click', function () { clearOaOnly(); });
+  footer.appendChild(clearOaBtn);
+
+  // 定位器对不上真实 OA 时的排查入口：一键注入录制器，把点「X / -」这些操作录下来
+  var recordBtn = el('button', 'border:0;background:transparent;color:#858b9c;font-size:11px;cursor:pointer;font-family:inherit;padding:4px;text-decoration:underline;', '录制排查');
+  recordBtn.type = 'button';
+  recordBtn.title = '记录一次你的操作（点附件的 ×、点明细行的 - 等），导出 JSON 发回即可';
+  recordBtn.addEventListener('click', function () {
+    try {
+      var sc = document.createElement('script');
+      sc.src = BASE + '/api/enterprise/oa-assistant/recorder.js?t=' + Date.now();
+      document.documentElement.appendChild(sc);
+      logLine('已启动录制：左下角小条点「自查」（列出附件/明细行的按钮结构），'
+        + '然后按 Alt+Shift+D（或点左下角小条）导出，把内容发回。', 'warn');
+      logBox.style.display = 'block';
+    } catch (e) {
+      logLine('录制器注入失败：' + String((e && e.message) || e), 'err');
+    }
+  });
+  footer.appendChild(recordBtn);
   card.appendChild(logBox);
   card.appendChild(footer);
   root.appendChild(card);
@@ -1831,12 +2032,30 @@
     return picked;
   }
 
+  /** 明细行「-」删除按钮的**精确**选择器（真实 e-cology 实测：明细表底部按钮行里的
+   *  i#delbutton0.detailBtn[title=删除]）。先用它找，找不到再用下面那串兜底。 */
+  var PRECISE_DEL_ROW_SELECTOR = [
+    "i.detailBtn[title*='删除']", "i[id^='delbutton']", "[name^='delbutton']",
+    "[class*='detailButton'] [title*='删除']", "i[class*='form-delete']",
+  ].join(',');
+
+  /** 明细区域容器（真实：div#dTableArea_0.excelDetailTableDiv / div.excelDetailContent）。 */
+  function detailAreaOf(box) {
+    if (!box || !box.closest) return null;
+    try { return box.closest('[class*="excelDetail"], [id^="dTableArea"], [class*="detailTable"], [class*="detailArea"]'); } catch (e) { return null; }
+  }
+
   /** 明细行「-」删除按钮候选（选择器兜底之外，还会按文本/属性找，见 findDeleteButtonIn）。 */
   var DEFAULT_DEL_ROW_SELECTOR = [
+    // 真实 e-cology：明细表底部按钮行里的 i#delbutton0.detailBtn[title=删除]
+    "i.detailBtn[title*='删除']", "i[id^='delbutton']", "[class*='detailButton'] [title*='删除']",
+    "i[class*='form-delete']", "[name^='delbutton']",
     "[title*='删除']", "[title*='移除']", "[title='-']", "[title*='减']",
     "a[class*='delete']", "i[class*='delete']", "span[class*='delete']", "td[class*='delete']",
     "a[class*='remove']", "i[class*='remove']", "span[class*='remove']",
     "a[class*='del']", "i[class*='del']", "span[class*='del']",
+    "img[src*='del']", "img[src*='minus']", "img[src*='remove']",
+    "svg[class*='del']", "[data-action*='del']", "[data-type*='del']",
     "a[class*='minus']", "i[class*='minus']", "span[class*='minus']",
     "a:has-text('－')", "i:has-text('－')", "span:has-text('－')", "a:has-text('-')",
     "a:has-text('删除')", "i:has-text('删除')", "span:has-text('删除')",
@@ -1922,7 +2141,7 @@
     for (var s = 0; s < scopes.length; s++) {
       var list = queryInDoc(scopes[s], sel);
       for (var j = 0; j < list.length; j++) {
-        if (isVisible(list[j]) && !list[j].disabled) return list[j];
+        if (isVisibleControl(list[j]) && !list[j].disabled) return list[j];
       }
     }
     var scope = box && box.parentElement;
@@ -1931,7 +2150,7 @@
     try { all = scope.querySelectorAll("input[type='checkbox'], .ant-checkbox, .ant-checkbox-wrapper"); } catch (e) { return null; }
     var visible = [];
     for (var k = 0; k < all.length; k++) {
-      if (!isVisible(all[k]) || all[k].disabled) continue;
+      if (!isVisibleControl(all[k]) || all[k].disabled) continue;
       if (all[k].closest && all[k].closest('th, thead')) continue; // 表头的「全选」不算
       visible.push(all[k]);
     }
@@ -1957,7 +2176,11 @@
   function findDeleteButtonIn(scope, delSel, clicked, accept) {
     if (!scope) return null;
     function usable(el) {
-      return el && !clicked[el] && isVisible(el) && !el.disabled && (!accept || accept(el));
+      if (!el || clicked[el] || !isVisibleControl(el) || el.disabled) return false;
+      // 明细按钮在固定表头有一份「禁用副本」（detailBtnDisabled）：点了没反应，跳过
+      if (/disabled/i.test(String(el.className || ''))) return false;
+      if (el.getAttribute && /disabled/i.test(String(el.getAttribute('aria-disabled') || ''))) return false;
+      return !accept || accept(el);
     }
     var cands = queryInDoc(scope, delSel);
     for (var c = 0; c < cands.length; c++) if (usable(cands[c])) return cands[c];
@@ -1969,12 +2192,24 @@
       var t = normText(all[i].innerText || all[i].textContent || '');
       if (t === '-' || t === '－' || t === '−' || t === '×' || t === '✕' || t === '删除' || t === '移除') return all[i];
     }
-    // 兜底③：class/title 里带 del/delete/remove/minus 的图标元素
+    // 兜底③：class/title/data-*/onclick 里带 del/delete/remove/minus/shanchu 的图标元素
+    //         （e-cology 常用图标字体，元素本身没文字，只有 icon 类名）
     for (var j = 0; j < all.length; j++) {
       if (!usable(all[j])) continue;
       var attr = (all[j].getAttribute('title') || '') + ' ' + (all[j].getAttribute('aria-label') || '')
-        + ' ' + String(all[j].className || '');
-      if (/(^|[\s_-])(del|delete|remove|minus|reduce)([\s_-]|$)/i.test(attr)) return all[j];
+        + ' ' + String(all[j].className || '')
+        + ' ' + String(all[j].getAttribute('data-action') || all[j].getAttribute('data-type') || '')
+        + ' ' + String(all[j].getAttribute('onclick') || '');
+      if (/(^|[\s_-])(del|delete|remove|minus|reduce|shanchu|rowdel)([\s_-]|$)/i.test(attr)) return all[j];
+    }
+    // 兜底④：图标是 <img> / <svg use>（src/href 里带 del/remove/minus/jian/shanchu）
+    var imgs;
+    try { imgs = scope.querySelectorAll('img, svg, use, i'); } catch (e) { imgs = []; }
+    for (var k = 0; k < imgs.length; k++) {
+      if (!usable(imgs[k])) continue;
+      var src = String(imgs[k].getAttribute('src') || imgs[k].getAttribute('href')
+        || imgs[k].getAttribute('xlink:href') || '') + ' ' + String(imgs[k].getAttribute('style') || '');
+      if (/del|delete|remove|minus|jian|shanchu|close/i.test(src)) return imgs[k];
     }
     return null;
   }
@@ -2003,8 +2238,42 @@
     return false;
   }
 
+  /** 行内最右列的小图标兜底：明细的「-」一般就在最后一个单元格里，
+   *  且可能没有 title/class/文字线索（就是个带背景图的小图标）。 */
+  function findRowMiniButton(box, clicked) {
+    if (!box) return null;
+    var cells = box.tagName === 'TR' ? box.children : (box.querySelectorAll ? box.querySelectorAll('td') : []);
+    var lastCell = cells && cells.length ? cells[cells.length - 1] : null;
+    if (!lastCell) return null;
+    var cands;
+    try { cands = lastCell.querySelectorAll('a, button, img, svg, i, span, em'); } catch (e) { return null; }
+    for (var k = 0; k < cands.length; k++) {
+      var el = cands[k];
+      if (clicked[el] || !isVisible(el)) continue;
+      if (String(el.innerText || el.textContent || '').trim().length > 6) continue;
+      if (el.querySelector && el.querySelector('input, select, textarea, .ant-select')) continue;
+      // 只点「像按钮」的：a/button/img/svg 天生可点；i/span/em 要求 cursor:pointer
+      var tag = el.tagName;
+      var clickish = tag === 'A' || tag === 'BUTTON' || tag === 'IMG' || tag === 'SVG';
+      if (!clickish) {
+        var cur = '';
+        try { cur = (winOf(el).getComputedStyle(el) || {}).cursor || ''; } catch (e) {}
+        if (cur !== 'pointer' && !el.getAttribute('onclick') && !el.getAttribute('ng-click')) continue;
+      }
+      clicked[el] = true;
+      clickEl(el);
+      return el;
+    }
+    return null;
+  }
+
   /** 候选元素是否属于第 i 行：所在 tr 含本行的明细字段，且不含别的行的明细字段。 */
   function belongsToRow(li, i, indexes, node) {
+    // 上传区（附件的 ×）／弹窗里的按钮不是明细删除键
+    if (node.closest && node.closest('[class*="upload"], .ant-modal, .ant-modal-wrap, [role="dialog"], .wea-dialog')) return false;
+    // 字段控件内部的「清除已选 ×」也不是（明细行的报销场景/发票类型是 antd 下拉，
+    // 当前值就是个带 × 的 chip：class=ant-select-selection__choice__remove —— 踩过这个坑）
+    if (node.closest && node.closest('.ant-select, .wea-select, .wea-browser, .ant-select-selection, .ant-select-selection__choice, .ant-calendar-picker, .wea-date-picker, .wea-associative-search')) return false;
     var tr = node.closest ? node.closest('tr') : null;
     if (!tr) return true; // 不是表格行（div 版明细）→ 交给行范围本身判断
     var sel = rowFieldSelector(li);
@@ -2023,6 +2292,10 @@
     var delSel = li.del_row_selector && li.del_row_selector !== TODO ? li.del_row_selector : DEFAULT_DEL_ROW_SELECTOR;
     var clicked = {};
     var removed = 0;
+    var startIdx = lineItemRowIndexes(li);
+    var staleCount = 0;
+    for (var g = 0; g < (startIdx || []).length; g++) if (rowHasContent(li, startIdx[g])) staleCount++;
+    if (staleCount) logLine('－ 开始清理已有明细：' + staleCount + ' 行有内容（共 ' + startIdx.length + ' 行）', 'dim');
     var warned = false;
     for (var guard = 0; guard < 20; guard++) {
       var idxs = lineItemRowIndexes(li);
@@ -2039,19 +2312,30 @@
       // OA 的「-」要先勾中该行：先点复选框，再找删除按钮（勾选后按钮才可点）
       var checked = await selectRowForDelete(li, last, idxs);
       if (checked && !removed) logLine('－ 「-」需先勾选行：已勾选第 ' + (last + 1) + ' 行', 'dim');
+      await sleep(250);
+      // 勾选会让行重渲染（旧节点 detach → 后面 querySelectorAll 什么都查不到）→ 重新取一次
+      var freshIdxs = lineItemRowIndexes(li) || idxs;
+      var freshScopes = rowScopeOf(li, last, freshIdxs);
+      if (freshScopes.length) { scopes = freshScopes; box = scopes[0]; }
       // 「属于第 last 行」的过滤：其所在 tr 若含「别的行」的明细字段就否掉，
       // 这样即使退到整张明细表里找，也不会误点成别人那一行的「-」。
       var accept = function (el) { return belongsToRow(li, last, idxs, el); };
+      // 搜索范围：行范围 → 行所在 tbody → 明细区域容器。**不退到整张表/整个页面**，
+      // 否则会把页面上别的「×/删除」（附件的 ×、下拉 chip 的 ×）当成明细删除键。
+      var areas = scopes.slice();
+      if (box.parentElement && areas.indexOf(box.parentElement) < 0) areas.push(box.parentElement);
+      var area = detailAreaOf(box);
+      if (area && areas.indexOf(area) < 0) areas.push(area);
       var btn = null;
-      for (var sc = 0; sc < scopes.length && !btn; sc++) btn = findDeleteButtonIn(scopes[sc], delSel, clicked, accept);
-      if (!btn && box.parentElement) btn = findDeleteButtonIn(box.parentElement, delSel, clicked, accept);
-      if (!btn && box.parentElement && box.parentElement.parentElement) {
-        btn = findDeleteButtonIn(box.parentElement.parentElement, delSel, clicked, accept);
-      }
+      // ① 先用精确选择器（i#delbutton0 这类），② 再用配置/兜底选择器
+      for (var pq = 0; pq < areas.length && !btn; pq++) btn = findDeleteButtonIn(areas[pq], PRECISE_DEL_ROW_SELECTOR, clicked, accept);
+      for (var fq = 0; fq < areas.length && !btn; fq++) btn = findDeleteButtonIn(areas[fq], delSel, clicked, accept);
+      // 最后一招：行内最右列的可见小图标（「-」可能没有任何 class/title/文字线索）
+      if (!btn) btn = findRowMiniButton(box, clicked);
       if (!btn) {
         if (!warned) {
           warned = true;
-          var html = String(box.outerHTML || box.innerHTML || '').replace(/\s+/g, ' ').slice(0, 240);
+          var html = String(box.outerHTML || box.innerHTML || '').replace(/\s+/g, ' ').slice(0, 400);
           logLine('! 报销明细：没找到行内「-」删除按钮，' + (removed ? '已删 ' + removed + ' 行，' : '')
             + (checked ? '（已勾选该行仍未出现）' : '（该行也没找到可勾的复选框）') + '剩余明细行请手动删除', 'warn');
           logLine('  第 ' + (last + 1) + ' 行 HTML 片段：' + html, 'dim');
@@ -2059,11 +2343,20 @@
         break;
       }
       clicked[btn] = true;
+      logLine('－ 点「-」：' + nodeBrief(btn), 'dim');
       clickEl(btn);
       removed++;
-      await sleep(600);
+      await sleep(400);
+      // 真实 OA 点「-」会弹「确定要删除吗？」→ 必须点掉，否则行不会消失、弹窗还会挡住后面字段
+      var confirmed = await confirmDeleteDialog();
+      await sleep(400);
       var after = lineItemRowIndexes(li);
-      if (!after || after.length >= idxs.length) break; // 点了没减少，别死循环
+      if (!after || after.length >= idxs.length) {
+        if (confirmed) logLine('! 报销明细：「-」已确认删除但行数没变，请手动检查', 'warn');
+        break; // 点了没减少，别死循环
+      }
+      // 「-」是「删掉所有已勾选行」的公共按钮：删成功一次后要允许再点（换下一行继续删）
+      clicked = {};
     }
     if (removed) {
       steps.push({ field: '报销明细', status: 'filled', detail: '删除已有明细 ' + removed + ' 行' });
@@ -2160,6 +2453,40 @@
         await sleep(200);
       }
     }
+  }
+
+  /** 一键清理：只清空 OA 上已有的附件与明细行（复用自动代填里的同一套代码路径）。 */
+  async function clearOaOnly() {
+    var scenario = currentScenario();
+    if (!scenario) { logLine('没有可用场景', 'err'); return; }
+    clearOaBtn.disabled = true;
+    resetLog('');
+    logLine('手动清理：只清空 OA 上已有的附件与明细行（不填字段）', 'dim');
+    var fields = resolveFields(scenario);
+    for (var i = 0; i < fields.length; i++) {
+      var key = fields[i][0];
+      var spec = fields[i][1];
+      if ((spec.mode || '') !== 'file') continue;
+      var label = spec.label || key;
+      var node = null;
+      if (spec.selector && spec.selector !== TODO) node = findEl(spec.selector);
+      if (!node && spec.by_label) {
+        node = findByLabelText(typeof spec.by_label === 'string' ? spec.by_label : label, 'file', 0);
+      }
+      if (!node) { logLine('○ ' + label + '：没定位到上传组件', 'warn'); continue; }
+      var input = node.matches && node.matches("input[type='file']")
+        ? node : (node.querySelector ? node.querySelector("input[type='file']") : null);
+      if (!input && node.parentElement) input = node.parentElement.querySelector("input[type='file']");
+      if (!input) { logLine('○ ' + label + '：没找到 file input', 'warn'); continue; }
+      try { await clearFileInput(node, input); } catch (e) { logLine('✗ ' + label + '：' + String((e && e.message) || e), 'err'); }
+    }
+    if (scenario.line_items) {
+      try { await clearLineItemRows(scenario.line_items, []); } catch (e) { logLine('✗ 报销明细：' + String((e && e.message) || e), 'err'); }
+    } else {
+      logLine('○ 报销明细：当前场景没有明细行', 'dim');
+    }
+    logLine('手动清理完成', 'ok');
+    clearOaBtn.disabled = false;
   }
 
   async function run() {

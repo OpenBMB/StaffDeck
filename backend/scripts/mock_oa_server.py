@@ -52,6 +52,8 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
   .ant-select-dropdown-hidden{display:none}
   .ant-select-dropdown-menu-item{list-style:none;padding:5px 10px;cursor:pointer;font:12px inherit}
   .ant-select-dropdown-menu-item:hover{background:#f2f4f9}
+  .wea-upload-list-item-ops .anticon-cross{display:inline-block;width:14px;height:14px;float:right;margin:4px;
+    background:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14"><path d="M2 2 L12 12 M12 2 L2 12" stroke="%23888" stroke-width="1.6"/></svg>') no-repeat}
   ul{margin:0;padding:0}
   #addrow{display:inline-block;margin:10px 0;color:#3f6fd8}
   button.ant-btn{margin-left:12px;padding:5px 16px;border:1px solid #e3e7f1;border-radius:8px;background:#18181a;color:#fff}
@@ -66,7 +68,9 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
   <tr><td class="lb">报销事由</td><td colspan="3"><input id="field6946"></td></tr>
   <tr><td class="lb">实际出差天数</td><td><input id="tripdays"></td><td></td><td></td></tr>
   <tr><td class="lb">相关流程</td><td colspan="3"><div class="ant-select" data-options="出差申请-0918 上海行|出差申请-0925 北京行|日常费用报销"></div></td></tr>
-  <tr><td class="lb">相关票据</td><td><div data-fieldmark="field6951"><input type="file" multiple></div></td>
+  <tr><td class="lb">相关票据</td><td><div data-fieldmark="field6951" class="wea-upload wea-field">
+      <div class="wea-upload-list"></div>
+      <div class="wea-upload-container"><input type="file" multiple></div></div></td>
       <td class="lb">其他参考资料</td><td><div data-fieldmark="field6973"><input type="file" multiple></div></td></tr>
   <tr><td class="lb">是否全电子发票</td><td><div class="ant-select" data-fieldmark="field29328" data-options="是|否"></div></td><td></td><td></td></tr>
   <tr><td class="lb">费用承担部门</td><td><div class="ant-select" data-fieldmark="field7012" data-options="核定费用承担部门|核定"></div></td><td></td><td></td></tr>
@@ -74,13 +78,22 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
   <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_0" data-options="通讯费用|交通费用|飞机|火车汽车船|IT服务外包|相关票据|境内住宿|境内机票|境内火车票"></div></td>
       <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td></tr>
   <tr><td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="0"><input id="field6920_0"></td>
-      <td class="lb">金额</td><td><input id="field6932_0"><a href="#" class="row-del" data-row="0" title="删除">－</a></td></tr>
+      <td class="lb">金额</td><td><input id="field6932_0"></td></tr>
   <!-- 境内公司付款（workflow 56）明细：fieldmark 直用 -->
-  <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_0" data-options="IT服务外包|IT硬件设备|普通发票|相关票据"></div></td>
+  <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_0" data-options="IT服务外包|IT硬件设备|公司通讯费|普通发票|相关票据"></div></td>
       <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6826_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td></tr>
   <tr><td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="0"><input id="field6821_0"></td>
-      <td class="lb">金额</td><td><input id="field6829_0"><a href="#" class="row-del" data-row="0" title="删除">－</a></td></tr>
+      <td class="lb">金额</td><td><input id="field6829_0"></td></tr>
+  <tr class="detail_button_row"><td colspan="4" class="detail_1_0_15">
+      <div class="detailButtonDiv">
+        <i id="delbutton0" name="delbutton0" class="icon-coms-form-delete-hot detailBtn" title="删除">－</i>
+        <i id="copybutton0" name="copybutton0" class="icon-coms-copy-hot detailBtn" title="复制">⧉</i>
+      </div></td></tr>
 </table>
+<!-- 固定表头里的「禁用副本」：面板不许点这个 -->
+<table id="oTable0_head" class="excelDetailTable"><tr><td class="detail_1_0_15">
+  <div class="detailButtonDiv"><i id="delbutton0" class="icon-coms-form-delete-hot detailBtn detailBtnDisabled" title="删除">－</i></div>
+</td></tr></table>
 <a href="#" id="addrow">＋ 新增</a>
 <button class="ant-btn">保 存</button>
 <pre id="saved"></pre>
@@ -100,7 +113,34 @@ document.addEventListener('change', function (e) {
   if (t.type !== 'file') return;
   window.__sdTrace.fileChanges++;
   if (!t.files || !t.files.length) window.__sdTrace.fileCleared++;
+  renderUploadList(t);
 }, true);
+
+// 把选中的文件画成真实 OA 的上传列表；每个文件右侧一个「×」= 删除（会弹确认）
+function renderUploadList(input) {
+  var box = input.closest ? input.closest('.wea-upload') : null;
+  if (!box) return;
+  var list = box.querySelector('.wea-upload-list');
+  if (!list) return;
+  list.innerHTML = '';
+  Array.prototype.forEach.call(input.files || [], function (f, idx) {
+    var item = document.createElement('div');
+    item.className = 'wea-upload-list-item';
+    item.innerHTML = '<div class="wea-upload-list-item-file"><div class="wea-upload-list-content">'
+      + '<a class="wea-field-link" title="' + f.name + '">' + f.name + '</a>'
+      + '</div><div class="wea-upload-list-item-ops">'
+      + '<i class="anticon anticon-cross" data-idx="' + idx + '" title="删除" style="cursor:pointer"></i>'
+      + '</div></div>';
+    list.appendChild(item);
+  });
+}
+document.addEventListener('click', function (e) {
+  var x = e.target && e.target.closest ? e.target.closest('.wea-upload-list-item-ops .anticon-cross') : null;
+  if (!x) return;
+  e.preventDefault();
+  var name = (x.closest('.wea-upload-list-item').querySelector('.wea-field-link') || {}).textContent || '';
+  showConfirm('确定要删除' + name + '吗？', function () { x.closest('.wea-upload-list-item').remove(); });
+});
 function setupSelect(root){
   var options = (root.getAttribute('data-options')||'').split('|').filter(Boolean);
   var selection = document.createElement('div'); selection.className='ant-select-selection';
@@ -140,7 +180,7 @@ var rowCount = 1;
 // 删/加行后把明细行号重排成 0..n-1（真实 OA 的明细是按位置渲染的）
 function renumberRows() {
   var seen = {};
-  Array.prototype.forEach.call(document.querySelectorAll('.row-del'), function (a) { seen[a.getAttribute('data-row')] = 1; });
+  Array.prototype.forEach.call(document.querySelectorAll('.row-check'), function (a) { seen[a.getAttribute('data-row')] = 1; });
   var uniq = Object.keys(seen).map(Number).sort(function (x, y) { return x - y; });
   uniq.forEach(function (oldIdx, newIdx) {
     if (oldIdx === newIdx) return;
@@ -152,36 +192,54 @@ function renumberRows() {
       var el = document.getElementById(m + oldIdx);
       if (el) el.id = m + newIdx;
     });
-    Array.prototype.forEach.call(document.querySelectorAll('.row-del[data-row="' + oldIdx + '"], .row-check[data-row="' + oldIdx + '"]'), function (a) {
+    Array.prototype.forEach.call(document.querySelectorAll('.row-check[data-row="' + oldIdx + '"]'), function (a) {
       a.setAttribute('data-row', String(newIdx));
     });
   });
   rowCount = uniq.length;
   return uniq.length;
 }
+function showConfirm(text, onOk) {
+  var wrap = document.createElement('div');
+  wrap.className = 'ant-modal-wrap';
+  wrap.innerHTML = '<div class="ant-modal ant-confirm ant-confirm-confirm"><div class="ant-modal-content">'
+    + '<div class="ant-modal-body"><span class="ant-confirm-title">信息确认</span><div>' + text + '</div>'
+    + '<div class="ant-confirm-btns"><button type="button" class="ant-btn ant-btn-primary"><span>确 定</span></button>'
+    + '<button type="button" class="ant-btn ant-btn-ghost"><span>取 消</span></button></div></div></div></div>';
+  document.body.appendChild(wrap);
+  wrap.querySelector('.ant-btn-primary').addEventListener('click', function () { wrap.remove(); onOk(); });
+  wrap.querySelector('.ant-btn-ghost').addEventListener('click', function () { wrap.remove(); });
+}
+
+// 明细「-」：真实 OA 要先勾中行、点完还要在弹窗里点「确 定」
 document.addEventListener('click', function (e) {
-  var a = e.target && e.target.closest ? e.target.closest('.row-del') : null;
-  if (!a) return;
+  var btn = e.target && e.target.closest ? e.target.closest('#delbutton0, i.detailBtn[title="删除"]') : null;
+  if (!btn) return;
   e.preventDefault();
-  var i = a.getAttribute('data-row');
-  // 真实 OA：「-」要先勾中该行才生效 —— mock 也照这个规则来，否则回归测不出这一步
-  var tr = a.closest('tr');
-  var cb = tr ? tr.querySelector('.row-check') : null;
-  if (cb && !cb.checked) return;
-  var marks = ['field6926_', 'field6827_'];   // ant-select 容器（无 id，按 fieldmark 找）
-  var ids = ['field6920_', 'field6932_', 'field6821_', 'field6829_'];  // 普通 input
-  marks.forEach(function (m) {
-    var el = document.querySelector('[data-fieldmark="' + m + i + '"]');
-    var tr = el && el.closest('tr');
-    if (tr) tr.remove();
+  if (/disabled/i.test(String(btn.className || ''))) return;   // 固定表头的禁用副本
+  var checked = Array.prototype.slice.call(document.querySelectorAll('.row-check')).filter(function (c) { return c.checked; });
+  if (!checked.length) return;                                  // 没勾中就不删（真实行为）
+  showConfirm('确定要删除吗？', function () {
+    var seen = {};
+    checked.forEach(function (c) {
+      var i = c.getAttribute('data-row');
+      if (seen[i]) return;
+      seen[i] = 1;
+      ['field6926_', 'field6827_'].forEach(function (m) {
+        var el = document.querySelector('[data-fieldmark="' + m + i + '"]');
+        var tr = el && el.closest('tr');
+        if (tr) tr.remove();
+      });
+      ['field6920_', 'field6932_', 'field6821_', 'field6829_'].forEach(function (m) {
+        var el = document.getElementById(m + i);
+        var tr = el && el.closest('tr');
+        if (tr) tr.remove();
+      });
+    });
+    renumberRows();
   });
-  ids.forEach(function (m) {
-    var el = document.getElementById(m + i);
-    var tr = el && el.closest('tr');
-    if (tr) tr.remove();
-  });
-  renumberRows();
 });
+
 document.getElementById('addrow').addEventListener('click', function(e){
   e.preventDefault();
   renumberRows();
@@ -191,12 +249,12 @@ document.getElementById('addrow').addEventListener('click', function(e){
   tr1.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_'+i+'" data-options="IT服务外包|交通费用|相关票据|境内住宿|境内机票|境内火车票"></div></td>'
     + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_'+i+'" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td>';
   var tr2 = document.createElement('tr');
-  tr2.innerHTML = '<td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="'+i+'"><input id="field6920_'+i+'"></td><td class="lb">金额</td><td><input id="field6932_'+i+'"><a href="#" class="row-del" data-row="'+i+'" title="删除">－</a></td>';
+  tr2.innerHTML = '<td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="'+i+'"><input id="field6920_'+i+'"></td><td class="lb">金额</td><td><input id="field6932_'+i+'"></td>';
   var tr3 = document.createElement('tr');
-  tr3.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_'+i+'" data-options="IT服务外包|IT硬件设备|普通发票"></div></td>'
+  tr3.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_'+i+'" data-options="IT服务外包|IT硬件设备|公司通讯费|普通发票"></div></td>'
     + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6826_'+i+'" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td>';
   var tr4 = document.createElement('tr');
-  tr4.innerHTML = '<td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="'+i+'"><input id="field6821_'+i+'"></td><td class="lb">金额</td><td><input id="field6829_'+i+'"><a href="#" class="row-del" data-row="'+i+'" title="删除">－</a></td>';
+  tr4.innerHTML = '<td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="'+i+'"><input id="field6821_'+i+'"></td><td class="lb">金额</td><td><input id="field6829_'+i+'"></td>';
   table.appendChild(tr1); table.appendChild(tr2); table.appendChild(tr3); table.appendChild(tr4);
   Array.prototype.forEach.call(tr1.querySelectorAll('.ant-select'), setupSelect);
   Array.prototype.forEach.call(tr3.querySelectorAll('.ant-select'), setupSelect);
