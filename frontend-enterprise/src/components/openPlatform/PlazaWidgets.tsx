@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import IconRefresh from '@/assets/icons/refresh.svg?react';
 import { api, TENANT_ID } from '@/api/client';
@@ -381,17 +382,46 @@ function AddChipDialog({
   const [linkName, setLinkName] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
   const colorOf = (index: number) => PALETTE[index % PALETTE.length];
+  const reduce = prefersReducedMotion();
+
+  // Esc 关闭 + 打开期间锁定背景滚动
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [open, onClose]);
 
   if (!open) return null;
 
-  return (
+  // portal 挂 body：外层卡片有 backdrop-blur / transform 时，fixed 会被当作
+  // 相对卡片定位导致弹层被裁切——必须逃逸到文档根节点才能全屏居中。
+  return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-[rgba(28,28,30,0.32)] backdrop-blur-[3px]"
+      className={cn(
+        'fixed inset-0 z-[100] flex items-center justify-center bg-[rgba(28,28,30,0.32)] backdrop-blur-[3px]',
+        !reduce && 'animate-[sd-fade-in_.2s_ease-out]',
+      )}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="flex max-h-[78vh] w-[460px] flex-col overflow-hidden rounded-[18px] border border-black/[0.05] bg-white shadow-[0_24px_64px_-20px_rgba(28,28,30,0.4)]">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="添加快捷方式"
+        className={cn(
+          'flex max-h-[78vh] w-[460px] flex-col overflow-hidden rounded-[18px] border border-black/[0.05] bg-white shadow-[0_24px_64px_-20px_rgba(28,28,30,0.4)]',
+          !reduce && 'animate-[sd-pop-in_.26s_cubic-bezier(0.16,1,0.3,1)]',
+        )}
+      >
         <div className="flex items-center justify-between px-[20px] pb-[12px] pt-[16px]">
           <h3 className="text-[15px] font-semibold text-[#18181a]">添加快捷方式</h3>
           <button
@@ -532,7 +562,8 @@ function AddChipDialog({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
