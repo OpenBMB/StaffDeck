@@ -23,6 +23,7 @@ from app.db.models import (
     Tenant,
     Tool,
     User,
+    utc_now,
 )
 from app.core.task_frame_store import TaskFrameStore, planned_frame_from_record
 from app.session.session_schema import TurnPlan
@@ -296,6 +297,39 @@ def test_polling_only_updates_external_task_state(monkeypatch) -> None:
         assert task.status == "completed"
         assert task.result_json == {"value": 9}
         assert task.poll_attempts == 1
+
+
+def test_failed_poll_still_applies_poll_backoff(monkeypatch) -> None:
+    with _session() as db:
+        user, tool = _seed(db)
+        task = ExternalBusinessTask(
+            tenant_id="tenant_demo",
+            user_id=user.id,
+            tool_id=tool.id,
+            external_task_id="provider-42",
+            status="working",
+            callback_token_hash=callback_token_hash("token"),
+            status_url="https://provider.test/tasks/provider-42",
+            status_config_json={},
+            next_poll_at=tool.created_at,
+            poll_interval_seconds=300,
+        )
+        db.add(task)
+        db.commit()
+
+        def _unreachable(*_args, **_kwargs):
+            raise httpx.ConnectError("provider unreachable")
+
+        monkeypatch.setattr("app.tools.external_tasks.httpx.get", _unreachable)
+        before = utc_now()
+
+        assert poll_due_external_tasks(db) == 1
+        db.refresh(task)
+        assert task.status == "working"
+        assert task.error_json["code"] == "POLL_ERROR"
+        assert task.poll_attempts == 1
+        assert task.next_poll_at is not None
+        assert task.next_poll_at > before
 
 
 def test_completed_external_task_marks_sop_frame_ready_to_resume() -> None:
