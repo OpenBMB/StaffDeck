@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from staffdeck_sop_core import SopCoreError, SopDefinition, SopState, prepare
 from staffdeck_sop_core.nesting import expand
+from .features import SopFeatures
 
 
 def now():
@@ -15,7 +16,8 @@ def now():
 
 
 class ManagementService:
-    def __init__(self, store, snapshot):
+    def __init__(self, store, snapshot, features=None):
+        self.features = features or SopFeatures()
         self.store, self.snapshot = store, snapshot
         with store._lock:
             store._connection.executescript("""
@@ -83,11 +85,13 @@ class ManagementService:
                 child = self.definition(node.get("sub_sop_id"), node.get("sub_sop_version"))
                 node["sub_sop_version"] = child.version
         definition = SopDefinition.from_value(value)
+        self.features.check_definition(definition)
         if publication:
             catalog = self.store.definitions()
             catalog[definition.sop_id] = definition
             catalog[(definition.sop_id, definition.version)] = definition
             expanded = expand(definition, catalog)
+            self.features.check_definition(expanded)
             prepare(expanded, SopState("validate", definition.sop_id, definition.version))
         else:
             # Unresolved child references may be edited, but publication must resolve them.
@@ -105,6 +109,10 @@ class ManagementService:
 
     def _call(self, operation, data):
         sop_id = data.get("sopId")
+        if operation == "features":
+            return self.features.to_dict()
+        if not self.features.version_management and operation in {"list_versions", "get_version", "rollback"}:
+            raise SopCoreError("SOP_FEATURE_DISABLED", "SOP version management module is disabled")
         if operation == "list":
             rows = [row for row in self.rows() if row["status"] != "deleted"]
             drafts = [json.loads(row["payload"]) for row in self.store._connection.execute(
@@ -162,6 +170,8 @@ class ManagementService:
                 self._put("sop_drafts", "draft_id", draft["draft_id"], draft, sop_id=sop_id)
                 return draft
             content = self.validate(draft["content"], publication=True)
+            if not self.features.version_management:
+                content = {**content, "version": "snapshot-" + uuid4().hex}
             definition = self.snapshot({"content": content, "source": "portable-management"})
             try:
                 existing = self.store.get(sop_id, definition.version)

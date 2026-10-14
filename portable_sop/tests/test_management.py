@@ -1,4 +1,5 @@
 from copy import deepcopy
+import pytest
 
 from fastapi.testclient import TestClient
 from staffdeck_sop_runtime.api import create_app
@@ -112,3 +113,98 @@ def test_publication_depth_and_delete_preserve_session_snapshot():
         assert call(client, "delete", sopId="level0").is_success
         assert client.post("/v1/sessions/new/prepare", json=envelope).status_code == 422
         assert client.post("/v1/sessions/saved/prepare", json={**envelope, "requestId": "p2"}).is_success
+
+
+def test_disabled_version_management_keeps_edit_publish_and_pinned_sessions():
+    from staffdeck_sop_runtime.features import SopFeatures
+    with TestClient(create_app(features=SopFeatures(version_management=False))) as client:
+        assert call(client, "features").json()["result"]["versionManagement"] is False
+        first = publish(client, content()).json()["result"]["version"]
+        envelope = {"protocolVersion": "3.0", "requestId": "prepare", "operationId": "prepare", "turnId": "t", "sopId": "approval"}
+        assert client.post('/v1/sessions/old/prepare', json=envelope).is_success
+        changed = content()
+        changed['name'] = 'Edited without a version number change'
+        second = publish(client, changed).json()["result"]["version"]
+        assert first != second
+        assert client.get('/v1/sessions/old').json()['state']['sop_version'] == first
+        assert client.post('/v1/sessions/new/prepare', json=envelope).json()['payload']['state']['sop_version'] == second
+        for operation in ['list_versions', 'get_version', 'rollback']:
+            response = call(client, operation, sopId='approval', version=first)
+            assert response.json()['error']['code'] == 'SOP_FEATURE_DISABLED'
+
+
+def test_disabled_knowledge_rejects_management_and_execution(tmp_path):
+    from staffdeck_sop_runtime.features import SopFeatures
+    path = str(tmp_path / 'features.sqlite')
+    value = content()
+    value['nodes'][0]['knowledge_base_ids'] = ['kb']
+    with TestClient(create_app(path)) as client:
+        assert publish(client, value).is_success
+    with TestClient(create_app(path, features=SopFeatures(knowledge=False))) as client:
+        assert call(client, 'create', content=value).json()['error']['code'] == 'SOP_FEATURE_DISABLED'
+        assert client.post('/v1/definitions', json=value).json()['error']['code'] == 'SOP_FEATURE_DISABLED'
+        envelope = {"protocolVersion": "3.0", "requestId": "prepare", "operationId": "prepare", "turnId": "t", "sopId": "approval"}
+        assert client.post('/v1/sessions/new/prepare', json=envelope).json()['error']['code'] == 'SOP_FEATURE_DISABLED'
+        assert publish(client, content(sop_id='ordinary')).is_success
+
+
+@pytest.mark.parametrize("knowledge", [True, False])
+@pytest.mark.parametrize("versions", [True, False])
+def test_feature_matrix_and_knowledge_declaration_forms(knowledge, versions):
+    from staffdeck_sop_runtime.features import SopFeatures
+    with TestClient(create_app(features=SopFeatures(knowledge, versions))) as client:
+        assert call(client, "features").json()["result"] == {"knowledge": knowledge, "versionManagement": versions}
+        assert publish(client, content(sop_id="ordinary")).is_success
+        forms = [
+            {"type": "knowledge_query"},
+            {"knowledge_base_ids": ["kb"]},
+            {"capability_refs": {"knowledge_base_ids": ["kb"]}},
+            {"capability_refs": {"required_knowledge_base_ids": ["kb"]}},
+        ]
+        for index, fields in enumerate(forms):
+            value = content(sop_id=f"knowledge{index}")
+            value["nodes"][0].update(fields)
+            response = call(client, "import", content=value)
+            assert response.is_success == knowledge
+            if not knowledge:
+                assert response.json()["error"]["code"] == "SOP_FEATURE_DISABLED"
+        response = call(client, "list_versions", sopId="ordinary")
+        assert response.is_success == versions
+
+
+def test_knowledge_shutdown_blocks_children_and_active_sessions_without_mutation(tmp_path):
+    from staffdeck_sop_runtime.features import SopFeatures
+    path = str(tmp_path / "children.sqlite")
+    child = content(sop_id="knowledge_child")
+    child["nodes"][0]["capability_refs"] = {"knowledge_base_ids": ["kb"]}
+    parent = content(sop_id="parent")
+    parent["nodes"] = [{"node_id": "approval", "type": "subflow", "sub_sop_id": "knowledge_child", "sub_sop_version": "1.0.0"}]
+    envelope = {"protocolVersion": "3.0", "requestId": "prepare", "operationId": "prepare", "turnId": "t", "sopId": "parent"}
+    with TestClient(create_app(path)) as client:
+        assert publish(client, child).is_success
+        assert publish(client, parent).is_success
+        assert client.post("/v1/sessions/saved/prepare", json=envelope).is_success
+        before = client.get("/v1/sessions/saved").json()["state"]
+    with TestClient(create_app(path, features=SopFeatures(knowledge=False))) as client:
+        direct = {**parent, "skill_id": "direct_parent"}
+        assert client.post("/v1/definitions", json=direct).json()["error"]["code"] == "SOP_FEATURE_DISABLED"
+        draft = call(client, "create", content=direct).json()["result"]
+        assert call(client, "publish", sopId="direct_parent", draftId=draft["id"], expectedRevision=0).json()["error"]["code"] == "SOP_FEATURE_DISABLED"
+        for operation, extra in [("prepare", {"sopId": "parent"}), ("submit", {"proposal": {"status": "completed"}}), ("resume", {})]:
+            response = client.post(f"/v1/sessions/saved/{operation}", json={**envelope, **extra, "requestId": operation + "-off", "expectedRevision": before["revision"]})
+            assert response.json()["error"]["code"] == "SOP_FEATURE_DISABLED"
+            assert client.get("/v1/sessions/saved").json()["state"] == before
+        assert client.post("/v1/sessions/fresh/prepare", json=envelope).json()["error"]["code"] == "SOP_FEATURE_DISABLED"
+
+
+def test_feature_environment_defaults_and_invalid_value(monkeypatch):
+    from staffdeck_sop_runtime.features import SopFeatures
+    for key in ["SOP_KNOWLEDGE_ENABLED", "SOP_VERSION_MANAGEMENT_ENABLED"]:
+        monkeypatch.delenv(key, raising=False)
+    assert SopFeatures.from_env() == SopFeatures()
+    monkeypatch.setenv("SOP_KNOWLEDGE_ENABLED", "false")
+    monkeypatch.setenv("SOP_VERSION_MANAGEMENT_ENABLED", "1")
+    assert SopFeatures.from_env() == SopFeatures(False, True)
+    monkeypatch.setenv("SOP_KNOWLEDGE_ENABLED", "invalid")
+    with pytest.raises(ValueError):
+        SopFeatures.from_env()

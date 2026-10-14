@@ -18,6 +18,7 @@ from staffdeck_sop_core import SopCoreError, SopDefinition, SopState
 from staffdeck_sop_core import prepare as core_prepare, resume as core_resume, submit as core_submit
 from .storage import SqliteStore
 from .management import ManagementService
+from .features import SopFeatures
 from staffdeck_sop_core.nesting import expand
 
 PROTOCOL_VERSION = "3.0"
@@ -46,15 +47,16 @@ class SessionResume(BaseModel):
     slotUpdates: dict[str, Any] = Field(default_factory=dict)
     response: dict[str, Any] = Field(default_factory=dict)
 
-def create_app(state_path: str = ":memory:", *, publish_token: str | None = None) -> FastAPI:
+def create_app(state_path: str = ":memory:", *, publish_token: str | None = None, features: SopFeatures | None = None) -> FastAPI:
     store = SqliteStore(state_path)
+    store.features = features or SopFeatures()
     @asynccontextmanager
     async def lifespan(_app):
         yield
         store.close()
     app = FastAPI(title="Independent SOP Runtime", version=PROTOCOL_VERSION, lifespan=lifespan)
     app.state.sop_store = store
-    management = ManagementService(store, _snapshot)
+    management = ManagementService(store, _snapshot, store.features)
     app.state.sop_management = management
     for path in sorted(Path(os.environ.get("SOP_DEFINITIONS_DIR", "/nonexistent")).glob("*.json")):
         raw = json.loads(path.read_text())
@@ -99,8 +101,14 @@ def create_app(state_path: str = ":memory:", *, publish_token: str | None = None
         if publish_token and not compare_digest(request.headers.get("authorization", ""), f"Bearer {publish_token}"):
             return _failed("publish", "SOP_PUBLISH_UNAUTHORIZED", "definition publication requires the publisher credential", 401)
         definition = _snapshot(payload)
+        store.features.check_definition(definition)
         core_prepare(definition, SopState("validate", definition.sop_id, definition.version))
         with store.transaction():
+            if not store.features.knowledge:
+                catalog = store.definitions()
+                catalog[(definition.sop_id, definition.version)] = definition
+                catalog[definition.sop_id] = definition
+                store.features.check_definition(expand(definition, catalog))
             try:
                 existing = store.get(definition.sop_id, definition.version)
             except SopCoreError:
@@ -166,6 +174,7 @@ def _prepare(store: SqliteStore, session_id: str, envelope: Envelope, request: S
             if row:
                 definition = management.definition(request.sopId)
         definition = expand(definition, store.definitions())
+        store.features.check_definition(definition)
         prepared = core_prepare(definition, SopState(session_id, definition.sop_id, definition.version))
         state = store.create(SopState.from_dict(prepared["state"]))
         store.bind_definition(session_id, definition)
@@ -222,6 +231,8 @@ def _run(store: SqliteStore, envelope: Envelope, session_id: str, operation_name
             replay = store.get_request(session_id, envelope.idempotencyKey or envelope.requestId, input)
             if replay is not None:
                 return JSONResponse(replay)
+            if store.read(session_id) is not None:
+                store.features.check_definition(store.session_definition(session_id))
             result = operation()
             response = {"protocolVersion": PROTOCOL_VERSION, "requestId": envelope.requestId, "ok": True, "outcome": "completed", "payload": result}
             store.event(session_id, envelope.operationId, SopState.from_dict(result["state"]))
@@ -239,4 +250,4 @@ def _wait_dict(wait) -> dict[str, Any] | None:
         return None
     return {"kind": wait.kind, "waitId": wait.wait_id, "sessionId": wait.session_id, "sopId": wait.sop_id, "nodeId": wait.node_id, "requestedFields": list(wait.requested_fields), "assigneeRef": wait.assignee_ref}
 
-app = create_app(os.environ.get("SOP_RUNTIME_DB", "./data/sop-runtime.sqlite"), publish_token=os.environ.get("SOP_PUBLISH_TOKEN"))
+app = create_app(os.environ.get("SOP_RUNTIME_DB", "./data/sop-runtime.sqlite"), publish_token=os.environ.get("SOP_PUBLISH_TOKEN"), features=SopFeatures.from_env())

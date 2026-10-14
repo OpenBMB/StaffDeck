@@ -94,3 +94,34 @@ Completed generation saves a validated draft, never a publication. PD uses
 `SOP_RUNTIME_PUBLISH_TOKEN` for the matching server-side publisher credential.
 In native mode, `assignee_ref: pilotdeck:owner` is normalized at validation;
 PD authenticates the active owner and owns notification/continuation delivery.
+
+## Optional SOP features
+
+Configure the independent Runtime/Management process and restart it:
+
+```bash
+SOP_KNOWLEDGE_ENABLED=false \
+SOP_VERSION_MANAGEMENT_ENABLED=false \
+python -m staffdeck_sop_runtime
+```
+
+Both settings default to `true`. `features` on `/v1/management/call` returns
+`{knowledge, versionManagement}`; PilotDeck native SOP reads this policy for
+its editor and generation capability list.
+
+- Disabling knowledge removes knowledge choices from the native editor and
+  generation bindings. Management validation, direct publication and execution
+  reject knowledge-dependent definitions with `SOP_FEATURE_DISABLED`, including
+  expanded child definitions. Existing knowledge-dependent sessions cannot
+  advance while disabled; ordinary SOPs continue to work.
+- Disabling version management removes history, rollback and manual version
+  editing from the native page. The management API rejects `list_versions`,
+  `get_version` and `rollback`. Editing and publication remain available:
+  publication allocates an internal immutable snapshot ID automatically.
+  Existing sessions retain their pinned snapshots. No historical data is deleted.
+
+These are SOP-service feature switches, not global host knowledge switches.
+StaffDeck's legacy management UI is not controlled by the native PilotDeck page.
+
+The installed three-service, four-combination and real-model webpage acceptance
+is recorded in [ACCEPTANCE-FEATURES-1014.md](ACCEPTANCE-FEATURES-1014.md).
