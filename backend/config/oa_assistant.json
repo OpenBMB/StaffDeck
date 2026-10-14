@@ -19,8 +19,16 @@
   ],
   "browser": {
     "login_check": {
-      "url_contains": ["logon", "Login", "login"],
-      "selectors": ["input[name='loginid']", "input[placeholder*='账号']", "#loginid"]
+      "url_contains": [
+        "logon",
+        "Login",
+        "login"
+      ],
+      "selectors": [
+        "input[name='loginid']",
+        "input[placeholder*='账号']",
+        "#loginid"
+      ]
     }
   },
   "panel": {
@@ -30,22 +38,95 @@
       "「发票类型」自动识别可能有误，请二次确认。"
     ],
     "default_amount": "100.00",
-    "company_names": ["上海复星旅游管理有限公司", "珠海市横琴复星旅文旅游发展有限公司"],
+    "company_names": [
+      "上海复星旅游管理有限公司",
+      "珠海市横琴复星旅文旅游发展有限公司"
+    ],
     "invoice_types": [
-      { "value": "普通发票|0", "label": "普通发票 0%", "search": "普通发票", "tax_rate": "0" },
-      { "value": "电子普通发票|13", "label": "电子普通发票 13%", "search": "电子普通发票", "tax_rate": "13" },
-      { "value": "电子普通发票|9", "label": "电子普通发票 9%", "search": "电子普通发票", "tax_rate": "9" },
-      { "value": "增值税普通发票|6", "label": "增值税普通发票 6%", "search": "增值税普通发票", "tax_rate": "6" },
-      { "value": "增值税普通发票|9", "label": "增值税普通发票 9%", "search": "增值税普通发票", "tax_rate": "9" },
-      { "value": "增值税普通发票|10", "label": "增值税普通发票 10%", "search": "增值税普通发票", "tax_rate": "10" },
-      { "value": "增值税普通发票|11", "label": "增值税普通发票 11%", "search": "增值税普通发票", "tax_rate": "11" },
-      { "value": "增值税普通发票|13", "label": "增值税普通发票 13%", "search": "增值税普通发票", "tax_rate": "13" },
-      { "value": "增值税专用发票|3", "label": "增值税专用发票 3%", "search": "增值税专用发票", "tax_rate": "3" },
-      { "value": "增值税专用发票|6", "label": "增值税专用发票 6%", "search": "增值税专用发票", "tax_rate": "6" },
-      { "value": "增值税专用发票|9", "label": "增值税专用发票 9%", "search": "增值税专用发票", "tax_rate": "9" },
-      { "value": "增值税专用发票|13", "label": "增值税专用发票 13%", "search": "增值税专用发票", "tax_rate": "13" },
-      { "value": "增值税电子普通发票（境内客运）|3", "label": "增值税电子普通发票（境内客运） 3%", "search": "增值税电子普通发票（境内客运）", "tax_rate": "3" },
-      { "value": "增值税电子普通发票（境内客运）|9", "label": "增值税电子普通发票（境内客运） 9%", "search": "增值税电子普通发票（境内客运）", "tax_rate": "9" }
+      {
+        "value": "普通发票|0",
+        "label": "普通发票 0%",
+        "search": "普通发票",
+        "tax_rate": "0"
+      },
+      {
+        "value": "电子普通发票|13",
+        "label": "电子普通发票 13%",
+        "search": "电子普通发票",
+        "tax_rate": "13"
+      },
+      {
+        "value": "电子普通发票|9",
+        "label": "电子普通发票 9%",
+        "search": "电子普通发票",
+        "tax_rate": "9"
+      },
+      {
+        "value": "增值税普通发票|6",
+        "label": "增值税普通发票 6%",
+        "search": "增值税普通发票",
+        "tax_rate": "6"
+      },
+      {
+        "value": "增值税普通发票|9",
+        "label": "增值税普通发票 9%",
+        "search": "增值税普通发票",
+        "tax_rate": "9"
+      },
+      {
+        "value": "增值税普通发票|10",
+        "label": "增值税普通发票 10%",
+        "search": "增值税普通发票",
+        "tax_rate": "10"
+      },
+      {
+        "value": "增值税普通发票|11",
+        "label": "增值税普通发票 11%",
+        "search": "增值税普通发票",
+        "tax_rate": "11"
+      },
+      {
+        "value": "增值税普通发票|13",
+        "label": "增值税普通发票 13%",
+        "search": "增值税普通发票",
+        "tax_rate": "13"
+      },
+      {
+        "value": "增值税专用发票|3",
+        "label": "增值税专用发票 3%",
+        "search": "增值税专用发票",
+        "tax_rate": "3"
+      },
+      {
+        "value": "增值税专用发票|6",
+        "label": "增值税专用发票 6%",
+        "search": "增值税专用发票",
+        "tax_rate": "6"
+      },
+      {
+        "value": "增值税专用发票|9",
+        "label": "增值税专用发票 9%",
+        "search": "增值税专用发票",
+        "tax_rate": "9"
+      },
+      {
+        "value": "增值税专用发票|13",
+        "label": "增值税专用发票 13%",
+        "search": "增值税专用发票",
+        "tax_rate": "13"
+      },
+      {
+        "value": "增值税电子普通发票（境内客运）|3",
+        "label": "增值税电子普通发票（境内客运） 3%",
+        "search": "增值税电子普通发票（境内客运）",
+        "tax_rate": "3"
+      },
+      {
+        "value": "增值税电子普通发票（境内客运）|9",
+        "label": "增值税电子普通发票（境内客运） 9%",
+        "search": "增值税电子普通发票（境内客运）",
+        "tax_rate": "9"
+      }
     ],
     "default_all_e_ticket": true,
     "auto_save_default": false,
@@ -60,9 +141,36 @@
   "invoice_parse": {
     "_note": "发票解析规则：按关键词把发票归到报销场景（categories）；按票面税率（%）映射 OA 发票类型搜索词。default_tax_rate 给不印税率的票（机票/火车票通常 9%）用。用于出差报销：传票后自动生成报销明细行。",
     "categories": [
-      { "key": "stay", "scene": "境内住宿", "keywords": ["住宿", "酒店", "客房"] },
-      { "key": "flight", "scene": "境内机票", "default_tax_rate": "9", "keywords": ["航空运输电子客票行程单", "机票", "民航发展基金", "航空运输"] },
-      { "key": "train", "scene": "境内火车票", "default_tax_rate": "9", "keywords": ["铁路电子客票", "火车票", "铁路"] }
+      {
+        "key": "stay",
+        "scene": "境内住宿",
+        "keywords": [
+          "住宿",
+          "酒店",
+          "客房"
+        ]
+      },
+      {
+        "key": "flight",
+        "scene": "境内机票",
+        "default_tax_rate": "9",
+        "keywords": [
+          "航空运输电子客票行程单",
+          "机票",
+          "民航发展基金",
+          "航空运输"
+        ]
+      },
+      {
+        "key": "train",
+        "scene": "境内火车票",
+        "default_tax_rate": "9",
+        "keywords": [
+          "铁路电子客票",
+          "火车票",
+          "铁路"
+        ]
+      }
     ],
     "tax_rate_invoice_types": {
       "13": "13%",
@@ -78,7 +186,10 @@
       "铁路电子客票": "增值税电子普通发票（境内客运）",
       "航空运输电子客票行程单": "增值税电子普通发票（境内客运）"
     },
-    "transport_categories": ["train", "flight"]
+    "transport_categories": [
+      "train",
+      "flight"
+    ]
   },
   "field_library": {
     "expense_type": {
@@ -233,7 +344,10 @@
         "amount"
       ],
       "field_overrides": {
-        "cost_department": { "value": "核定费用承担部门", "clear_first": true }
+        "cost_department": {
+          "value": "核定费用承担部门",
+          "clear_first": true
+        }
       }
     },
     {
@@ -258,7 +372,10 @@
         "amount"
       ],
       "field_overrides": {
-        "cost_department": { "value": "核定费用承担部门", "clear_first": true }
+        "cost_department": {
+          "value": "核定费用承担部门",
+          "clear_first": true
+        }
       }
     },
     {
@@ -277,10 +394,30 @@
         "group_by": "tax_rate",
         "item_desc_template": "{scene}费",
         "row_fields": {
-          "scene": { "label": "报销场景", "selector": "div[data-fieldmark=\"field6926_{i}\"]", "mode": "select", "by_label": "报销场景" },
-          "invoice_type": { "label": "发票类型", "selector": "div[data-fieldmark=\"field6925_{i}\"]", "mode": "select", "by_label": "发票类型" },
-          "item_desc": { "label": "事项描述", "selector": "#field6920_{i}", "mode": "input", "by_label": "事项描述" },
-          "amount": { "label": "金额", "selector": "#field6932_{i}", "mode": "input", "by_label": "发票金额" }
+          "scene": {
+            "label": "报销场景",
+            "selector": "div[data-fieldmark=\"field6926_{i}\"]",
+            "mode": "select",
+            "by_label": "报销场景"
+          },
+          "invoice_type": {
+            "label": "发票类型",
+            "selector": "div[data-fieldmark=\"field6925_{i}\"]",
+            "mode": "select",
+            "by_label": "发票类型"
+          },
+          "item_desc": {
+            "label": "事项描述",
+            "selector": "#field6920_{i}",
+            "mode": "input",
+            "by_label": "事项描述"
+          },
+          "amount": {
+            "label": "金额",
+            "selector": "#field6932_{i}",
+            "mode": "input",
+            "by_label": "发票金额"
+          }
         }
       },
       "fields": [
@@ -299,12 +436,24 @@
         "amount"
       ],
       "field_overrides": {
-        "expense_type": { "value": "差旅费用" },
-        "travel_entertainment": { "value": "是" },
-        "cost_department": { "enabled": false },
-        "item_desc": { "enabled": false },
-        "invoice_type": { "enabled": false },
-        "amount": { "enabled": false }
+        "expense_type": {
+          "value": "差旅费用"
+        },
+        "travel_entertainment": {
+          "value": "是"
+        },
+        "cost_department": {
+          "enabled": false
+        },
+        "item_desc": {
+          "enabled": false
+        },
+        "invoice_type": {
+          "enabled": false
+        },
+        "amount": {
+          "enabled": false
+        }
       }
     },
     {
@@ -322,12 +471,37 @@
         "add_row_selector": "[title*='添加'], [title*='新增'], a[class*='add'], i[class*='add'], span[class*='add'], a:has-text('添加'), a:has-text('新增')",
         "group_by": "tax_rate",
         "scene_value": "IT服务外包",
+        "scene_options": [
+          "IT服务外包",
+          "IT硬件设备"
+        ],
+        "item_desc_template": "{scene}费",
         "shared_item_desc": false,
         "row_fields": {
-          "scene": { "label": "报销场景", "selector": "div[data-fieldmark=\"field6827_{i}\"]", "mode": "select", "by_label": "报销场景" },
-          "invoice_type": { "label": "发票类型", "selector": "div[data-fieldmark=\"field6826_{i}\"]", "mode": "select", "by_label": "发票类型" },
-          "item_desc": { "label": "事项描述", "selector": "#field6821_{i}", "mode": "input", "by_label": "事项描述" },
-          "amount": { "label": "金额", "selector": "#field6829_{i}", "mode": "input", "by_label": "发票金额" }
+          "scene": {
+            "label": "报销场景",
+            "selector": "div[data-fieldmark=\"field6827_{i}\"]",
+            "mode": "select",
+            "by_label": "报销场景"
+          },
+          "invoice_type": {
+            "label": "发票类型",
+            "selector": "div[data-fieldmark=\"field6826_{i}\"]",
+            "mode": "select",
+            "by_label": "发票类型"
+          },
+          "item_desc": {
+            "label": "事项描述",
+            "selector": "#field6821_{i}",
+            "mode": "input",
+            "by_label": "事项描述"
+          },
+          "amount": {
+            "label": "金额",
+            "selector": "#field6829_{i}",
+            "mode": "input",
+            "by_label": "发票金额"
+          }
         }
       },
       "fields": [
@@ -338,6 +512,7 @@
         "reason",
         "company_name",
         "payee_name",
+        "related_flow",
         "e_ticket",
         "attachment",
         "other_refs",
@@ -346,18 +521,55 @@
         "amount"
       ],
       "field_overrides": {
-        "expense_type": { "value": "日常费用", "selector": "__TODO__", "by_label": "报销类型" },
-        "tax_exceeded": { "value": "否", "selector": "__TODO__", "by_label": "超标" },
-        "business_entertainment": { "value": "否" },
-        "admin_expense": { "value": "否" },
-        "reason": { "selector": "__TODO__", "by_label": "报销事由" },
-        "company_name": { "selector": "__TODO__", "by_label": "公司名称" },
-        "e_ticket": { "selector": "__TODO__", "by_label": "全电子" },
-        "attachment": { "selector": "__TODO__", "by_label": "相关票据" },
-        "other_refs": { "selector": "__TODO__", "by_label": "其他参考资料" },
-        "item_desc": { "enabled": false },
-        "invoice_type": { "enabled": false },
-        "amount": { "enabled": false }
+        "expense_type": {
+          "value": "日常费用",
+          "selector": "__TODO__",
+          "by_label": "报销类型"
+        },
+        "tax_exceeded": {
+          "value": "否",
+          "selector": "__TODO__",
+          "by_label": "超标"
+        },
+        "business_entertainment": {
+          "value": "否"
+        },
+        "admin_expense": {
+          "value": "否"
+        },
+        "reason": {
+          "selector": "__TODO__",
+          "by_label": "报销事由"
+        },
+        "company_name": {
+          "selector": "__TODO__",
+          "by_label": "公司名称"
+        },
+        "e_ticket": {
+          "selector": "__TODO__",
+          "by_label": "全电子"
+        },
+        "attachment": {
+          "selector": "__TODO__",
+          "by_label": "相关票据"
+        },
+        "other_refs": {
+          "selector": "__TODO__",
+          "by_label": "其他参考资料"
+        },
+        "item_desc": {
+          "enabled": false
+        },
+        "invoice_type": {
+          "enabled": false
+        },
+        "amount": {
+          "enabled": false
+        },
+        "related_flow": {
+          "selector": "__TODO__",
+          "by_label": "相关流程"
+        }
       }
     }
   ]

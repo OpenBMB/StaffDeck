@@ -42,10 +42,22 @@ def _apply_pypdf_font_workaround() -> None:
 
 _apply_pypdf_font_workaround()
 
-# 「（小写）」/「(小写)」后面跟可选货币符的金额；去空白后匹配以兼容版式空格
-_AMOUNT_RE = re.compile(r"[（(]\s*小写\s*[）)]\s*[¥￥]?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)")
-# 兜底：价税合计关键字之后的第一串金额（有的发票没有「小写」字样）
-_TOTAL_RE = re.compile(r"价税合计[^0-9]{0,30}?[¥￥]?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)")
+# 「（小写）」/「(小写)」后面的金额：**必须带货币符或带两位小数**，否则不认。
+# 电子发票 PDF 的文字层不保证是「标签＋值」成对出现——常见的是先整列标签、再整列数值，
+# 于是 `（小写）` 后面紧跟的可能是发票号码（26312000006474414361），甚至和日期年份连成
+# 一长串数字（…43612026），结果解析出 263120000064744143612026.00 这种离谱金额。
+# 真金额要么写成 ￥13925.00 / 13925.00，要么是带 ¥ 的整数，所以按「钱的形状」约束。
+_AMOUNT_RE = re.compile(
+    r"[（(]\s*小写\s*[）)]\s*(?:[¥￥]\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)"
+    r"|([0-9][0-9,]*\.[0-9]{2})(?![0-9]))"
+)
+# 兜底：价税合计关键字之后的第一串金额（有的发票没有「小写」字样），同样要求「钱的形状」
+_TOTAL_RE = re.compile(
+    r"价税合计[^0-9]{0,30}?(?:[¥￥]\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)"
+    r"|([0-9][0-9,]*\.[0-9]{2})(?![0-9]))"
+)
+# 金额上限（千亿）：超过必然是版式被解析串了（如上面的发票号码），当作没匹配到继续找
+_MAX_PLAUSIBLE_TOTAL = Decimal("1e12")
 # 票面税率（%）：「税率 9%」这种
 _RATE_RE = re.compile(r"税率[^0-9%]{0,8}([0-9]{1,2}(?:\.[0-9]{1,2})?)\s*%")
 # 税额：税率缺失时用 税额/(价税合计-税额) 反推
@@ -103,18 +115,27 @@ def extract_invoice_total_text(text: str) -> str | None:
         match = pattern.search(compact)
         if not match:
             continue
-        raw = match.group(1).replace(",", "")
+        # 两种「钱的形状」各占一个捕获组（货币符 / 两位小数），取命中的那个
+        raw = next((g for g in match.groups() if g), "").replace(",", "")
+        if not raw:
+            continue
         try:
-            return f"{Decimal(raw):.2f}"
+            value = Decimal(raw)
         except InvalidOperation:
             continue
+        if value > _MAX_PLAUSIBLE_TOTAL:
+            continue
+        return f"{value:.2f}"
     # 铁路电子客票这类只印「票价 … ￥87.00」：取票面上最大的 ￥金额（通常是总票价）
     money = []
     for raw in _MONEY_RE.findall(compact):
         try:
-            money.append(Decimal(raw.replace(",", "")))
+            value = Decimal(raw.replace(",", ""))
         except InvalidOperation:
             continue
+        if value > _MAX_PLAUSIBLE_TOTAL:
+            continue
+        money.append(value)
     if money:
         return f"{max(money):.2f}"
     return None

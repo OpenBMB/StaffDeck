@@ -948,7 +948,7 @@
 
   // 相关流程（出差报销：填流程关键字 → 面板在 OA 里检索并选中）
   var relatedFlowInput = el('input', INPUT);
-  relatedFlowInput.placeholder = '输入出差流程关键字检索，如 0918';
+  relatedFlowInput.placeholder = '输入流程关键字检索，如 0918';
   var relatedFlowRow = field('相关流程', relatedFlowInput);
   relatedFlowRow.style.display = 'none';
   relatedFlowRow.style.order = '5';
@@ -1202,6 +1202,13 @@
     return opts.length ? opts[0].value : '';
   }
 
+  /** 明细行的事项描述：默认「{scene}费」，场景可用 line_items.item_desc_template 覆盖。 */
+  function rowItemDesc(scene) {
+    var li = (currentScenario() || {}).line_items || {};
+    var tpl = li.item_desc_template || '{scene}费';
+    return tpl.replace('{scene}', scene || '');
+  }
+
   function renderRows() {
     rowsBox.textContent = '';
     rowsHint.style.display = panelRows.length ? 'none' : 'block';
@@ -1216,13 +1223,29 @@
       head.appendChild(el('span', 'font-size:10px;color:#a3aaba;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', row.filename || ('第 ' + (i + 1) + ' 行')));
       item.appendChild(head);
 
-      // 报销场景：下拉，默认选中（如境内公司付款固定为「IT服务外包」）
+      // 报销场景：下拉，默认选中（如境内公司付款默认「IT服务外包」，还能选「IT硬件设备」）
       if (sceneOpts.length) {
         var sceneSel = el('select', INPUT);
         sceneOpts.forEach(function (s) { var o = document.createElement('option'); o.value = s; o.textContent = s; sceneSel.appendChild(o); });
         sceneSel.value = row.scene || sceneOpts[0];
+        if (!sceneSel.value && row.scene) {
+          // 解析出来的场景不在预设选项里（票面类目任意）→ 临时补一项，别把值清空
+          var extra = document.createElement('option');
+          extra.value = row.scene;
+          extra.textContent = row.scene;
+          sceneSel.insertBefore(extra, sceneSel.firstChild);
+          sceneSel.value = row.scene;
+        }
         row.scene = sceneSel.value;
-        sceneSel.addEventListener('change', function () { row.scene = sceneSel.value; });
+        sceneSel.addEventListener('change', function () {
+          row.scene = sceneSel.value;
+          // 事项描述默认跟场景走（"{scene}费"）；用户手改过就不再覆盖
+          if (!row.item_desc_manual) {
+            row.item_desc = rowItemDesc(row.scene);
+            var descNode = item.querySelector('input[data-role="item_desc"]');
+            if (descNode) descNode.value = row.item_desc;
+          }
+        });
         item.appendChild(field('报销场景', sceneSel));
       }
 
@@ -1251,8 +1274,9 @@
       amt.addEventListener('input', function () { row.amount = amt.value; refreshRowTotal(); });
       var grid = el('div', 'display:grid;grid-template-columns:1fr 108px;gap:6px;');
       var desc = el('input', INPUT);
+      desc.setAttribute('data-role', 'item_desc');
       desc.value = row.item_desc || '';
-      desc.addEventListener('input', function () { row.item_desc = desc.value; });
+      desc.addEventListener('input', function () { row.item_desc = desc.value; row.item_desc_manual = true; });
       grid.appendChild(field('事项描述', desc));
       grid.appendChild(field('金额', amt));
       item.appendChild(grid);
@@ -1279,18 +1303,20 @@
           category: r.category, scene: r.scene || '', tax_rate: r.tax_rate,
           invoice_type: itValue, amount: Number(r.amount) || 0, filename: r.filename,
           // 票面类目是任意的：没归到场景时事项描述留空（不要拼出孤零零的「费」字）
-          item_desc: r.scene ? r.scene + '费' : ''
+          item_desc: r.scene ? rowItemDesc(r.scene) : ''
         };
       });
       var li = scenario.line_items || {};
       // 报销场景兜底（票面类目任意，后端归类不到就留空）：
-      // 1) 场景固定了明细场景（境内公司付款 scene_value=IT服务外包）→ 全部行改写；
+      // 1) 场景有默认明细场景（境内公司付款 scene_value=IT服务外包，下拉里还能再改
+      //    成 scene_options 的其它值，如 IT硬件设备）→ 全部行改写；
       // 2) 场景本身只对应一个报销场景（通讯费用 / 交通费用）→ 只补空的那几行。
-      if (li.scene_value) {
-        parsed.forEach(function (r) { r.scene = li.scene_value; r.item_desc = li.scene_value + '费'; });
+      var sceneDefault = li.scene_value || (li.scene_options && li.scene_options[0]) || '';
+      if (sceneDefault) {
+        parsed.forEach(function (r) { r.scene = sceneDefault; r.item_desc = rowItemDesc(sceneDefault); });
       } else if (scenario.scene) {
         parsed.forEach(function (r) {
-          if (!r.scene) { r.scene = scenario.scene; r.item_desc = scenario.scene + '费'; }
+          if (!r.scene) { r.scene = scenario.scene; r.item_desc = rowItemDesc(scenario.scene); }
         });
       }
       // 合并规则由面板上的「税率相同的合并到同一明细中」开关决定（默认随场景配置）：
@@ -1644,6 +1670,8 @@
 
     var needsRelatedFlow = (scenario.fields || []).indexOf('related_flow') >= 0;
     relatedFlowRow.style.display = needsRelatedFlow ? 'flex' : 'none';
+    // 显示位置：境内公司付款放在「收款单位名称」下面；出差报销仍跟「实际出差天数」同段
+    relatedFlowRow.style.order = (scenario.fields || []).indexOf('payee_name') >= 0 ? '7' : '5';
 
     // 出差报销：发票类型/明细与附件同区（一张发票一行，各自税率）；报销金额在最后
     var isTrip = !!scenario.line_items;

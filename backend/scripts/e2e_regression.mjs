@@ -12,6 +12,7 @@
  *   INVOICE_HOTEL  6% 住宿发票 PDF 路径（用于金额/税率断言）
  *   INVOICE_TRAIN  9% 火车票 PDF 路径
  *   INVOICE_OTHER  票面类目任意（如软件服务费 6%）的 PDF 路径——回归「归不到场景也要出明细行」
+ *   INVOICE_MAC    13% 电子专票 PDF 路径——回归「文字层先标签后数值，别把发票号码当金额」
  *   PW_DIR         含 playwright 的 node_modules 目录
  */
 
@@ -24,6 +25,7 @@ const BASE = process.env.MOCK_BASE || 'http://127.0.0.1:8899';
 const HOTEL = process.env.INVOICE_HOTEL;
 const TRAIN = process.env.INVOICE_TRAIN;
 const OTHER = process.env.INVOICE_OTHER;
+const MAC = process.env.INVOICE_MAC;
 
 const results = [];
 function check(name, cond, detail) {
@@ -50,6 +52,15 @@ async function runScenario(page, host, id, opts = {}) {
     await host.locator('input[type=file]').first().setInputFiles(opts.files);
     await page.waitForTimeout(2200);
   }
+  if (opts.rowScene) {
+    // 明细行「报销场景」下拉（境内公司付款有多个可选项：IT服务外包 / IT硬件设备）
+    await host.evaluate((el, v) => {
+      const sr = el.shadowRoot;
+      const sel = [...sr.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.value === v));
+      if (sel) { sel.value = v; sel.dispatchEvent(new Event('change')); }
+    }, opts.rowScene);
+    await page.waitForTimeout(500);
+  }
   if (opts.mergeOff) {
     // 「税率相同的合并到同一明细中」开关：点标签即切换，切换后面板会立刻重算明细
     await host.getByText('税率相同的合并到同一明细中').first().click();
@@ -73,6 +84,7 @@ async function runScenario(page, host, id, opts = {}) {
       cpItype0: hidden('field6826_0'), cpItype1: hidden('field6826_1'),
       cpDesc0: val('#field6821_0'), cpAmt0: val('#field6829_0'),
       cpDesc1: val('#field6821_1'), cpAmt1: val('#field6829_1'),
+      relatedFlow: (() => { const c = [...document.querySelectorAll('td')].find((t) => t.textContent.trim() === '相关流程'); if (!c || !c.nextElementSibling) return null; const h = c.nextElementSibling.querySelector('input[type=hidden]'); return h ? h.value : null; })(),
     };
   });
   const log = await host.evaluate((el) => {
@@ -138,7 +150,7 @@ const page = await browser.newPage();
 {
   const host = await injectPanel(page);
   const files = [HOTEL, TRAIN].filter(Boolean);
-  const { oa, summary, notice, link } = await runScenario(page, host, 'company_payment', { files, wait: 16000, fill: { '收款单位名称': '上海测试科技' } });
+  const { oa, summary, notice, link } = await runScenario(page, host, 'company_payment', { files, wait: 16000, fill: { '收款单位名称': '上海测试科技', '流程关键字': '0918' } });
   check('境内公司付款 「打开表单」链接→workflowid=56', /workflowid=56/.test(link), link);
   check('境内公司付款 顶部提示「收款单位」需在 OA 页面上二次确认', /「收款单位」需在 OA 页面上二次确认/.test(notice), notice);
   check('境内公司付款 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
@@ -148,6 +160,19 @@ const page = await browser.newPage();
   check('境内公司付款 明细行1 事项描述', !!oa.cpDesc0, oa.cpDesc0);
   check('境内公司付款 行1 发票类型含 6%（多个结果时按税率选）', !!oa.cpItype0 && oa.cpItype0.indexOf('6%') >= 0, oa.cpItype0);
   check('境内公司付款 收款单位名称搜索选中全称', oa.payee === '上海测试科技有限公司', oa.payee);
+  check('境内公司付款 相关流程 按关键字检索选中', /0918/.test(oa.relatedFlow || ''), oa.relatedFlow);
+  const cpPanel = await host.evaluate((el) => {
+    const sr = el.shadowRoot;
+    const rowOf = (t) => [...sr.querySelectorAll('div')].find((d) => d.firstChild && d.firstChild.textContent === t);
+    const sceneSel = [...sr.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.value === 'IT服务外包'));
+    return {
+      flowOrder: rowOf('相关流程') && rowOf('相关流程').style.order,
+      payeeOrder: rowOf('收款单位名称') && rowOf('收款单位名称').style.order,
+      sceneOpts: sceneSel ? [...sceneSel.options].map((o) => o.value) : null,
+    };
+  });
+  check('境内公司付款 相关流程 排在「收款单位名称」下面', Number(cpPanel.flowOrder) > Number(cpPanel.payeeOrder), cpPanel.flowOrder + ' > ' + cpPanel.payeeOrder);
+  check('境内公司付款 明细「报销场景」多选一含 IT硬件设备', (cpPanel.sceneOpts || []).indexOf('IT硬件设备') >= 0, JSON.stringify(cpPanel.sceneOpts));
 }
 
 // 5) 境内公司付款：票面类目任意的发票（阿里云「*生产生活服务*软件服务费」6%）也要出明细行
@@ -205,6 +230,47 @@ if (OTHER) {
   check('合并开关 取消 → 行1=750.00', oa.cpAmt0 === '750.00', oa.cpAmt0);
   check('合并开关 取消 → 行2=31922.46', oa.cpAmt1 === '31922.46', oa.cpAmt1);
   check('合并开关 取消 → 行2 报销场景=IT服务外包', oa.cpScene1 === 'IT服务外包', oa.cpScene1);
+}
+
+// 9) 境内公司付款：明细行的「报销场景」可以切到 IT硬件设备（事项描述跟着走）
+{
+  const host = await injectPanel(page);
+  const { oa } = await runScenario(page, host, 'company_payment', {
+    files: HOTEL ? [HOTEL] : [],
+    wait: 14000,
+    rowScene: 'IT硬件设备',
+    fill: { '收款单位名称': '上海测试科技', '流程关键字': '0918' },
+  });
+  check('境内公司付款 明细行1 报销场景=IT硬件设备', oa.cpScene0 === 'IT硬件设备', oa.cpScene0);
+  check('境内公司付款 行1 事项描述随场景=IT硬件设备费', oa.cpDesc0 === 'IT硬件设备费', oa.cpDesc0);
+  check('境内公司付款 未填发票类型时按税率预选（含6%）', !!oa.cpItype0 && oa.cpItype0.indexOf('6%') >= 0, oa.cpItype0);
+}
+
+// 10) 13% 电子专票（文字层「先整列标签、再整列数值」）：金额不能被发票号码/日期串掉
+if (MAC) {
+  const { total } = await (async () => {
+    const res = await fetch(BASE + '/api/enterprise/oa-assistant/invoice-amounts', {
+      method: 'POST',
+      body: (() => {
+        const fd = new FormData();
+        fd.append('files', new Blob([require('node:fs').readFileSync(MAC)]), 'mac.pdf');
+        return fd;
+      })(),
+    });
+    return res.json();
+  })();
+  check('13% 电子专票 金额=13925.00（不是发票号码串）', total === '13925.00', total);
+
+  const host = await injectPanel(page);
+  const { oa } = await runScenario(page, host, 'company_payment', {
+    files: [MAC],
+    wait: 14000,
+    rowScene: 'IT硬件设备',
+    fill: { '收款单位名称': '上海测试科技', '流程关键字': '0918' },
+  });
+  check('13% 电子专票 明细金额=13925.00', oa.cpAmt0 === '13925.00', oa.cpAmt0);
+  check('13% 电子专票 发票类型含 13%', !!oa.cpItype0 && oa.cpItype0.indexOf('13%') >= 0, oa.cpItype0);
+  check('13% 电子专票 报销场景=IT硬件设备', oa.cpScene0 === 'IT硬件设备', oa.cpScene0);
 }
 
 await browser.close();

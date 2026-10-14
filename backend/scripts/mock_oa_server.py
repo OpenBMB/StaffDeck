@@ -76,7 +76,7 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
   <tr><td class="lb">事项描述</td><td><input id="field6920_0"></td>
       <td class="lb">金额</td><td><input id="field6932_0"></td></tr>
   <!-- 境内公司付款（workflow 56）明细：fieldmark 直用 -->
-  <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_0" data-options="IT服务外包|普通发票|相关票据"></div></td>
+  <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6827_0" data-options="IT服务外包|IT硬件设备|普通发票|相关票据"></div></td>
       <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6826_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td></tr>
   <tr><td class="lb">事项描述</td><td><input id="field6821_0"></td>
       <td class="lb">金额</td><td><input id="field6829_0"></td></tr>

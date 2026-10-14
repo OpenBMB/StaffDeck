@@ -200,6 +200,30 @@ def test_total_falls_back_to_currency_amount() -> None:
     assert invoice_amount.extract_invoice_total_text("电子发票（铁路电子客票）票价:二等座 ￥ 87.00") == "87.00"
 
 
+def test_total_ignores_text_layer_that_puts_labels_before_values() -> None:
+    # 电子发票 PDF 的文字层可能是「整列标签 + 整列数值」：`（小写）` 后面跟的其实是发票号码，
+    # 甚至与开票日期年份连成一长串数字（…43612026）——不能被当成价税合计。
+    # 真金额（¥ 13925.00）在后面的「壹万叁仟玖佰贰拾伍圆整」旁边。
+    text = (
+        "项目名称 规格型号 单位 数量 单价 金额 税率/征收率 税额 合 计 价税合计（大写） （小写）"
+        "备 注 开票人：26312000006474414361 2026年10月14日 珠海市横琴复星旅文旅游发展有限公司"
+        "91440003MAK4PLB51N 上海忞轸信息科技有限公司 91310118MA1JNM5X3H ¥ 12323.01 ¥ 1601.99"
+        "壹万叁仟玖佰贰拾伍圆整 ¥ 13925.00 姚娟"
+    )
+    assert invoice_amount.extract_invoice_total_text(text) == "13925.00"
+
+
+def test_total_rejects_absurd_magnitude() -> None:
+    # 形状对但量级离谱（千亿以上）也不认，继续往下找
+    assert invoice_amount.extract_invoice_total_text("价税合计（小写）¥263120000064744143612026.00") is None
+
+
+def test_total_still_reads_plain_amount_without_currency() -> None:
+    # 没有 ￥、但带两位小数：最常见的写法，必须认
+    assert invoice_amount.extract_invoice_total_text("价税合计（大写）壹万叁仟玖佰贰拾伍圆整（小写）13925.00") == "13925.00"
+    assert invoice_amount.extract_invoice_total_text("价税合计 ￥13925.00") == "13925.00"
+
+
 def test_tax_rate_rejects_implausible_fallback() -> None:
     # 税额/(价税合计-税额) 反推出 ~60%，不在常见档位 → 不信
     assert invoice_amount.extract_tax_rate_text("价税合计（小写）¥252.12 税额 95.00", "252.12") is None
