@@ -50,7 +50,8 @@ async function readOa(page) {
     return {
       expense: hidden('field6970'), taxExceeded: hidden('field7014'), travel: hidden('field6974'),
       reason: val('#field6946'), company: hidden('field6969'), costDept: hidden('field7012'),
-      eticket: hidden('field29328'), relTickets: files('field6951'),
+      eticket: hidden('field29328'), relTickets: files('field6951'), otherTickets: files('field6973'),
+      otherName: (() => { const e = document.querySelector('[data-fieldmark="field6973"] input[type=file]'); return e && e.files[0] ? e.files[0].name.slice(0, 12) : null; })(),
       scene0: hidden('field6926_0'), itype0: hidden('field6925_0'), desc0: val('#field6920_0'), amt0: val('#field6932_0'),
       scene1: hidden('field6926_1'), amt1: val('#field6932_1'),
       cpScene0: hidden('field6827_0'), cpScene1: hidden('field6827_1'),
@@ -78,6 +79,11 @@ async function runScenario(page, host, id, opts = {}) {
   if (opts.files && opts.files.length) {
     await host.locator('input[type=file]').first().setInputFiles(opts.files);
     await page.waitForTimeout(2200);
+  }
+  if (opts.otherFiles && opts.otherFiles.length) {
+    // 面板的第二个文件框 = 其他参考资料
+    await host.locator('input[type=file]').nth(1).setInputFiles(opts.otherFiles);
+    await page.waitForTimeout(1200);
   }
   if (opts.rowScene) {
     // 明细行「报销场景」下拉（境内公司付款有多个可选项：IT服务外包 / IT硬件设备）
@@ -378,6 +384,22 @@ if (HOTEL) {
   });
   check('境内公司付款 明细行1 报销场景=公司通讯费', oa.cpScene0 === '公司通讯费', oa.cpScene0);
   check('境内公司付款 行1 事项描述=公司通讯费（不拼成「费费」）', oa.cpDesc0 === '公司通讯费', oa.cpDesc0);
+}
+
+// 15) 两个附件框都要挂上，且不能把同一轮刚挂上的票据删掉
+if (HOTEL && TRAIN) {
+  const host = await injectPanel(page);
+  const { oa, log } = await runScenario(page, host, 'company_payment', {
+    files: [HOTEL, TRAIN],
+    otherFiles: [HOTEL],
+    wait: 22000,
+    fill: { '收款单位名称': '上海测试科技' },
+  });
+  check('相关票据 2 张都在（没被误删）', oa.relTickets === 2, oa.relTickets);
+  check('其他参考资料 1 个也挂到 OA 了', oa.otherTickets === 1, oa.otherTickets);
+  check('其他参考资料 文件名正确', oa.otherName === 'dzfp_2632200', String(oa.otherName));
+  check('两次附件都报了「OA 列表 N 个」核对', /相关票据[^－]{0,60}OA 列表 2 个/.test(log) && /其他参考资料[^－]{0,60}OA 列表 1 个/.test(log), (log.match(/已提交 [^－]{0,90}/g) || []).join(' | '));
+  check('明细 2 行（也没被误删）', oa.cpRows === 2, oa.cpRows);
 }
 
 await browser.close();

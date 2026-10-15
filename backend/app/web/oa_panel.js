@@ -789,7 +789,18 @@
     for (var k = 0; k < files.length; k++) dt.items.add(files[k]);
     input.files = dt.files;
     fireEvent(input, 'change');
-    await sleep(300);
+    await sleep(400);
+    // 真实 OA 是异步上传（plupload）→ 等一下再核对「OA 列表里到底有几个」
+    var widget = uploadWidgetOf(input) || container;
+    var want = files.length;
+    var seen = fileItemsAnywhere([widget]).length;
+    for (var w = 0; w < 10 && seen < want; w++) {
+      await sleep(500);
+      seen = fileItemsAnywhere([widget]).length;
+    }
+    return seen >= want
+      ? ('已提交 ' + want + ' 个附件（OA 列表 ' + seen + ' 个）')
+      : ('已提交 ' + want + ' 个附件，但 OA 列表只显示 ' + seen + ' 个（可能还在上传或被 OA 拒绝，请核对）');
   }
 
   /** 清空上传组件上已挂的附件：先点掉列表里的删除图标（自定义上传组件只认这个），
@@ -843,10 +854,12 @@
     for (var r = 0; r < roots.length; r++) {
       var items;
       try {
-        items = roots[r].querySelectorAll('[class*="upload-list"] [class*="item"], [class*="file-item"], [class*="attach-item"]');
+        items = roots[r].querySelectorAll('[class*="upload-list-item"], [class*="file-item"], [class*="attach-item"]');
       } catch (e) { items = []; }
       for (var i = 0; i < items.length; i++) {
         var it = items[i];
+        var pcls = it.parentElement ? String(it.parentElement.className || '') : '';
+        if (/upload-list-item|file-item|attach-item/.test(pcls)) continue; // 项内部子元素
         if (!String(it.innerText || it.textContent || '').trim()) continue;
         if (!isVisible(it) && !isVisibleControl(it)) continue;
         return it;
@@ -880,11 +893,12 @@
     for (var r = 0; r < roots.length; r++) {
       var items;
       try {
-        items = roots[r].querySelectorAll('.wea-upload-list-item, [class*="upload-list"] > [class*="item"],'
-          + ' [class*="file-item"], [class*="attach-item"]');
+        items = roots[r].querySelectorAll('[class*="upload-list-item"], [class*="file-item"], [class*="attach-item"]');
       } catch (e) { items = []; }
       for (var i = 0; i < items.length; i++) {
-        if (items[i].querySelector && items[i].querySelector('[class*="upload-list"] .wea-upload-list-item')) continue;
+        // 只保留最外层：项内部的子元素（…-item-file / -item-ops）也带这些 class
+        var parentCls = items[i].parentElement ? String(items[i].parentElement.className || '') : '';
+        if (/upload-list-item|file-item|attach-item/.test(parentCls)) continue;
         if (String(items[i].innerText || items[i].textContent || '').trim()) out.push(items[i]);
       }
     }
@@ -896,15 +910,26 @@
   function fileClearRoots(container, input) {
     var roots = [];
     function push(node) { if (node && roots.indexOf(node) < 0) roots.push(node); }
-    // 上传组件根（列表 + 「×」都在里面）：真实是 div#fieldXXXX_....wea-upload.wea-field
-    try { push(input && input.closest('.wea-upload, [class*="upload-list"], [class*="upload"]')); } catch (e) {}
-    try { push(container.closest('.wea-upload, [class*="upload-list"], [class*="upload"]')); } catch (e) {}
+    // 只清「这个 input 所在的上传组件」——真实是 div#fieldXXXX_....wea-upload.wea-field。
+    // 绝不退到 form/body：那样会把别的字段（甚至刚挂上去的票据）的附件一起删掉。
+    var widget = uploadWidgetOf(input);
+    if (widget) { push(widget); return roots; }
     push(container);
     try { push(container.closest('tr')); } catch (e) {}
-    if (container.ownerDocument) {
-      push(container.closest('form') || container.ownerDocument.body);
-    }
     return roots;
+  }
+
+  /** input 所属的上传组件根（列表 + 「×」都在里面）。
+   *  不能直接用 closest('.wea-upload,...')：input 的直接父级常是 .wea-upload-container，
+   *  而文件列表是它的**兄弟**——往里找会什么都没有。所以往上找到「含上传列表」的那一层。 */
+  function uploadWidgetOf(input) {
+    if (!input || !input.parentElement) return null;
+    var n = input;
+    for (var d = 0; d < 6 && n && n.parentElement; d++) {
+      n = n.parentElement;
+      if (n.querySelector && n.querySelector('.wea-upload-list, [class*="upload-list"]')) return n;
+    }
+    try { return input.closest('.wea-upload, [class*="upload-list"], [class*="upload"]'); } catch (e) { return null; }
   }
 
   /** 候选删除图标。放宽范围后必须加约束：只在「看起来挂着文件」的容器里点，
@@ -1040,8 +1065,12 @@
       // 按字段的 from 取对应附件（相关票据/其他参考资料各自一份）
       var picked = ((filesByField && filesByField[spec.from]) || []).slice();
       if (!picked.length) return { field: label, status: 'skipped', detail: '未选择附件' };
-      await fillFile(node, picked);
-      return { field: label, status: 'filled', detail: '附件 ' + picked.length + ' 个：' + picked.map(function (f) { return f.name; }).join('、') };
+      var fileDetail = await fillFile(node, picked);
+      return {
+        field: label,
+        status: 'filled',
+        detail: (fileDetail || ('已提交 ' + picked.length + ' 个附件')) + '：' + picked.map(function (f) { return f.name; }).join('、'),
+      };
     }
 
     if (mode === 'select') {

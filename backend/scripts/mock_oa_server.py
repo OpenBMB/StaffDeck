@@ -71,7 +71,9 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
   <tr><td class="lb">相关票据</td><td><div data-fieldmark="field6951" class="wea-upload wea-field">
       <div class="wea-upload-list"></div>
       <div class="wea-upload-container"><input type="file" multiple></div></div></td>
-      <td class="lb">其他参考资料</td><td><div data-fieldmark="field6973"><input type="file" multiple></div></td></tr>
+      <td class="lb">其他参考资料</td><td><div data-fieldmark="field6973" class="wea-upload wea-field">
+      <div class="wea-upload-list"></div>
+      <div class="wea-upload-container"><input type="file" multiple></div></div></td></tr>
   <tr><td class="lb">是否全电子发票</td><td><div class="ant-select" data-fieldmark="field29328" data-options="是|否"></div></td><td></td><td></td></tr>
   <tr><td class="lb">费用承担部门</td><td><div class="ant-select" data-fieldmark="field7012" data-options="核定费用承担部门|核定"></div></td><td></td><td></td></tr>
   <tr><td class="lb">收款单位名称</td><td><div class="ant-select" data-options="上海测试科技有限公司|某某网络有限公司|上海测试"></div></td><td></td><td></td></tr>
