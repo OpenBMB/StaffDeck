@@ -1,0 +1,99 @@
+(node:43821) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+[2m════════════════════════════════════════════════════════════[0m
+[36m[INFO][0m App Installation: [1m/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui[0m
+[36m[INFO][0m Database: [2m../../../../../../../var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-ARcQLi/pilot-home/auth.db[0m
+       [2m(Using custom DATABASE_PATH from environment)[0m
+[2m════════════════════════════════════════════════════════════[0m
+
+SERVER_PORT from runtime config: 16126
+Database initialized successfully
+Database migrations completed successfully
+Web Push notifications configured
+[36m[INFO][0m Chat execution routed through PilotDeck gateway (src/gateway).
+
+[36m[INFO][0m Starting in production mode...
+
+[2m═══════════════════════════════════════════════════════════════[0m
+  [1mPilotDeck Server - Ready[0m
+[2m═══════════════════════════════════════════════════════════════[0m
+
+[36m[INFO][0m Server URL:  [1mhttp://localhost:16126[0m
+[36m[INFO][0m Installed at: [2m/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui[0m
+[34m[TIP][0m  Run "pilotdeck status" for full configuration details
+
+[pilotdeck-config-watcher] watching /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-ARcQLi/pilotdeck.yaml, /private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-ARcQLi/pilotdeck.yaml
+(node:43829) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+PilotDeck server listening: http://127.0.0.1:16128
+WebSocket: ws://127.0.0.1:16128/ws
+Token: /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-ARcQLi/pilot-home/server-token
+[runtime-supervisor] Gateway ready on 127.0.0.1:16128
+[pilotdeck-bridge] connected → ws://127.0.0.1:16128/ws
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+[pilotdeck-bridge] gateway disconnected; notification forwarding will reconnect: Gateway WebSocket closed.
+[telemetry] shutdown snapshot {"queued":0,"sent":0,"sendFailures":0,"retries":0,"dropped":0,"queueDepth":0}
+[BROWSER 2026-10-14T14:32:40.967Z] shutdownGlobalChrome called | caller: at shutdownGlobalChrome (file:///Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui/server/utils/globalChrome.js:301:76) <- at <anonymous> (/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui/server/index.js:3755:25)

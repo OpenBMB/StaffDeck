@@ -1,0 +1,86 @@
+INFO:     Started server process [29925]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:54640 (Press CTRL+C to quit)
+INFO:     127.0.0.1:54664 - "GET /health/ready HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /assets/index-BFAW6OxI.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54678 - "GET /assets/index-CWwPgyuU.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/identity HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54678 - "GET /api/km/v1/knowledge-bases HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54679 - "GET /api/km/v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54680 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54681 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54682 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54681 - "POST /api/km/v1/knowledge-bases HTTP/1.1" 201 Created
+INFO:     127.0.0.1:54680 - "GET /assets/copy-BF2v76bS.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54679 - "GET /assets/send-BGwR40Xp.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54681 - "GET /assets/VersionsPanel-B7LXEzqb.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54681 - "GET /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54678 - "GET /api/km/v1/jobs?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54680 - "GET /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/branch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54679 - "GET /api/km/v1/documents?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54679 - "POST /api/km/v1/documents HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:54679 - "GET /api/km/v1/documents?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54680 - "GET /api/km/v1/jobs?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54679 - "GET /api/km/v1/jobs?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54680 - "GET /api/km/v1/documents?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54680 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54678 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9/chunks?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54679 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9/buckets?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54679 - "PUT /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54679 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54678 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9/buckets?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54680 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9/chunks?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54681 - "GET / HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:54681 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54679 - "GET /api/km/v1/identity HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54681 - "GET /api/km/v1/knowledge-bases HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54687 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54681 - "GET /api/km/v1/jobs?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54687 - "GET /api/km/v1/documents?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/branch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54687 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9/chunks?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9/buckets?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "PUT /api/km/v1/buckets/kbucket_5db2e276cab94c12bcfbd922afc034d5?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9/chunks?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54687 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9/buckets?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/jobs?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54687 - "GET /api/km/v1/documents?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54687 - "PUT /api/km/v1/chunks/kchunk_a6aeb68a2f0c4955b5440b3e43e1f92e?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54687 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9/buckets?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/documents/kdoc_e472a6dd37c44257bfb61cb9454da3e9/chunks?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/jobs?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/documents?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "POST /api/km/v1/query HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/citations/kchunk_a6aeb68a2f0c4955b5440b3e43e1f92e%3A2026-10-14T12%3A05%3A42.163025?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "POST /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/versions/copy HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/branch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/jobs?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/documents?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "POST /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/versions/publish HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/branch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/documents?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/jobs?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "POST /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/versions/rollback HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/knowledge-bases/kbase_9efcbe483df74ca8b853b0b3a5479a25/branch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/jobs?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/documents?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/km/v1/documents/kdoc_7bff9686c8fc4964aa904ebd9ca9d695?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54677 - "GET /api/km/v1/documents/kdoc_7bff9686c8fc4964aa904ebd9ca9d695/buckets?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54687 - "GET /api/km/v1/documents/kdoc_7bff9686c8fc4964aa904ebd9ca9d695/chunks?knowledge_base_id=kbase_9efcbe483df74ca8b853b0b3a5479a25 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [29925]

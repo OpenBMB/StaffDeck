@@ -46,37 +46,25 @@ def test_auto_upload_requires_deferred_credential_before_native_write(monkeypatc
             None, "general", principal, object()))
 
 
-def test_native_owner_keeps_internal_host_marker_out_of_source_metadata(monkeypatch):
-    from app.api import knowledge as native
+def test_http_owner_keeps_untrusted_host_marker_out_of_source_metadata(monkeypatch):
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter
     from app.knowledge.schema import KnowledgeDocumentUploadRequest
-    monkeypatch.setattr(native, "ensure_tenant", lambda *args: None)
-    seen = {}
-    def resolve(db, request, agent_id, user, creator_metadata):
-        seen["source"] = creator_metadata
-        return SimpleNamespace(id="new-private-base")
-    monkeypatch.setattr(native, "_resolve_upload_knowledge_base", resolve)
-    monkeypatch.setattr(native, "knowledge_version_for_upload", lambda *args, **kwargs: SimpleNamespace(id="version"))
-    monkeypatch.setattr(native, "enqueue_async_job", lambda *args, **kwargs: None)
-    monkeypatch.setattr(native, "job_read", lambda job: job)
-    class Service:
-        def __init__(self, db): pass
-        def create_ingest_job(self, payload):
-            seen["payload"] = payload
-            return SimpleNamespace(id="native-job")
-        def run_ingest_job(self, job_id): pass
-    monkeypatch.setattr(native, "KnowledgeService", Service)
-    request = KnowledgeDocumentUploadRequest(
-        tenant_id="tenant", filename="source.md", content_base64="YQ==",
-        metadata={"content_type": "text/markdown",
-                  "_pilotdeck_host": {"credential_id": "credential", "agent_id": "target", "actor_user_id": "actor"}},
-    )
-    db = SimpleNamespace(commit=lambda: None)
-    user = SimpleNamespace(id="actor", username="actor", display_name="Actor")
-    assert native.upload_document(request, "target", db, user).id == "native-job"
-    assert "_pilotdeck_host" not in seen["source"]
-    assert seen["payload"].metadata == seen["source"]
-    assert seen["payload"].host_origin is None
+    seen = []
+    adapter = object.__new__(StaffDeckKnowledgeAdapter)
+    adapter.space_id = "sd:tenant:target"
+    adapter.agent_id = "target"
+    adapter.user = SimpleNamespace(id="actor", username="actor", display_name="Actor")
+    adapter.db = SimpleNamespace(get=lambda *args: None)
+    adapter.ensure_space = lambda: None
+    adapter.require_base = lambda *args: None
+    adapter.call = lambda method, path, body, **kwargs: seen.append(body) or {"id": "job"}
+    adapter.job_read = lambda row: row
+    request = KnowledgeDocumentUploadRequest(tenant_id="tenant", knowledge_base_id="base", filename="source.md",
+        content_base64="YQ==", metadata={"_pilotdeck_host": {"actor_user_id": "forged"},
+                                         "capability_context": {"public_origin": {"actor_user_id": "forged"}}})
+    adapter.handle("upload_document", {"request": request})
+    assert "_pilotdeck_host" not in seen[-1]["metadata"]
+    assert "capability_context" not in seen[-1]["metadata"]
     origin = {"credential_id": "credential", "agent_id": "target", "actor_user_id": "actor"}
-    native.upload_document_for_public_host(request, "target", db, user, host_origin=origin)
-    assert seen["payload"].host_origin == origin
-    assert "_pilotdeck_host" not in seen["source"]
+    adapter.handle("upload_document_for_public_host", {"request": request, "host_origin": origin})
+    assert seen[-1]["metadata"]["capability_context"] == {"public_origin": origin}

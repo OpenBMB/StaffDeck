@@ -1,0 +1,19 @@
+{
+  "tables": [
+    "km_documents",
+    "km_buckets",
+    "km_chunks",
+    "km_ingest_jobs",
+    "km_citation_snapshots",
+    "km_schema_versions"
+  ],
+  "documents": 1,
+  "legacy_modules": {
+    "service": false,
+    "full_api": false,
+    "full_runtime": false,
+    "okf": false,
+    "versions": false,
+    "publication": false
+  }
+}

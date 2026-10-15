@@ -1,0 +1,188 @@
+{
+  "status": "passed",
+  "origin": "http://127.0.0.1:58893",
+  "requests": [
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/config"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/identity"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/identity"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/models"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/jobs"
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/jobs"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/jobs"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49/buckets"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49/chunks"
+    },
+    {
+      "method": "PUT",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49/buckets"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49/chunks"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/jobs"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/config"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/identity"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/models"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/jobs"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49/buckets"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49/chunks"
+    },
+    {
+      "method": "PUT",
+      "url": "http://127.0.0.1:58893/api/km/v1/buckets/kbucket_a767f9f66e424939b623e330c3c4655a"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49/buckets"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49/chunks"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/jobs"
+    },
+    {
+      "method": "PUT",
+      "url": "http://127.0.0.1:58893/api/km/v1/chunks/kchunk_5295f47c049345b6a73dcb83dd950ff6"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49/buckets"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents/kdoc_6f514e36a8114f9aabd8de791a0a5c49/chunks"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/documents"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/jobs"
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:58893/api/km/v1/query"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:58893/api/km/v1/citations/kchunk_5295f47c049345b6a73dcb83dd950ff6:2026-10-14T12:41:28.874668"
+    }
+  ],
+  "errors": [],
+  "steps": [
+    "upload",
+    "task_terminal",
+    "edit",
+    "bucket_edit",
+    "chunk_edit",
+    "reload",
+    "query",
+    "citation",
+    "desktop",
+    "mobile",
+    "no_disabled_requests"
+  ]
+}

@@ -175,14 +175,15 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
         remove.assert_called_once_with("sop_test", "tenant", self.db, "agent", self.actor)
 
     def test_knowledge_pep_replays_native_view_dependency_and_rejects_wrong_document(self) -> None:
-        db = SimpleNamespace(get=lambda _model, _id: SimpleNamespace(
-            tenant_id="tenant", knowledge_base_id="other-base"
-        ))
+        db = SimpleNamespace(info={})
         with patch.object(knowledge_pep, "enforce_agent_access"), patch.object(
             knowledge_pep, "ensure_public_agent"
         ), patch.object(knowledge_pep, "require_agent_scope_viewer") as viewer, patch.object(
             knowledge_pep.native_bases, "get_knowledge_base"
-        ) as base:
+        ) as base, patch(
+            "app.knowledge.http_adapter.StaffDeckKnowledgeAdapter"
+        ) as adapter:
+            adapter.return_value.call.return_value = {"knowledge_base_id": "other-base"}
             with self.assertRaises(PublicAPIError) as raised:
                 knowledge_pep.enforce_public_knowledge_pep(
                     db, self.principal, "agent", knowledge_base_id="base", document_id="document"
@@ -190,6 +191,7 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "DOCUMENT_NOT_FOUND")
         viewer.assert_called_once_with("tenant", "agent", self.actor, db)
         base.assert_called_once_with("base", "tenant", "agent", db)
+        adapter.return_value.call.assert_called_once_with("GET", "/documents/document")
 
     def test_knowledge_body_cannot_override_path_or_principal_scope(self) -> None:
         with self.assertRaises(PublicAPIError) as raised:
@@ -200,18 +202,16 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
 
     def test_knowledge_document_update_keeps_target_branch_and_original_conflict_field(self) -> None:
         body = {"content_md": "new content", "expected_updated_at": "2026-09-27T01:02:03"}
-        visible_version = SimpleNamespace(id="version")
-        visible_document = SimpleNamespace(
+        visible_document = dict(
             id="doc", tenant_id="tenant", knowledge_base_id="base",
             knowledge_base_version_id="version",
         )
-        self.db = SimpleNamespace(get=lambda model, key: visible_document if key == "doc" else None)
         with patch.object(public_resources, "enforce_public_knowledge_pep") as pep, patch.object(
-            public_resources.internal_knowledge_bases, "_visible_knowledge_version",
-            return_value=visible_version,
-        ), patch.object(
             public_resources.internal_knowledge, "update_document", return_value={"id": "doc"}
-        ) as owner:
+        ) as owner, patch("app.knowledge.http_adapter.StaffDeckKnowledgeAdapter") as adapter:
+            adapter.return_value.call.side_effect = [
+                {"branch": {"head_version_id": "version"}}, visible_document,
+            ]
             result = public_resources.update_knowledge_document(
                 "target-agent", "base", "doc", body, self.principal, self.db
             )
@@ -262,7 +262,10 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
         app.dependency_overrides[get_public_principal] = lambda: PublicPrincipal(
             "tenant", owner, frozenset({"knowledge:read"}), allowed_agent_ids=frozenset({"agent"})
         )
-        with TestClient(app) as client:
+        with TestClient(app) as client, patch(
+            "app.knowledge.http_adapter.StaffDeckKnowledgeAdapter"
+        ) as adapter, patch("app.knowledge.http_adapter.enabled", return_value=True):
+            adapter.return_value.handle.return_value = []
             allowed = client.get("/agents/agent/knowledge-bases")
         self.assertEqual(allowed.status_code, 200, allowed.text)
         self.assertEqual(allowed.json()["data"], [])

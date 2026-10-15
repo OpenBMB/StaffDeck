@@ -1,0 +1,10 @@
+{
+  "replace-with-writer-token": {
+    "id": "writer", "tenant_id": "example", "display_name": "Writer",
+    "spaces": ["*"], "permissions": ["read", "write"]
+  },
+  "replace-with-reader-token": {
+    "id": "reader", "tenant_id": "example", "display_name": "Reader",
+    "spaces": ["workspace"], "permissions": ["read"]
+  }
+}

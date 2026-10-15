@@ -1,0 +1,3355 @@
+{
+  "ports": {
+    "km": 16130,
+    "staffApi": 16124,
+    "staffVite": 16125,
+    "pilotApi": 16126,
+    "pilotVite": 16127,
+    "gateway": 16128,
+    "model": 16129
+  },
+  "startup": "formal_app_main_with_harness_v3",
+  "modelFixture": "local_openai_compatible_discovery_response",
+  "actions": [],
+  "coverage": {
+    "staffdeck_native_cancel": "real_ui_persisted_cancel_and_reload",
+    "staffdeck_native_discoveries_confirm_reject": "real_ui_model_fixture_pending_confirm_reject_and_reload_readback",
+    "pilotdeck_adapter_cancel": "real_shared_page_adapter_persisted_cancel_and_reload",
+    "pilotdeck_adapter_discoveries_confirm_reject": "real_shared_page_adapter_model_fixture_pending_review_reject_and_reload_readback"
+  },
+  "staffdeck": {
+    "actions": [
+      "wait for persisted queued native job and click native cancel",
+      "reload native page and verify terminal cancelled state persists",
+      "confirm and reject model-fixture discoveries in native UI and read back persisted statuses after reload"
+    ],
+    "requests": [],
+    "persistence": {
+      "cancelBeforeReload": "StaffDeck\n开放广场平台\n我的数字员工\n我的团队\n渠道接入\n账号管理\n模型配置\n运行设置\n管理后台\n当前员工\n财务 @admin\n基本资料\n员工档案\n定时任务\n记忆\n对话日志\n员工能力\n知识库\n技能\nSOP\n工具\n对话端\nKnowledge\n整体智能体\n财务\n法务\n人事\nIT\n行政\n销售\n市场\n采购\n项目管理\n数据分析\n默认模型\nDemo Qwen Compatible\n知识库\n法务-高风险条款识别指南\n数据分析-经营分析通用指南\n财务-发票与单据规范\n财务-报销办理流程说明\n人事-社保公积金政策说明\n法务-企业合规制度汇编\n采购-协同流程通用指南\n项目管理-推进通用指南\n法务-历史条款判例库\n市场-内容策划通用指南\n法务-合同审查标准清单\nIT-常见故障排查手册\n财务-报销政策手册\n销售-客户拓展通用指南\n行政-会议室与用章管理规定\nIT-服务目录与权限说明\n人事-员工手册与假期政策\n行政-行政服务手册\n人事-薪酬福利与证明办理指南\n法务-高风险条款识别指南\n1 文档 · 20 Wiki · modified\n上传\ng4-native-cancel.md\n已取消\n数据分析-经营分析通用指南.md\n完成\n项目管理-推进通用指南.md\n完成\n采购-协同流程通用指南.md\n完成\n市场-内容策划通用指南.md\n完成\n销售-客户拓展通用指南.md\n完成\n人事-社保公积金政策说明.md\n完成\n行政-行政服务手册.md\n完成\n法务-历史条款判例库.md\n完成\n人事-员工手册与假期政策.md\n完成\nIT-服务目录与权限说明.md\n完成\n法务-高风险条款识别指南.md\n完成\n行政-会议室与用章管理规定.md\n完成\n财务-报销政策手册.md\n完成\nIT-常见故障排查手册.md\n完成\n财务-发票与单据规范.md\n完成\n法务-合同审查标准清单.md\n完成\n法务-企业合规制度汇编.md\n完成\n财务-报销办理流程说明.md\n完成\n人事-薪酬福利与证明办理指南.md\n完成\n文档\nWiki\n关系图\n检索\n版本\n发现建议\n法务-高风险条款识别指南\n14 引用 · ready\n暂无选中文档",
+      "cancelAfterReload": "StaffDeck\n开放广场平台\n我的数字员工\n我的团队\n渠道接入\n账号管理\n模型配置\n运行设置\n管理后台\n未选择\n-\n基本资料\n员工档案\n定时任务\n记忆\n对话日志\n员工能力\n知识库\n技能\nSOP\n工具\n对话端\nKnowledge\n整体智能体\n财务\n法务\n人事\nIT\n行政\n销售\n市场\n采购\n项目管理\n数据分析\n默认模型\nDemo Qwen Compatible\n知识库\n法务-高风险条款识别指南\n数据分析-经营分析通用指南\n财务-发票与单据规范\n财务-报销办理流程说明\n人事-社保公积金政策说明\n法务-企业合规制度汇编\n采购-协同流程通用指南\n项目管理-推进通用指南\n法务-历史条款判例库\n市场-内容策划通用指南\n法务-合同审查标准清单\nIT-常见故障排查手册\n财务-报销政策手册\n销售-客户拓展通用指南\n行政-会议室与用章管理规定\nIT-服务目录与权限说明\n人事-员工手册与假期政策\n行政-行政服务手册\n人事-薪酬福利与证明办理指南\n法务-高风险条款识别指南\n1 文档 · 20 Wiki · modified\n上传\ng4-native-cancel.md\n已取消\n数据分析-经营分析通用指南.md\n完成\n项目管理-推进通用指南.md\n完成\n采购-协同流程通用指南.md\n完成\n市场-内容策划通用指南.md\n完成\n销售-客户拓展通用指南.md\n完成\n人事-社保公积金政策说明.md\n完成\n行政-行政服务手册.md\n完成\n法务-历史条款判例库.md\n完成\n人事-员工手册与假期政策.md\n完成\nIT-服务目录与权限说明.md\n完成\n行政-会议室与用章管理规定.md\n完成\n财务-报销政策手册.md\n完成\nIT-常见故障排查手册.md\n完成\n财务-发票与单据规范.md\n完成\n法务-合同审查标准清单.md\n完成\n法务-企业合规制度汇编.md\n完成\n财务-报销办理流程说明.md\n完成\n人事-薪酬福利与证明办理指南.md\n完成\n文档\nWiki\n关系图\n检索\n版本\n发现建议\n法务-高风险条款识别指南\n14 引用 · ready\n暂无选中文档",
+      "discoveryRowsBeforeAssertions": {
+        "host": [
+          {
+            "id": "kdisc_8f6f4327d1244049853c5e0cc3141844",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2803b0feeda34f78986abd44ea80bdf4",
+            "document_id": "kdoc_91a77a5974164c8d8b4bf31833888ae5",
+            "bucket_id": null,
+            "suggestion_type": "tool",
+            "title": "Fixture discovery 5",
+            "status": "pending",
+            "payload": {
+              "name": "fixture.discovery.5",
+              "display_name": "Fixture discovery 5",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/5",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-5.md"
+              }
+            ],
+            "reason": "Isolated publication workflow fixture.",
+            "created_at": "2026-10-14T04:30:55.454297",
+            "updated_at": "2026-10-14T04:30:55.454303"
+          },
+          {
+            "id": "kdisc_b6b5a5387d7f462ba1f3978f7165c260",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2803b0feeda34f78986abd44ea80bdf4",
+            "document_id": "kdoc_91a77a5974164c8d8b4bf31833888ae5",
+            "bucket_id": null,
+            "suggestion_type": "skill",
+            "title": "Fixture skill 5",
+            "status": "pending",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-5.md"
+              }
+            ],
+            "reason": "Isolated publication workflow fixture.",
+            "created_at": "2026-10-14T04:30:55.454432",
+            "updated_at": "2026-10-14T04:30:55.454436"
+          },
+          {
+            "id": "kdisc_af49286b4d2c4d939860c1eda49eaee1",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2c0454fea7af48f0a544bb20195a6b73",
+            "document_id": "kdoc_08d2f2027dec4e9f99c2762bf31bef9d",
+            "bucket_id": null,
+            "suggestion_type": "tool",
+            "title": "Fixture discovery 2",
+            "status": "pending",
+            "payload": {
+              "name": "fixture.discovery.2",
+              "display_name": "Fixture discovery 2",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/2",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-2.md"
+              }
+            ],
+            "reason": "Isolated publication workflow fixture.",
+            "created_at": "2026-10-14T04:30:54.971192",
+            "updated_at": "2026-10-14T04:30:54.971199"
+          },
+          {
+            "id": "kdisc_367e6364abd9417b84de7de0ee6fca9d",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2c0454fea7af48f0a544bb20195a6b73",
+            "document_id": "kdoc_08d2f2027dec4e9f99c2762bf31bef9d",
+            "bucket_id": null,
+            "suggestion_type": "skill",
+            "title": "Fixture skill 2",
+            "status": "pending",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-2.md"
+              }
+            ],
+            "reason": "Isolated publication workflow fixture.",
+            "created_at": "2026-10-14T04:30:54.971327",
+            "updated_at": "2026-10-14T04:30:54.971331"
+          },
+          {
+            "id": "kdisc_fd30776280ae4a5483a0177be75fdc23",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d157ffabbd974e68905a0297dd7dd7d5",
+            "document_id": "kdoc_24096497399f4484a9977fdd675c8d98",
+            "bucket_id": null,
+            "suggestion_type": "tool",
+            "title": "Fixture discovery 7",
+            "status": "pending",
+            "payload": {
+              "name": "fixture.discovery.7",
+              "display_name": "Fixture discovery 7",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/7",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-7.md"
+              }
+            ],
+            "reason": "Isolated publication workflow fixture.",
+            "created_at": "2026-10-14T04:30:55.786488",
+            "updated_at": "2026-10-14T04:30:55.786494"
+          },
+          {
+            "id": "kdisc_2c9cceffeb264721b3f42b56e4b3d727",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d157ffabbd974e68905a0297dd7dd7d5",
+            "document_id": "kdoc_24096497399f4484a9977fdd675c8d98",
+            "bucket_id": null,
+            "suggestion_type": "skill",
+            "title": "Fixture skill 7",
+            "status": "pending",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-7.md"
+              }
+            ],
+            "reason": "Isolated publication workflow fixture.",
+            "created_at": "2026-10-14T04:30:55.786634",
+            "updated_at": "2026-10-14T04:30:55.786639"
+          }
+        ],
+        "km": [
+          {
+            "id": "kdisc_bd1172345ead4e3fbfde7484023502c3",
+            "knowledge_base_version_id": "kbver_2b09877beea54fcba10f985790abe5f6",
+            "bucket_id": null,
+            "title": "Fixture discovery 9",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:31:05.499212",
+            "document_id": "kdoc_bcb7d12043a74260a89bc67d4d85a699",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_15b6bae4a2a3493fa1f7a1c807e81155",
+            "suggestion_type": "tool",
+            "status": "confirmed",
+            "created_at": "2026-10-14T04:31:02.550136",
+            "payload": {
+              "name": "fixture.discovery.9",
+              "display_name": "Fixture discovery 9",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/9",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-9.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b0ab7fe28a5c4f61a480102ca4732414",
+            "knowledge_base_version_id": "kbver_2b09877beea54fcba10f985790abe5f6",
+            "bucket_id": null,
+            "title": "Fixture skill 9",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:31:02.550195",
+            "document_id": "kdoc_bcb7d12043a74260a89bc67d4d85a699",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_15b6bae4a2a3493fa1f7a1c807e81155",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:31:02.550194",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-9.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_62e727c7d24840bf8ed15df6dc214f2a",
+            "knowledge_base_version_id": "kbver_2b09877beea54fcba10f985790abe5f6",
+            "bucket_id": null,
+            "title": "Fixture discovery 20",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:31:08.051123",
+            "document_id": "kdoc_c311c21810524d00a85f1b6f66bc9737",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_15b6bae4a2a3493fa1f7a1c807e81155",
+            "suggestion_type": "tool",
+            "status": "rejected",
+            "created_at": "2026-10-14T04:31:04.354451",
+            "payload": {
+              "name": "fixture.discovery.20",
+              "display_name": "Fixture discovery 20",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/20",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-20.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_bdfcf9d6c1794b4096c49550e36fe791",
+            "knowledge_base_version_id": "kbver_2b09877beea54fcba10f985790abe5f6",
+            "bucket_id": null,
+            "title": "Fixture skill 20",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:31:05.619819",
+            "document_id": "kdoc_c311c21810524d00a85f1b6f66bc9737",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_15b6bae4a2a3493fa1f7a1c807e81155",
+            "suggestion_type": "procedure",
+            "status": "confirmed",
+            "created_at": "2026-10-14T04:31:04.354631",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-20.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_8444045d9a11431d8d4bd3c63c0530fe",
+            "knowledge_base_version_id": "kbver_2b09877beea54fcba10f985790abe5f6",
+            "bucket_id": null,
+            "title": "Fixture discovery 21",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:31:07.978787",
+            "document_id": "kdoc_30a67cea63b2453ea30e0948169b5110",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_15b6bae4a2a3493fa1f7a1c807e81155",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:31:07.978768",
+            "payload": {
+              "name": "fixture.discovery.21",
+              "display_name": "Fixture discovery 21",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/21",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-21.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_374a3c6c440946cc8c974091d819d4bd",
+            "knowledge_base_version_id": "kbver_2b09877beea54fcba10f985790abe5f6",
+            "bucket_id": null,
+            "title": "Fixture skill 21",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:31:07.980021",
+            "document_id": "kdoc_30a67cea63b2453ea30e0948169b5110",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_15b6bae4a2a3493fa1f7a1c807e81155",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:31:07.980001",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-21.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_d575597241974574a78694ebb99318af",
+            "knowledge_base_version_id": "kbver_6f9479e8374c48a992186e3b6c732b88",
+            "bucket_id": null,
+            "title": "Fixture discovery 19",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.695276",
+            "document_id": "kdoc_da4cecbfae5f4a529124261a36fcdab8",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_16234d0fb5d54dd1bc2c86ec568cf334",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.695270",
+            "payload": {
+              "name": "fixture.discovery.19",
+              "display_name": "Fixture discovery 19",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/19",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-19.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b18522f7d02d49d1a39d6ad7c4b98909",
+            "knowledge_base_version_id": "kbver_6f9479e8374c48a992186e3b6c732b88",
+            "bucket_id": null,
+            "title": "Fixture skill 19",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.695415",
+            "document_id": "kdoc_da4cecbfae5f4a529124261a36fcdab8",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_16234d0fb5d54dd1bc2c86ec568cf334",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.695410",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-19.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_8f6f4327d1244049853c5e0cc3141844",
+            "knowledge_base_version_id": "kbver_6b67e220c0534e56948e2e0dbd26d19c",
+            "bucket_id": null,
+            "title": "Fixture discovery 5",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.454303",
+            "document_id": "kdoc_91a77a5974164c8d8b4bf31833888ae5",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2803b0feeda34f78986abd44ea80bdf4",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.454297",
+            "payload": {
+              "name": "fixture.discovery.5",
+              "display_name": "Fixture discovery 5",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/5",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-5.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b6b5a5387d7f462ba1f3978f7165c260",
+            "knowledge_base_version_id": "kbver_6b67e220c0534e56948e2e0dbd26d19c",
+            "bucket_id": null,
+            "title": "Fixture skill 5",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.454436",
+            "document_id": "kdoc_91a77a5974164c8d8b4bf31833888ae5",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2803b0feeda34f78986abd44ea80bdf4",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.454432",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-5.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_af49286b4d2c4d939860c1eda49eaee1",
+            "knowledge_base_version_id": "kbver_ef903f375c854baba18bf05855794f6d",
+            "bucket_id": null,
+            "title": "Fixture discovery 2",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:54.971199",
+            "document_id": "kdoc_08d2f2027dec4e9f99c2762bf31bef9d",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2c0454fea7af48f0a544bb20195a6b73",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:54.971192",
+            "payload": {
+              "name": "fixture.discovery.2",
+              "display_name": "Fixture discovery 2",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/2",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-2.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_367e6364abd9417b84de7de0ee6fca9d",
+            "knowledge_base_version_id": "kbver_ef903f375c854baba18bf05855794f6d",
+            "bucket_id": null,
+            "title": "Fixture skill 2",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:54.971331",
+            "document_id": "kdoc_08d2f2027dec4e9f99c2762bf31bef9d",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2c0454fea7af48f0a544bb20195a6b73",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:54.971327",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-2.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_9a89cfafda174bc2b38b0f0c1d69c337",
+            "knowledge_base_version_id": "kbver_a01a2d11e0974c3ca5945b8832871316",
+            "bucket_id": null,
+            "title": "Fixture discovery 14",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.899518",
+            "document_id": "kdoc_32f3cd922da449eab5b12e2c78af7829",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_3e061abf75ee4404a2f7f1ea8496c145",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.899513",
+            "payload": {
+              "name": "fixture.discovery.14",
+              "display_name": "Fixture discovery 14",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/14",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-14.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b898fb28df9142f4962aeab516e3ad0f",
+            "knowledge_base_version_id": "kbver_a01a2d11e0974c3ca5945b8832871316",
+            "bucket_id": null,
+            "title": "Fixture skill 14",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.899643",
+            "document_id": "kdoc_32f3cd922da449eab5b12e2c78af7829",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_3e061abf75ee4404a2f7f1ea8496c145",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.899639",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-14.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b6f2d8789dcc4ac989c5140719c242df",
+            "knowledge_base_version_id": "kbver_d59fbcd859764f99b994f43af29afbe1",
+            "bucket_id": null,
+            "title": "Fixture discovery 3",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.133336",
+            "document_id": "kdoc_159675685fc74a7eb5e168c5617f2902",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_660c255e4d054f1ebe7e3a41c70c2bf7",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.133329",
+            "payload": {
+              "name": "fixture.discovery.3",
+              "display_name": "Fixture discovery 3",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/3",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-3.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_3c16dad634334ed39179a24ca6cfec5e",
+            "knowledge_base_version_id": "kbver_d59fbcd859764f99b994f43af29afbe1",
+            "bucket_id": null,
+            "title": "Fixture skill 3",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.133479",
+            "document_id": "kdoc_159675685fc74a7eb5e168c5617f2902",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_660c255e4d054f1ebe7e3a41c70c2bf7",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.133474",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-3.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_a9b5be107fd5414fb97b70c4d3336507",
+            "knowledge_base_version_id": "kbver_b3b367ad8d024faa994c5af2ef938ec3",
+            "bucket_id": null,
+            "title": "Fixture discovery 17",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.356055",
+            "document_id": "kdoc_d5153f4c8cda4017a3688a173520f5c4",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_84e4288c99de424fb9230d467fdf4c61",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.356049",
+            "payload": {
+              "name": "fixture.discovery.17",
+              "display_name": "Fixture discovery 17",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/17",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-17.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_16014621db2a4a96b7355c4655e781d5",
+            "knowledge_base_version_id": "kbver_b3b367ad8d024faa994c5af2ef938ec3",
+            "bucket_id": null,
+            "title": "Fixture skill 17",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.356194",
+            "document_id": "kdoc_d5153f4c8cda4017a3688a173520f5c4",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_84e4288c99de424fb9230d467fdf4c61",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.356190",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-17.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_cfb65763a1844f2b8cdd49063a7d6146",
+            "knowledge_base_version_id": "kbver_76f83342bafe467dbe7f7e580ea4ffca",
+            "bucket_id": null,
+            "title": "Fixture discovery 18",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.527765",
+            "document_id": "kdoc_10f845d9dc2446408a9548660ff06998",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_978f89754e1b4e25a3ebb0879cbce4cb",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.527758",
+            "payload": {
+              "name": "fixture.discovery.18",
+              "display_name": "Fixture discovery 18",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/18",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-18.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_dde13231115e4d429680792a92ae565b",
+            "knowledge_base_version_id": "kbver_76f83342bafe467dbe7f7e580ea4ffca",
+            "bucket_id": null,
+            "title": "Fixture skill 18",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.527902",
+            "document_id": "kdoc_10f845d9dc2446408a9548660ff06998",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_978f89754e1b4e25a3ebb0879cbce4cb",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.527897",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-18.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_80d17bd2963e49e8958d62caf302048e",
+            "knowledge_base_version_id": "kbver_01f3ae6743e140d19b27d765de016680",
+            "bucket_id": null,
+            "title": "Fixture discovery 12",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.578363",
+            "document_id": "kdoc_fa2d7e1b3e594fca9d553ef582dbf44b",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_aac4b717b7fb49b3b6d1dd9f3c1d47b0",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.578357",
+            "payload": {
+              "name": "fixture.discovery.12",
+              "display_name": "Fixture discovery 12",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/12",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-12.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_7043c5b5f373426e951d7249cadc69b0",
+            "knowledge_base_version_id": "kbver_01f3ae6743e140d19b27d765de016680",
+            "bucket_id": null,
+            "title": "Fixture skill 12",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.578506",
+            "document_id": "kdoc_fa2d7e1b3e594fca9d553ef582dbf44b",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_aac4b717b7fb49b3b6d1dd9f3c1d47b0",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.578501",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-12.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_5e7f73f0e30a417082a24308353c9b86",
+            "knowledge_base_version_id": "kbver_9236d56a4c394515bad4aaae01cd577e",
+            "bucket_id": null,
+            "title": "Fixture discovery 16",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.189333",
+            "document_id": "kdoc_5b0667fc1e014900b9e5363f52a066f1",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_ab8f1b2166bb49de9afe0435b2b2c594",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.189328",
+            "payload": {
+              "name": "fixture.discovery.16",
+              "display_name": "Fixture discovery 16",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/16",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-16.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b6e27a3dde674c17a7d164840c630612",
+            "knowledge_base_version_id": "kbver_9236d56a4c394515bad4aaae01cd577e",
+            "bucket_id": null,
+            "title": "Fixture skill 16",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.189459",
+            "document_id": "kdoc_5b0667fc1e014900b9e5363f52a066f1",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_ab8f1b2166bb49de9afe0435b2b2c594",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.189455",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-16.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_ab8ce595513d416cbcedfdb70e8de821",
+            "knowledge_base_version_id": "kbver_3ddb416877a04122bbc9fd03836f3900",
+            "bucket_id": null,
+            "title": "Fixture discovery 4",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.282583",
+            "document_id": "kdoc_7b3a80bcddf84ca4a5bf98692705de97",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_be2da44efcd14f99a8b887b2733f427a",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.282576",
+            "payload": {
+              "name": "fixture.discovery.4",
+              "display_name": "Fixture discovery 4",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/4",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-4.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_559cd2f794ad40c5883b4ffdbead62b2",
+            "knowledge_base_version_id": "kbver_3ddb416877a04122bbc9fd03836f3900",
+            "bucket_id": null,
+            "title": "Fixture skill 4",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.282795",
+            "document_id": "kdoc_7b3a80bcddf84ca4a5bf98692705de97",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_be2da44efcd14f99a8b887b2733f427a",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.282790",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-4.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_a9c43d7f9fdb49138526d0ad09422f64",
+            "knowledge_base_version_id": "kbver_f61b9c838ca74b1787e3a619dcc40605",
+            "bucket_id": null,
+            "title": "Fixture discovery 6",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.621339",
+            "document_id": "kdoc_e61fb481a7ed4ba5b911de009b4a1031",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_c9553a5e819e42b982e2bc9b6fed1093",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.621334",
+            "payload": {
+              "name": "fixture.discovery.6",
+              "display_name": "Fixture discovery 6",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/6",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-6.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_80322fe36e5947bea29703da9793db97",
+            "knowledge_base_version_id": "kbver_f61b9c838ca74b1787e3a619dcc40605",
+            "bucket_id": null,
+            "title": "Fixture skill 6",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.621461",
+            "document_id": "kdoc_e61fb481a7ed4ba5b911de009b4a1031",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_c9553a5e819e42b982e2bc9b6fed1093",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.621456",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-6.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_fd30776280ae4a5483a0177be75fdc23",
+            "knowledge_base_version_id": "kbver_bc47dec973f642ce932bd3df463a5cd4",
+            "bucket_id": null,
+            "title": "Fixture discovery 7",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.786494",
+            "document_id": "kdoc_24096497399f4484a9977fdd675c8d98",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d157ffabbd974e68905a0297dd7dd7d5",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.786488",
+            "payload": {
+              "name": "fixture.discovery.7",
+              "display_name": "Fixture discovery 7",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/7",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-7.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_2c9cceffeb264721b3f42b56e4b3d727",
+            "knowledge_base_version_id": "kbver_bc47dec973f642ce932bd3df463a5cd4",
+            "bucket_id": null,
+            "title": "Fixture skill 7",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.786639",
+            "document_id": "kdoc_24096497399f4484a9977fdd675c8d98",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d157ffabbd974e68905a0297dd7dd7d5",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.786634",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-7.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_8c65dbc94fd94dceb572a34a0f00d2bf",
+            "knowledge_base_version_id": "kbver_a1aa6180929c498a904ea44fa25775d4",
+            "bucket_id": null,
+            "title": "Fixture discovery 15",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.030558",
+            "document_id": "kdoc_68ce74dd854748fdabfde28e00ddc6a3",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d4399159fa63468a9e90381cc86e33bf",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.030552",
+            "payload": {
+              "name": "fixture.discovery.15",
+              "display_name": "Fixture discovery 15",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/15",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-15.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_6c61d66bda5840d5992dfbf3acbbc3ad",
+            "knowledge_base_version_id": "kbver_a1aa6180929c498a904ea44fa25775d4",
+            "bucket_id": null,
+            "title": "Fixture skill 15",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.030688",
+            "document_id": "kdoc_68ce74dd854748fdabfde28e00ddc6a3",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d4399159fa63468a9e90381cc86e33bf",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.030683",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-15.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_11684b9f4dbc4171a593a181de80810f",
+            "knowledge_base_version_id": "kbver_8c12004bea38409b82781c6d51e45927",
+            "bucket_id": null,
+            "title": "Fixture discovery 8",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.943358",
+            "document_id": "kdoc_02fe738a55c1419da6363a07b2c7efa0",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_dd9173590953419b8952211a0ef6d556",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.943351",
+            "payload": {
+              "name": "fixture.discovery.8",
+              "display_name": "Fixture discovery 8",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/8",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-8.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b37c7f66d8664e03a44d1f2d855013e5",
+            "knowledge_base_version_id": "kbver_8c12004bea38409b82781c6d51e45927",
+            "bucket_id": null,
+            "title": "Fixture skill 8",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.943494",
+            "document_id": "kdoc_02fe738a55c1419da6363a07b2c7efa0",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_dd9173590953419b8952211a0ef6d556",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.943488",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-8.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b8da8fd5264843ec8c6638f60820ea4e",
+            "knowledge_base_version_id": "kbver_88f1ca9cc3714711b69a47a1685e8b34",
+            "bucket_id": null,
+            "title": "Fixture discovery 10",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.266812",
+            "document_id": "kdoc_2b70281da67c4363b6a0351aec1e9f80",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_dfd21eb8ce8f4927ac82548af3f1a4d2",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.266806",
+            "payload": {
+              "name": "fixture.discovery.10",
+              "display_name": "Fixture discovery 10",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/10",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-10.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_822e3a0c72ca4c4b9184e86ba2dcfbbb",
+            "knowledge_base_version_id": "kbver_88f1ca9cc3714711b69a47a1685e8b34",
+            "bucket_id": null,
+            "title": "Fixture skill 10",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.266959",
+            "document_id": "kdoc_2b70281da67c4363b6a0351aec1e9f80",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_dfd21eb8ce8f4927ac82548af3f1a4d2",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.266954",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-10.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_76a2ae23d84c41d18a4fd0c78ba45a3f",
+            "knowledge_base_version_id": "kbver_633d34cfb5214ced8470984cec4f1315",
+            "bucket_id": null,
+            "title": "Fixture discovery 11",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.424547",
+            "document_id": "kdoc_72e93a8a01684214bd82f7b95e029593",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_eb9c708ddb2c4dc8a761eaf2a801172a",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.424540",
+            "payload": {
+              "name": "fixture.discovery.11",
+              "display_name": "Fixture discovery 11",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/11",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-11.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_c296156c312f48b1bac4f7859b74f90d",
+            "knowledge_base_version_id": "kbver_633d34cfb5214ced8470984cec4f1315",
+            "bucket_id": null,
+            "title": "Fixture skill 11",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.424683",
+            "document_id": "kdoc_72e93a8a01684214bd82f7b95e029593",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_eb9c708ddb2c4dc8a761eaf2a801172a",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.424678",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-11.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_a2786f73cb4a420ca76314d512a3fbf3",
+            "knowledge_base_version_id": "kbver_c82770c8a260414585ac130bb42caa78",
+            "bucket_id": null,
+            "title": "Fixture discovery 13",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.744645",
+            "document_id": "kdoc_76a10ffaafbd4c13bd1b8bac5f01e774",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_f8c08700c76241d8a9ff74e3b368957c",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.744638",
+            "payload": {
+              "name": "fixture.discovery.13",
+              "display_name": "Fixture discovery 13",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/13",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-13.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_4a9dbf42eff24e499d8cda1798393d45",
+            "knowledge_base_version_id": "kbver_c82770c8a260414585ac130bb42caa78",
+            "bucket_id": null,
+            "title": "Fixture skill 13",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.744792",
+            "document_id": "kdoc_76a10ffaafbd4c13bd1b8bac5f01e774",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_f8c08700c76241d8a9ff74e3b368957c",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.744787",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-13.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_29e440a42f9f4e8784b9a2c88616a8d6",
+            "knowledge_base_version_id": "kbver_cf8573432ae44122ad30b86a6b04616f",
+            "bucket_id": null,
+            "title": "Fixture discovery 1",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:54.844214",
+            "document_id": "kdoc_ebdc032631584d09859a3ffa44e95d51",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_fdb438b4a73441608cd2e7ad5c416952",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:54.844209",
+            "payload": {
+              "name": "fixture.discovery.1",
+              "display_name": "Fixture discovery 1",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/1",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-1.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_35edf27c9dd54dc485359ee96cbf354f",
+            "knowledge_base_version_id": "kbver_cf8573432ae44122ad30b86a6b04616f",
+            "bucket_id": null,
+            "title": "Fixture skill 1",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:54.844361",
+            "document_id": "kdoc_ebdc032631584d09859a3ffa44e95d51",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_fdb438b4a73441608cd2e7ad5c416952",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:54.844357",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-1.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_8f6f4327d1244049853c5e0cc3141844",
+            "knowledge_base_version_id": "kbver_6b67e220c0534e56948e2e0dbd26d19c",
+            "bucket_id": null,
+            "title": "Fixture discovery 5",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.454303",
+            "document_id": "kdoc_91a77a5974164c8d8b4bf31833888ae5",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2803b0feeda34f78986abd44ea80bdf4",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.454297",
+            "payload": {
+              "name": "fixture.discovery.5",
+              "display_name": "Fixture discovery 5",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/5",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-5.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b6b5a5387d7f462ba1f3978f7165c260",
+            "knowledge_base_version_id": "kbver_6b67e220c0534e56948e2e0dbd26d19c",
+            "bucket_id": null,
+            "title": "Fixture skill 5",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.454436",
+            "document_id": "kdoc_91a77a5974164c8d8b4bf31833888ae5",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2803b0feeda34f78986abd44ea80bdf4",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.454432",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-5.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_af49286b4d2c4d939860c1eda49eaee1",
+            "knowledge_base_version_id": "kbver_ef903f375c854baba18bf05855794f6d",
+            "bucket_id": null,
+            "title": "Fixture discovery 2",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:54.971199",
+            "document_id": "kdoc_08d2f2027dec4e9f99c2762bf31bef9d",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2c0454fea7af48f0a544bb20195a6b73",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:54.971192",
+            "payload": {
+              "name": "fixture.discovery.2",
+              "display_name": "Fixture discovery 2",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/2",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-2.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_367e6364abd9417b84de7de0ee6fca9d",
+            "knowledge_base_version_id": "kbver_ef903f375c854baba18bf05855794f6d",
+            "bucket_id": null,
+            "title": "Fixture skill 2",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:54.971331",
+            "document_id": "kdoc_08d2f2027dec4e9f99c2762bf31bef9d",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_2c0454fea7af48f0a544bb20195a6b73",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:54.971327",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-2.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_fd30776280ae4a5483a0177be75fdc23",
+            "knowledge_base_version_id": "kbver_bc47dec973f642ce932bd3df463a5cd4",
+            "bucket_id": null,
+            "title": "Fixture discovery 7",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.786494",
+            "document_id": "kdoc_24096497399f4484a9977fdd675c8d98",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d157ffabbd974e68905a0297dd7dd7d5",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.786488",
+            "payload": {
+              "name": "fixture.discovery.7",
+              "display_name": "Fixture discovery 7",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/7",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-7.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_2c9cceffeb264721b3f42b56e4b3d727",
+            "knowledge_base_version_id": "kbver_bc47dec973f642ce932bd3df463a5cd4",
+            "bucket_id": null,
+            "title": "Fixture skill 7",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.786639",
+            "document_id": "kdoc_24096497399f4484a9977fdd675c8d98",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d157ffabbd974e68905a0297dd7dd7d5",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.786634",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-7.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_2cb696f9a0834cdab5f133d359e4aaee",
+            "knowledge_base_version_id": "kbver_348dfeefdff14c6f8f22a104be69922e",
+            "bucket_id": null,
+            "title": "Fixture discovery 9",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.095067",
+            "document_id": "kdoc_f8ba999a83c442b0842f4b6b89c84809",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_15b6bae4a2a3493fa1f7a1c807e81155",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.095060",
+            "payload": {
+              "name": "fixture.discovery.9",
+              "display_name": "Fixture discovery 9",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/9",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-9.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_98324f29c1a54f88b99f3f60e00065cb",
+            "knowledge_base_version_id": "kbver_348dfeefdff14c6f8f22a104be69922e",
+            "bucket_id": null,
+            "title": "Fixture skill 9",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.095206",
+            "document_id": "kdoc_f8ba999a83c442b0842f4b6b89c84809",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_15b6bae4a2a3493fa1f7a1c807e81155",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.095202",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-9.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b6f2d8789dcc4ac989c5140719c242df",
+            "knowledge_base_version_id": "kbver_d59fbcd859764f99b994f43af29afbe1",
+            "bucket_id": null,
+            "title": "Fixture discovery 3",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.133336",
+            "document_id": "kdoc_159675685fc74a7eb5e168c5617f2902",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_660c255e4d054f1ebe7e3a41c70c2bf7",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.133329",
+            "payload": {
+              "name": "fixture.discovery.3",
+              "display_name": "Fixture discovery 3",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/3",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-3.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_3c16dad634334ed39179a24ca6cfec5e",
+            "knowledge_base_version_id": "kbver_d59fbcd859764f99b994f43af29afbe1",
+            "bucket_id": null,
+            "title": "Fixture skill 3",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.133479",
+            "document_id": "kdoc_159675685fc74a7eb5e168c5617f2902",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_660c255e4d054f1ebe7e3a41c70c2bf7",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.133474",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-3.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_80d17bd2963e49e8958d62caf302048e",
+            "knowledge_base_version_id": "kbver_01f3ae6743e140d19b27d765de016680",
+            "bucket_id": null,
+            "title": "Fixture discovery 12",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.578363",
+            "document_id": "kdoc_fa2d7e1b3e594fca9d553ef582dbf44b",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_aac4b717b7fb49b3b6d1dd9f3c1d47b0",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.578357",
+            "payload": {
+              "name": "fixture.discovery.12",
+              "display_name": "Fixture discovery 12",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/12",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-12.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_7043c5b5f373426e951d7249cadc69b0",
+            "knowledge_base_version_id": "kbver_01f3ae6743e140d19b27d765de016680",
+            "bucket_id": null,
+            "title": "Fixture skill 12",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.578506",
+            "document_id": "kdoc_fa2d7e1b3e594fca9d553ef582dbf44b",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_aac4b717b7fb49b3b6d1dd9f3c1d47b0",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.578501",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-12.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_ab8ce595513d416cbcedfdb70e8de821",
+            "knowledge_base_version_id": "kbver_3ddb416877a04122bbc9fd03836f3900",
+            "bucket_id": null,
+            "title": "Fixture discovery 4",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.282583",
+            "document_id": "kdoc_7b3a80bcddf84ca4a5bf98692705de97",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_be2da44efcd14f99a8b887b2733f427a",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.282576",
+            "payload": {
+              "name": "fixture.discovery.4",
+              "display_name": "Fixture discovery 4",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/4",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-4.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_559cd2f794ad40c5883b4ffdbead62b2",
+            "knowledge_base_version_id": "kbver_3ddb416877a04122bbc9fd03836f3900",
+            "bucket_id": null,
+            "title": "Fixture skill 4",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.282795",
+            "document_id": "kdoc_7b3a80bcddf84ca4a5bf98692705de97",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_be2da44efcd14f99a8b887b2733f427a",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.282790",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-4.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_9a89cfafda174bc2b38b0f0c1d69c337",
+            "knowledge_base_version_id": "kbver_a01a2d11e0974c3ca5945b8832871316",
+            "bucket_id": null,
+            "title": "Fixture discovery 14",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.899518",
+            "document_id": "kdoc_32f3cd922da449eab5b12e2c78af7829",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_3e061abf75ee4404a2f7f1ea8496c145",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.899513",
+            "payload": {
+              "name": "fixture.discovery.14",
+              "display_name": "Fixture discovery 14",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/14",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-14.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b898fb28df9142f4962aeab516e3ad0f",
+            "knowledge_base_version_id": "kbver_a01a2d11e0974c3ca5945b8832871316",
+            "bucket_id": null,
+            "title": "Fixture skill 14",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.899643",
+            "document_id": "kdoc_32f3cd922da449eab5b12e2c78af7829",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_3e061abf75ee4404a2f7f1ea8496c145",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.899639",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-14.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_76a2ae23d84c41d18a4fd0c78ba45a3f",
+            "knowledge_base_version_id": "kbver_633d34cfb5214ced8470984cec4f1315",
+            "bucket_id": null,
+            "title": "Fixture discovery 11",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.424547",
+            "document_id": "kdoc_72e93a8a01684214bd82f7b95e029593",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_eb9c708ddb2c4dc8a761eaf2a801172a",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.424540",
+            "payload": {
+              "name": "fixture.discovery.11",
+              "display_name": "Fixture discovery 11",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/11",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-11.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_c296156c312f48b1bac4f7859b74f90d",
+            "knowledge_base_version_id": "kbver_633d34cfb5214ced8470984cec4f1315",
+            "bucket_id": null,
+            "title": "Fixture skill 11",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.424683",
+            "document_id": "kdoc_72e93a8a01684214bd82f7b95e029593",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_eb9c708ddb2c4dc8a761eaf2a801172a",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.424678",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-11.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_29e440a42f9f4e8784b9a2c88616a8d6",
+            "knowledge_base_version_id": "kbver_cf8573432ae44122ad30b86a6b04616f",
+            "bucket_id": null,
+            "title": "Fixture discovery 1",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:54.844214",
+            "document_id": "kdoc_ebdc032631584d09859a3ffa44e95d51",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_fdb438b4a73441608cd2e7ad5c416952",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:54.844209",
+            "payload": {
+              "name": "fixture.discovery.1",
+              "display_name": "Fixture discovery 1",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/1",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-1.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_35edf27c9dd54dc485359ee96cbf354f",
+            "knowledge_base_version_id": "kbver_cf8573432ae44122ad30b86a6b04616f",
+            "bucket_id": null,
+            "title": "Fixture skill 1",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:54.844361",
+            "document_id": "kdoc_ebdc032631584d09859a3ffa44e95d51",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_fdb438b4a73441608cd2e7ad5c416952",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:54.844357",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-1.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_a9c43d7f9fdb49138526d0ad09422f64",
+            "knowledge_base_version_id": "kbver_f61b9c838ca74b1787e3a619dcc40605",
+            "bucket_id": null,
+            "title": "Fixture discovery 6",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.621339",
+            "document_id": "kdoc_e61fb481a7ed4ba5b911de009b4a1031",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_c9553a5e819e42b982e2bc9b6fed1093",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.621334",
+            "payload": {
+              "name": "fixture.discovery.6",
+              "display_name": "Fixture discovery 6",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/6",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-6.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_80322fe36e5947bea29703da9793db97",
+            "knowledge_base_version_id": "kbver_f61b9c838ca74b1787e3a619dcc40605",
+            "bucket_id": null,
+            "title": "Fixture skill 6",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.621461",
+            "document_id": "kdoc_e61fb481a7ed4ba5b911de009b4a1031",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_c9553a5e819e42b982e2bc9b6fed1093",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.621456",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-6.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b8da8fd5264843ec8c6638f60820ea4e",
+            "knowledge_base_version_id": "kbver_88f1ca9cc3714711b69a47a1685e8b34",
+            "bucket_id": null,
+            "title": "Fixture discovery 10",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.266812",
+            "document_id": "kdoc_2b70281da67c4363b6a0351aec1e9f80",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_dfd21eb8ce8f4927ac82548af3f1a4d2",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.266806",
+            "payload": {
+              "name": "fixture.discovery.10",
+              "display_name": "Fixture discovery 10",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/10",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-10.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_822e3a0c72ca4c4b9184e86ba2dcfbbb",
+            "knowledge_base_version_id": "kbver_88f1ca9cc3714711b69a47a1685e8b34",
+            "bucket_id": null,
+            "title": "Fixture skill 10",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.266959",
+            "document_id": "kdoc_2b70281da67c4363b6a0351aec1e9f80",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_dfd21eb8ce8f4927ac82548af3f1a4d2",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.266954",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-10.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_11684b9f4dbc4171a593a181de80810f",
+            "knowledge_base_version_id": "kbver_8c12004bea38409b82781c6d51e45927",
+            "bucket_id": null,
+            "title": "Fixture discovery 8",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.943358",
+            "document_id": "kdoc_02fe738a55c1419da6363a07b2c7efa0",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_dd9173590953419b8952211a0ef6d556",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.943351",
+            "payload": {
+              "name": "fixture.discovery.8",
+              "display_name": "Fixture discovery 8",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/8",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-8.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b37c7f66d8664e03a44d1f2d855013e5",
+            "knowledge_base_version_id": "kbver_8c12004bea38409b82781c6d51e45927",
+            "bucket_id": null,
+            "title": "Fixture skill 8",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:55.943494",
+            "document_id": "kdoc_02fe738a55c1419da6363a07b2c7efa0",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_dd9173590953419b8952211a0ef6d556",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:55.943488",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-8.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_a2786f73cb4a420ca76314d512a3fbf3",
+            "knowledge_base_version_id": "kbver_c82770c8a260414585ac130bb42caa78",
+            "bucket_id": null,
+            "title": "Fixture discovery 13",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.744645",
+            "document_id": "kdoc_76a10ffaafbd4c13bd1b8bac5f01e774",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_f8c08700c76241d8a9ff74e3b368957c",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.744638",
+            "payload": {
+              "name": "fixture.discovery.13",
+              "display_name": "Fixture discovery 13",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/13",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-13.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_4a9dbf42eff24e499d8cda1798393d45",
+            "knowledge_base_version_id": "kbver_c82770c8a260414585ac130bb42caa78",
+            "bucket_id": null,
+            "title": "Fixture skill 13",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:56.744792",
+            "document_id": "kdoc_76a10ffaafbd4c13bd1b8bac5f01e774",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_f8c08700c76241d8a9ff74e3b368957c",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:56.744787",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-13.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_8c65dbc94fd94dceb572a34a0f00d2bf",
+            "knowledge_base_version_id": "kbver_a1aa6180929c498a904ea44fa25775d4",
+            "bucket_id": null,
+            "title": "Fixture discovery 15",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.030558",
+            "document_id": "kdoc_68ce74dd854748fdabfde28e00ddc6a3",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d4399159fa63468a9e90381cc86e33bf",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.030552",
+            "payload": {
+              "name": "fixture.discovery.15",
+              "display_name": "Fixture discovery 15",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/15",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-15.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_6c61d66bda5840d5992dfbf3acbbc3ad",
+            "knowledge_base_version_id": "kbver_a1aa6180929c498a904ea44fa25775d4",
+            "bucket_id": null,
+            "title": "Fixture skill 15",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.030688",
+            "document_id": "kdoc_68ce74dd854748fdabfde28e00ddc6a3",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d4399159fa63468a9e90381cc86e33bf",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.030683",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-15.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_5e7f73f0e30a417082a24308353c9b86",
+            "knowledge_base_version_id": "kbver_9236d56a4c394515bad4aaae01cd577e",
+            "bucket_id": null,
+            "title": "Fixture discovery 16",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.189333",
+            "document_id": "kdoc_5b0667fc1e014900b9e5363f52a066f1",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_ab8f1b2166bb49de9afe0435b2b2c594",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.189328",
+            "payload": {
+              "name": "fixture.discovery.16",
+              "display_name": "Fixture discovery 16",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/16",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-16.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b6e27a3dde674c17a7d164840c630612",
+            "knowledge_base_version_id": "kbver_9236d56a4c394515bad4aaae01cd577e",
+            "bucket_id": null,
+            "title": "Fixture skill 16",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.189459",
+            "document_id": "kdoc_5b0667fc1e014900b9e5363f52a066f1",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_ab8f1b2166bb49de9afe0435b2b2c594",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.189455",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-16.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_a9b5be107fd5414fb97b70c4d3336507",
+            "knowledge_base_version_id": "kbver_b3b367ad8d024faa994c5af2ef938ec3",
+            "bucket_id": null,
+            "title": "Fixture discovery 17",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.356055",
+            "document_id": "kdoc_d5153f4c8cda4017a3688a173520f5c4",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_84e4288c99de424fb9230d467fdf4c61",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.356049",
+            "payload": {
+              "name": "fixture.discovery.17",
+              "display_name": "Fixture discovery 17",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/17",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-17.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_16014621db2a4a96b7355c4655e781d5",
+            "knowledge_base_version_id": "kbver_b3b367ad8d024faa994c5af2ef938ec3",
+            "bucket_id": null,
+            "title": "Fixture skill 17",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.356194",
+            "document_id": "kdoc_d5153f4c8cda4017a3688a173520f5c4",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_84e4288c99de424fb9230d467fdf4c61",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.356190",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-17.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_cfb65763a1844f2b8cdd49063a7d6146",
+            "knowledge_base_version_id": "kbver_76f83342bafe467dbe7f7e580ea4ffca",
+            "bucket_id": null,
+            "title": "Fixture discovery 18",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.527765",
+            "document_id": "kdoc_10f845d9dc2446408a9548660ff06998",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_978f89754e1b4e25a3ebb0879cbce4cb",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.527758",
+            "payload": {
+              "name": "fixture.discovery.18",
+              "display_name": "Fixture discovery 18",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/18",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-18.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_dde13231115e4d429680792a92ae565b",
+            "knowledge_base_version_id": "kbver_76f83342bafe467dbe7f7e580ea4ffca",
+            "bucket_id": null,
+            "title": "Fixture skill 18",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.527902",
+            "document_id": "kdoc_10f845d9dc2446408a9548660ff06998",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_978f89754e1b4e25a3ebb0879cbce4cb",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.527897",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-18.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_d575597241974574a78694ebb99318af",
+            "knowledge_base_version_id": "kbver_6f9479e8374c48a992186e3b6c732b88",
+            "bucket_id": null,
+            "title": "Fixture discovery 19",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.695276",
+            "document_id": "kdoc_da4cecbfae5f4a529124261a36fcdab8",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_16234d0fb5d54dd1bc2c86ec568cf334",
+            "suggestion_type": "tool",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.695270",
+            "payload": {
+              "name": "fixture.discovery.19",
+              "display_name": "Fixture discovery 19",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/19",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-19.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_b18522f7d02d49d1a39d6ad7c4b98909",
+            "knowledge_base_version_id": "kbver_6f9479e8374c48a992186e3b6c732b88",
+            "bucket_id": null,
+            "title": "Fixture skill 19",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:30:57.695415",
+            "document_id": "kdoc_da4cecbfae5f4a529124261a36fcdab8",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_16234d0fb5d54dd1bc2c86ec568cf334",
+            "suggestion_type": "procedure",
+            "status": "pending",
+            "created_at": "2026-10-14T04:30:57.695410",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-19.md"
+              }
+            ]
+          }
+        ]
+      },
+      "discoveryAfterReload": {
+        "confirmed": [
+          {
+            "id": "kdisc_bd1172345ead4e3fbfde7484023502c3",
+            "knowledge_base_version_id": "kbver_2b09877beea54fcba10f985790abe5f6",
+            "bucket_id": null,
+            "title": "Fixture discovery 9",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:31:05.499212",
+            "document_id": "kdoc_bcb7d12043a74260a89bc67d4d85a699",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_15b6bae4a2a3493fa1f7a1c807e81155",
+            "suggestion_type": "tool",
+            "status": "confirmed",
+            "created_at": "2026-10-14T04:31:02.550136",
+            "payload": {
+              "name": "fixture.discovery.9",
+              "display_name": "Fixture discovery 9",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/9",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-9.md"
+              }
+            ]
+          },
+          {
+            "id": "kdisc_bdfcf9d6c1794b4096c49550e36fe791",
+            "knowledge_base_version_id": "kbver_2b09877beea54fcba10f985790abe5f6",
+            "bucket_id": null,
+            "title": "Fixture skill 20",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:31:05.619819",
+            "document_id": "kdoc_c311c21810524d00a85f1b6f66bc9737",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_15b6bae4a2a3493fa1f7a1c807e81155",
+            "suggestion_type": "procedure",
+            "status": "confirmed",
+            "created_at": "2026-10-14T04:31:04.354631",
+            "payload": {
+              "steps": [
+                "Verify the original receipt",
+                "Approve the expense claim"
+              ]
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-20.md"
+              }
+            ]
+          }
+        ],
+        "rejected": [
+          {
+            "id": "kdisc_62e727c7d24840bf8ed15df6dc214f2a",
+            "knowledge_base_version_id": "kbver_2b09877beea54fcba10f985790abe5f6",
+            "bucket_id": null,
+            "title": "Fixture discovery 20",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:31:08.051123",
+            "document_id": "kdoc_c311c21810524d00a85f1b6f66bc9737",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_15b6bae4a2a3493fa1f7a1c807e81155",
+            "suggestion_type": "tool",
+            "status": "rejected",
+            "created_at": "2026-10-14T04:31:04.354451",
+            "payload": {
+              "name": "fixture.discovery.20",
+              "display_name": "Fixture discovery 20",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/20",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-20.md"
+              }
+            ]
+          }
+        ]
+      },
+      "hostResources": {
+        "tools": [
+          [
+            "tool_0cacd38a9e434158",
+            "fixture.discovery.9",
+            "Fixture discovery 9"
+          ]
+        ],
+        "skills": [
+          [
+            "skill_3f8613fcb1884caf",
+            "km.kdisc_bdfcf9d6c1794b4096c49550e36fe791",
+            "Fixture skill 20"
+          ]
+        ],
+        "receipts": [
+          [
+            "kdisc_bd1172345ead4e3fbfde7484023502c3",
+            "{\"status\": \"created\", \"tool_id\": \"tool_0cacd38a9e434158\"}"
+          ],
+          [
+            "kdisc_bdfcf9d6c1794b4096c49550e36fe791",
+            "{\"status\": \"created\", \"skill_id\": \"skill_3f8613fcb1884caf\"}"
+          ]
+        ]
+      }
+    },
+    "discoveryTransitions": [
+      {
+        "mode": "confirm",
+        "afterReviewBody": "StaffDeck\n开放广场平台\n我的数字员工\n我的团队\n渠道接入\n账号管理\n模型配置\n运行设置\n管理后台\n当前员工\n财务 @admin\n基本资料\n员工档案\n定时任务\n记忆\n对话日志\n员工能力\n知识库\n技能\nSOP\n工具\n对话端\nKnowledge\n整体智能体\n财务\n法务\n人事\nIT\n行政\n销售\n市场\n采购\n项目管理\n数据分析\n默认模型\nDemo Qwen Compatible\n知识库\n法务-高风险条款识别指南\n数据分析-经营分析通用指南\n财务-发票与单据规范\n财务-报销办理流程说明\n人事-社保公积金政策说明\n法务-企业合规制度汇编\n采购-协同流程通用指南\n项目管理-推进通用指南\n法务-历史条款判例库\n市场-内容策划通用指南\n法务-合同审查标准清单\nIT-常见故障排查手册\n财务-报销政策手册\n销售-客户拓展通用指南\n行政-会议室与用章管理规定\nIT-服务目录与权限说明\n人事-员工手册与假期政策\n行政-行政服务手册\n人事-薪酬福利与证明办理指南\n法务-高风险条款识别指南\n2 文档 · 23 Wiki · modified\n上传\ng4-native-discovery-confirm.md\n完成\ng4-native-cancel.md\n已取消\n数据分析-经营分析通用指南.md\n完成\n项目管理-推进通用指南.md\n完成\n采购-协同流程通用指南.md\n完成\n市场-内容策划通用指南.md\n完成\n销售-客户拓展通用指南.md\n完成\n人事-社保公积金政策说明.md\n完成\n行政-行政服务手册.md\n完成\n法务-历史条款判例库.md\n完成\n人事-员工手册与假期政策.md\n完成\nIT-服务目录与权限说明.md\n完成\n行政-会议室与用章管理规定.md\n完成\n财务-报销政策手册.md\n完成\nIT-常见故障排查手册.md\n完成\n财务-发票与单据规范.md\n完成\n法务-合同审查标准清单.md\n完成\n法务-企业合规制度汇编.md\n完成\n财务-报销办理流程说明.md\n完成\n人事-薪酬福利与证明办理指南.md\n完成\n文档\nWiki\n关系图\n检索\n版本\n发现建议\nFixture discovery 9\nreviewed\n\nIsolated publication workflow fixture.\n\n{\n  \"name\": \"fixture.discovery.9\",\n  \"display_name\": \"Fixture discovery 9\",\n  \"method\": \"POST\",\n  \"url\": \"http://127.0.0.1:16129/fixture/9\",\n  \"headers\": {},\n  \"auth\": {},\n  \"input_schema\": {},\n  \"output_schema\": {}\n}\n导出\n发布\nFixture skill 9\npending\n\nIsolated publication workflow fixture.\n\n{\n  \"steps\": [\n    \"Verify the original receipt\",\n    \"Approve the expense claim\"\n  ]\n}\n审核\n拒绝\n导出\nFixture discovery 20\npending\n\nIsolated publication workflow fixture.\n\n{\n  \"name\": \"fixture.discovery.20\",\n  \"display_name\": \"Fixture discovery 20\",\n  \"method\": \"POST\",\n  \"url\": \"http://127.0.0.1:16129/fixture/20\",\n  \"headers\": {},\n  \"auth\": {},\n  \"input_schema\": {},\n  \"output_schema\": {}\n}\n审核\n拒绝\n导出\nFixture skill 20\npending\n\nIsolated publication workflow fixture.\n\n{\n  \"steps\": [\n    \"Verify the original receipt\",\n    \"Approve the expense claim\"\n  ]\n}\n审核\n拒绝\n导出"
+      }
+    ]
+  },
+  "pilotdeck": {
+    "actions": [
+      "cancel queued job through PilotDeck shared Knowledge page and verify after reload",
+      "review and reject through PilotDeck shared adapter and read back persisted statuses"
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/spaces",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/spaces",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/bindings",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/jobs",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": {
+          "space_id": "sd:tenant_demo:agent_preset_sales_001",
+          "filename": "g4-pilot-cancel.md",
+          "content_base64": "IyBQaWxvdERlY2sgY2FuY2VsIGZpeHR1cmUKCkFkYXB0ZXIgY2FuY2VsbGF0aW9uIG11c3QgcGVyc2lzdC4K"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/api/modules/knowledge/core/jobs/kjob_393cda0b441341d9951e27bee156f7ac/cancel",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/spaces",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/spaces",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/bindings",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/jobs",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/spaces",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/spaces",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/bindings",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/jobs",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": {
+          "space_id": "sd:tenant_demo:agent_preset_sales_001",
+          "filename": "g4-pilot-discovery-confirm.md",
+          "content_base64": "IyBQaWxvdERlY2sgdHJhY2VhYmxlIGRpc2NvdmVyeSBjb25maXJtCgpUaGUgZml4dHVyZSBleHBvc2VzIFBPU1QgaHR0cDovLzEyNy4wLjAuMToxNjEyOS9jb25maXJtLgo="
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/api/modules/knowledge/core/suggestions/kdisc_dd6736ebb90a415ea5f8e45a8822524a/review",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/jobs/kjob_a67fd2ad920e4a10b95c6d34f016342b",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/jobs/kjob_393cda0b441341d9951e27bee156f7ac",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/spaces",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/spaces",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/bindings",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/jobs",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": {
+          "space_id": "sd:tenant_demo:agent_preset_sales_001",
+          "filename": "g4-pilot-discovery-reject.md",
+          "content_base64": "IyBQaWxvdERlY2sgdHJhY2VhYmxlIGRpc2NvdmVyeSByZWplY3QKClRoZSBmaXh0dXJlIGV4cG9zZXMgUE9TVCBodHRwOi8vMTI3LjAuMC4xOjE2MTI5L3JlamVjdC4K"
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/api/modules/knowledge/core/suggestions/kdisc_41c43c3688184c7dac79d5f2cd0dc47f/reject",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/jobs/kjob_49bff422f1b74554babb1ad84c81c344",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/jobs/kjob_a67fd2ad920e4a10b95c6d34f016342b",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/jobs/kjob_393cda0b441341d9951e27bee156f7ac",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/spaces",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/spaces",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/bindings",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/jobs",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/documents",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/concepts",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/versions",
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/api/modules/knowledge/core/knowledge-bases/kb_d4399159fa63468a9e90381cc86e33bf/suggestions",
+        "body": null
+      }
+    ],
+    "persistence": {
+      "cancelAfterReload": "New conversation\n◆\nSkills\n◆\nKnowledge\n◆\nKnowledge\nProjects\nNo projects found\nConversations\nNo sessions yet\nSettings\nKnowledge\nKnowledge\nPilotDeck acceptance\n知识库\n销售-客户拓展通用指南\n销售-客户拓展通用指南\n1 文档 · 3 Wiki · modified\n上传\ng4-pilot-cancel.md\n已取消\n文档\nWiki\n关系图\n检索\n版本\n发现建议\n销售-客户拓展通用指南\n1 引用 · ready\n暂无选中文档",
+      "discoveryAfterReload": {
+        "reviewed": [
+          {
+            "id": "kdisc_dd6736ebb90a415ea5f8e45a8822524a",
+            "knowledge_base_version_id": "kbver_02257a7f6a0f4f58bd84ee4c8c731d5e",
+            "bucket_id": null,
+            "title": "Fixture discovery 15",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:31:17.183432",
+            "document_id": "kdoc_89774763c5b94bbca14fe89ed748b6f4",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d4399159fa63468a9e90381cc86e33bf",
+            "suggestion_type": "tool",
+            "status": "reviewed",
+            "created_at": "2026-10-14T04:31:14.728569",
+            "payload": {
+              "name": "fixture.discovery.15",
+              "display_name": "Fixture discovery 15",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/15",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-15.md"
+              }
+            ]
+          }
+        ],
+        "rejected": [
+          {
+            "id": "kdisc_41c43c3688184c7dac79d5f2cd0dc47f",
+            "knowledge_base_version_id": "kbver_02257a7f6a0f4f58bd84ee4c8c731d5e",
+            "bucket_id": null,
+            "title": "Fixture discovery 22",
+            "reason": "Isolated publication workflow fixture.",
+            "updated_at": "2026-10-14T04:31:19.134900",
+            "document_id": "kdoc_32e644f43d4d46a7a6467ab4a9863704",
+            "tenant_id": "tenant_demo",
+            "knowledge_base_id": "kb_d4399159fa63468a9e90381cc86e33bf",
+            "suggestion_type": "tool",
+            "status": "rejected",
+            "created_at": "2026-10-14T04:31:17.136706",
+            "payload": {
+              "name": "fixture.discovery.22",
+              "display_name": "Fixture discovery 22",
+              "method": "POST",
+              "url": "http://127.0.0.1:16129/fixture/22",
+              "headers": {},
+              "auth": {},
+              "input_schema": {},
+              "output_schema": {}
+            },
+            "source_refs": [
+              {
+                "filename": "g4-discovery-22.md"
+              }
+            ]
+          }
+        ],
+        "externalPublication": "not_requested_by_independent_PilotDeck_UI"
+      }
+    },
+    "config": "schemaVersion: 1\nagent:\n  model: smoke/operator\nmodel:\n  providers:\n    smoke:\n      protocol: openai\n      url: http://127.0.0.1:19992/v1\n      apiKey: local-only\n      models:\n        operator:\n          capabilities:\n            supportsToolUse: true\nwebui:\n  runtime:\n    serverPort: 16126\n    vitePort: 16127\n    databasePath: /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-l7r6Oe/pilot-home/auth.db\n    workspacesRoot: /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-l7r6Oe/pilot-home/workspaces\nmodules:\n  knowledge:\n    enabled: true\n    implementationId: knowledge-core\n    frontendModule: staffdeck.knowledge\n    contract: knowledge-core/v1\n    transport: rest-http-v1\n    endpoint: http://127.0.0.1:16130\n    credentialEnv: STAFFDECK_KM_BEARER\n    pilotDeckUserId: \"1\"\n    spaceId: sd:tenant_demo:agent_preset_sales_001\n    spaces:\n      - id: sd:tenant_demo:agent_preset_sales_001\n        name: PilotDeck acceptance\n    methods: [list_bases, create_base, get_base, update_base, delete_base, list_versions, sync_base, publish_version, rollback_version, list_documents, get_document, import_document, get_job, list_jobs, cancel_job, list_discoveries, confirm_discovery, reject_discovery, query, resolve_citation]\nrouter:\n  enabled: false\nfrontend:\n  businessModules:\n    agent.routing:\n      enabled: false\n",
+    "pilotUserId": "1",
+    "configAfterAuth": "schemaVersion: 1\nagent:\n  model: smoke/operator\nmodel:\n  providers:\n    smoke:\n      protocol: openai\n      url: http://127.0.0.1:19992/v1\n      apiKey: local-only\n      models:\n        operator:\n          capabilities:\n            supportsToolUse: true\nwebui:\n  runtime:\n    serverPort: 16126\n    vitePort: 16127\n    databasePath: /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-l7r6Oe/pilot-home/auth.db\n    workspacesRoot: /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-l7r6Oe/pilot-home/workspaces\nmodules:\n  knowledge:\n    enabled: true\n    implementationId: knowledge-core\n    frontendModule: staffdeck.knowledge\n    contract: knowledge-core/v1\n    transport: rest-http-v1\n    endpoint: http://127.0.0.1:16130\n    credentialEnv: STAFFDECK_KM_BEARER\n    pilotDeckUserId: \"1\"\n    spaceId: sd:tenant_demo:agent_preset_sales_001\n    spaces:\n      - id: sd:tenant_demo:agent_preset_sales_001\n        name: PilotDeck acceptance\n    methods: [list_bases, create_base, get_base, update_base, delete_base, list_versions, sync_base, publish_version, rollback_version, list_documents, get_document, import_document, get_job, list_jobs, cancel_job, list_discoveries, confirm_discovery, reject_discovery, query, resolve_citation]\nrouter:\n  enabled: false\nfrontend:\n  businessModules:\n    agent.routing:\n      enabled: false\n"
+  },
+  "cleanup": {
+    "tempRoot": "/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-l7r6Oe",
+    "blockFileRemoved": true,
+    "processesStopped": true
+  },
+  "modelFixtureRequests": [
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"薪资构成与发放\", \"title\": \"薪资构成与发放\", \"summary\": \"# 薪资构成与发放 - 薪资构成：基本工资 + 岗位工资 + 绩效工资（绩效系数按季度考核确定，范围 0.8–1.2）； - 发薪日：每月 10 日发放上月工资，遇节假日提前至最近的工作日； - 工资条：发薪日当天通过 HR 系统推送电子工资条，查看需短信验证码验证； - 个税：公司按累计预扣法代扣代缴，专项附加扣除请在个人所得税 App 中自行填报并保持更新； - 调薪窗口：每年 4 月、10 月两次，由部门负责人提名、HRBP 复核；晋级调薪随职级评审结果生效...\", \"excerpt\": \"# 薪资构成与发放\\n\\n- 薪资构成：基本工资 + 岗位工资 + 绩效工资（绩效系数按季度考核确定，范围 0.8–1.2）；\\n- 发薪日：每月 10 日发放上月工资，遇节假日提前至最近的工作日；\\n- 工资条：发薪日当天通过 HR 系统推送电子工资条，查看需短信验证码验证；\\n- 个税：公司按累计预扣法代扣代缴，",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_ebdc032631584d09859a3ffa44e95d51\", \"filename\": \"人事-薪酬福利与证明办理指南.md\", \"title\": \"人事-薪酬福利与证明办理指南\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_b51e8bfd88734829b77092ed9c73c010\", \"title\": \"薪资构成与发放\", \"summary\": \"# 薪资构成与发放 - 薪资构成：基本工资 + 岗位工资 + 绩效工资（绩效系数按季度考核确定，范围 0.8–1.2）； - 发薪日：每月 10 日发放上月工资，遇节假日提前至最近的工作日； - 工资条：发薪日当天通过 HR 系统推送电子工资条，查看需短信验证码验证； - 个税：公司按累计预扣法代扣代缴，专项附加扣除请在个人所得税 App 中自行填报并保持更新； - 调薪窗口：每年 4 月、10 月两次，由部门负责人提名、HRBP 复核；晋级调薪随职级评审结果生效... # 薪资构成与发放 - 薪资构成：基本工资 + 岗位",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"普通报销流程\", \"title\": \"普通报销流程\", \"summary\": \"# 普通报销流程 适用于日常办公、交通、通讯等非差旅费用： 1. **发起**：在报销系统中新建「普通报销单」，填写事由、金额、费用科目； 2. **上传单据**：上传发票原件（电子发票传 PDF/OFD）； 3. **审批**：金额 ≤ 1000 元由部门负责人一级审批；> 1000 元增加财务复核； 4. **打款**：审批通过后 T+3 个工作日内打款至工资卡...\", \"excerpt\": \"# 普通报销流程\\n\\n适用于日常办公、交通、通讯等非差旅费用：\\n\\n1. **发起**：在报销系统中新建「普通报销单」，填写事由、金额、费用科目；\\n2. **上传单据**：上传发票原件（电子发票传 PDF/OFD）；\\n3. **审批**：金额 ≤ 1000 元由部门负责人一级审批；> 1000 元增加财务复核；\\n4. **打款**：审批通过后 T+3 个工作日内打款至工资卡。\\n\\n填写要点：\\n\\n- 事由",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_08d2f2027dec4e9f99c2762bf31bef9d\", \"filename\": \"财务-报销办理流程说明.md\", \"title\": \"财务-报销办理流程说明\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_9a58a4b91bea470dadd5a19b7b90cfde\", \"title\": \"普通报销流程\", \"summary\": \"# 普通报销流程 适用于日常办公、交通、通讯等非差旅费用： 1. **发起**：在报销系统中新建「普通报销单」，填写事由、金额、费用科目； 2. **上传单据**：上传发票原件（电子发票传 PDF/OFD）； 3. **审批**：金额 ≤ 1000 元由部门负责人一级审批；> 1000 元增加财务复核； 4. **打款**：审批通过后 T+3 个工作日内打款至工资卡... # 普通报销流程 适用于日常办公、交通、通讯等非差旅费用： 1. **发起**：在报销系统中新建「普通报销单」，填写事由、金额、费用科目； 2. **上传单据**：上",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"数据合规\", \"title\": \"数据合规\", \"summary\": \"# 数据合规 - **数据分级**：公司数据分为公开、内部、机密、绝密四级；涉及个人信息的一律不低于机密级； - **个人信息处理**：收集个人信息须遵循最小必要原则，取得用户单独同意；向第三方提供个人信息前必须完成个人信息保护影响评估（PIA）并签署数据处理协议（DPA）； - **敏感个人信息**（生物识别、行踪轨迹、金融账户、不满 14 周岁未成年人信息等）：处理前必须单独同意 + PIA，并在合规台账登记...\", \"excerpt\": \"# 数据合规\\n\\n- **数据分级**：公司数据分为公开、内部、机密、绝密四级；涉及个人信息的一律不低于机密级；\\n- **个人信息处理**：收集个人信息须遵循最小必要原则，取得用户单独同意；向第三方提供个人信息前必须完成个人信息保护影响评估（PIA）并签署数据处理协议（DPA）；\\n- **敏感个人信息**（生物识别、行踪轨迹、金融账户、不满 14 周岁未成年人信息等）：处理",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_159675685fc74a7eb5e168c5617f2902\", \"filename\": \"法务-企业合规制度汇编.md\", \"title\": \"法务-企业合规制度汇编\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_4e0dd960210949578de0c7db6ae09870\", \"title\": \"数据合规\", \"summary\": \"# 数据合规 - **数据分级**：公司数据分为公开、内部、机密、绝密四级；涉及个人信息的一律不低于机密级； - **个人信息处理**：收集个人信息须遵循最小必要原则，取得用户单独同意；向第三方提供个人信息前必须完成个人信息保护影响评估（PIA）并签署数据处理协议（DPA）； - **敏感个人信息**（生物识别、行踪轨迹、金融账户、不满 14 周岁未成年人信息等）：处理前必须单独同意 + PIA，并在合规台账登记... # 数据合规 - **数据分级**：公司数据分为公开、内部、机密、绝密四级；涉及个人信息的一律不低于机密级； - **个人",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"合同审查流程与时效\", \"title\": \"合同审查流程与时效\", \"summary\": \"# 合同审查流程与时效 - 提交入口：OA「合同审查申请」，附合同文本（Word 优先）、对方营业执照、业务背景说明； - 审查时效承诺：常规合同 2 个工作日，金额 ≥ 100 万元或涉及数据出境/独家条款的复杂合同 5 个工作日； - 加急：确有紧急签约需求的，由部门负责人发起加急，法务 1 个工作日内反馈； - 审查结论分三档：**通过 / 修改后通过（附修订稿）/ 不通过（附风险说明）**； - 使用公司标准合同模板且未改动核心条款的，可走「模板快速通道」，半个工作日出结论。\", \"excerpt\": \"# 合同审查流程与时效\\n\\n- 提交入口：OA「合同审查申请」，附合同文本（Word 优先）、对方营业执照、业务背景说明；\\n- 审查时效承诺：常规合同 2 个工作日，金额 ≥ 100 万元或涉及数据出境/独家条款的复杂合同 5 个工作日；\\n- 加急：确有紧急签约需求的，由部门负责人发起加急",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_7b3a80bcddf84ca4a5bf98692705de97\", \"filename\": \"法务-合同审查标准清单.md\", \"title\": \"法务-合同审查标准清单\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_0f667802eca6413b8c67363f789eab6c\", \"title\": \"合同审查流程与时效\", \"summary\": \"# 合同审查流程与时效 - 提交入口：OA「合同审查申请」，附合同文本（Word 优先）、对方营业执照、业务背景说明； - 审查时效承诺：常规合同 2 个工作日，金额 ≥ 100 万元或涉及数据出境/独家条款的复杂合同 5 个工作日； - 加急：确有紧急签约需求的，由部门负责人发起加急，法务 1 个工作日内反馈； - 审查结论分三档：**通过 / 修改后通过（附修订稿）/ 不通过（附风险说明）**； - 使用公司标准合同模板且未改动核心条款的，可走「模板快速通道」，半个工作日出结论...\", \"excerpt\": \"# 合同审查流",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"发票类型要求\", \"title\": \"发票类型要求\", \"summary\": \"# 发票类型要求 - **增值税专用发票**：金额 ≥ 5000 元的采购类支出必须取得专票（抬头为公司全称）； - **增值税普通发票（含电子发票）**：日常报销（差旅、交通、办公用品等）可使用普票； - **全电发票（数电票）**：与纸质发票同等效力，上传 PDF/OFD/XML 原件均可，系统自动验真； - **不予接受的票据**：定额手撕票（停车票除外）、收据/白条、抬头为个人或其他公司的发票、跨年度发票（费用发生年度与开票年度不一致且超过 90 天）...\", \"excerpt\": \"# 发票类型要求\\n\\n- **增值税专用发票**：金额 ≥ 5000 元的采购类支出必须取得专票（抬头为公司全称）；\\n- **增值税普通发票（含电子发票）**：日常报销（差旅、交通、办公用品等）可使用普票；\\n- **全电发票（数电票）**：与纸质发票同等效力，上传 PDF/OFD/XML 原件均可，系统自动验真；\\n-",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_91a77a5974164c8d8b4bf31833888ae5\", \"filename\": \"财务-发票与单据规范.md\", \"title\": \"财务-发票与单据规范\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_2774571ef79443db85b2ddaeab227eeb\", \"title\": \"发票类型要求\", \"summary\": \"# 发票类型要求 - **增值税专用发票**：金额 ≥ 5000 元的采购类支出必须取得专票（抬头为公司全称）； - **增值税普通发票（含电子发票）**：日常报销（差旅、交通、办公用品等）可使用普票； - **全电发票（数电票）**：与纸质发票同等效力，上传 PDF/OFD/XML 原件均可，系统自动验真； - **不予接受的票据**：定额手撕票（停车票除外）、收据/白条、抬头为个人或其他公司的发票、跨年度发票（费用发生年度与开票年度不一致且超过 90 天）... # 发票类型要求 - **增值税专用发票**：金额 ≥ 5000 元的采购",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"网络故障\", \"title\": \"网络故障\", \"summary\": \"# 网络故障 1. 先确认是个人问题还是区域问题：询问邻座是否同样断网； 2. 个人问题：重启网卡/切换有线无线、忘记网络后重连 `QMX-Office`（密码见内网首页）； 3. VPN 连不上：确认账号未过期（VPN 账号 90 天未使用自动冻结），重装客户端后重试；仍失败的检查本地时间是否准确、是否连接了限制 UDP 的酒店/机场网络； 4. 区域断网：直接报修，注明楼层和工位区域，无需自行排查； 5. 视频会议卡顿：优先切换有线网络；无线环境下远离微波炉、打印机等干扰源...\", \"excerpt\": \"# 网络故障\\n\\n1. 先确认是个人问题还是区域问题：询问邻座是否同样断网；\\n2. 个人问题：重启网卡/切换有线无线、忘记网络后重连 `QMX-Office`（密码见内网首页）；\\n3. VPN 连不上：确认账号未过期（VPN 账号 90 天未使用自动冻结），重装客户端后重试；仍失败的检查本地时间是否准确、是否",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_e61fb481a7ed4ba5b911de009b4a1031\", \"filename\": \"IT-常见故障排查手册.md\", \"title\": \"IT-常见故障排查手册\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_79574df0642e4c0f8e8821ef83830d09\", \"title\": \"网络故障\", \"summary\": \"# 网络故障 1. 先确认是个人问题还是区域问题：询问邻座是否同样断网； 2. 个人问题：重启网卡/切换有线无线、忘记网络后重连 `QMX-Office`（密码见内网首页）； 3. VPN 连不上：确认账号未过期（VPN 账号 90 天未使用自动冻结），重装客户端后重试；仍失败的检查本地时间是否准确、是否连接了限制 UDP 的酒店/机场网络； 4. 区域断网：直接报修，注明楼层和工位区域，无需自行排查； 5. 视频会议卡顿：优先切换有线网络；无线环境下远离微波炉、打印机等干扰源... # 网络故障 1. 先确认是个人问题还是区域问题：询问邻",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"总则与适用范围\", \"title\": \"总则与适用范围\", \"summary\": \"# 总则与适用范围 - 本手册适用于公司全体正式员工及实习生的费用报销，包括差旅费、业务招待费、日常办公费用等； - **境外差旅（含港澳台）的补助与汇率折算标准另行规定**，本手册未涵盖，办理前请咨询财务部； - 报销遵循「事前审批、事后凭证、真实合规」三原则，任何报销均须以真实业务为背景； - 本手册与国家法律法规或税务规定冲突的，以后者为准。\", \"excerpt\": \"# 总则与适用范围\\n\\n- 本手册适用于公司全体正式员工及实习生的费用报销，包括差旅费、业务招待费、日常办公费用等；\\n- **境外差旅（含港澳台）的补助与汇率折算标准另行规定**，本手册未涵盖，办理前请咨询财务部；\\n- 报销遵循「事前审批、事后凭证、真实合规」三原则，任何报销均须以真实业务为背景；\\n- 本手册与国家法律法规或税务规定冲突的，以后者为准。\"}, {\"section_id\": \"sec_2\", \"path\": \"差旅补",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_24096497399f4484a9977fdd675c8d98\", \"filename\": \"财务-报销政策手册.md\", \"title\": \"财务-报销政策手册\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_4d9cb89ce27342f684cf8c7e2afa70f4\", \"title\": \"总则与适用范围\", \"summary\": \"# 总则与适用范围 - 本手册适用于公司全体正式员工及实习生的费用报销，包括差旅费、业务招待费、日常办公费用等； - **境外差旅（含港澳台）的补助与汇率折算标准另行规定**，本手册未涵盖，办理前请咨询财务部； - 报销遵循「事前审批、事后凭证、真实合规」三原则，任何报销均须以真实业务为背景； - 本手册与国家法律法规或税务规定冲突的，以后者为准。 # 总则与适用范围 - 本手册适用于公司全体正式员工及实习生的费用报销，包括差旅费、业务招待费、日常办公费用等； - **境外差旅（含港澳台）的补助与汇率折算标准另行规定**，本手册未涵盖，办理前",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"会议室预订规则\", \"title\": \"会议室预订规则\", \"summary\": \"# 会议室预订规则 - 预订通道：办公系统「会议室预订」模块，可按日期、时段、容纳人数筛选空闲会议室； - 预订时限：最早可预订未来 14 天内的时段，单次预订不超过 4 小时； - 高峰时段（10:00–12:00、14:00–17:00）每人每天最多预订 2 个时段，防止占用； - 取消与改期：开会前 30 分钟以上可自助取消；累计 3 次「预订未使用」将被限制预订权限一周； - 提醒服务：预订时可设置会前提醒（默认提前 10 分钟通知全部参会人）...\", \"excerpt\": \"# 会议室预订规则\\n\\n- 预订通道：办公系统「会议室预订」模块，可按日期、时段、容纳人数筛选空闲会议室；\\n- 预订时限：最早可预订未来 14 天内的时段，单次预订不超过 4 小时；\\n- 高峰时段（10:00–12:00、14:00–17:00）每人每天最多预订 2 个时段，防止占用；\\n- 取消与改期：开会前 30 分钟",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_02fe738a55c1419da6363a07b2c7efa0\", \"filename\": \"行政-会议室与用章管理规定.md\", \"title\": \"行政-会议室与用章管理规定\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_ae474312f9ad4d8ba82924232d5184c2\", \"title\": \"会议室预订规则\", \"summary\": \"# 会议室预订规则 - 预订通道：办公系统「会议室预订」模块，可按日期、时段、容纳人数筛选空闲会议室； - 预订时限：最早可预订未来 14 天内的时段，单次预订不超过 4 小时； - 高峰时段（10:00–12:00、14:00–17:00）每人每天最多预订 2 个时段，防止占用； - 取消与改期：开会前 30 分钟以上可自助取消；累计 3 次「预订未使用」将被限制预订权限一周； - 提醒服务：预订时可设置会前提醒（默认提前 10 分钟通知全部参会人）... # 会议室预订规则 - 预订通道：办公系统「会议室预订」模块，可按日",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"高风险信号词\", \"title\": \"高风险信号词\", \"summary\": \"# 高风险信号词 审查合同文本时，出现以下措辞立即标红并升级复核： | 信号词 | 风险 | |-|-| | 「无条件」「不可撤销」「放弃抗辩权」 | 我方单方放弃权利 | | 「一切损失」「全部责任」「无上限」 | 赔偿范围不可控 | | 「自动续约」且无退出条款 | 被动锁定长期义务 | | 「最终解释权归对方」 | 条款解释权失衡 | | 「视为送达」「视为验收」「视为同意」 | 默示条款绕过我方确认 | | 「独家」「排他」「不得与第三方合作」 | 限制经营自由，须业务负责人+法务双确认 | | 「以对方系...\", \"excerpt\": \"# 高风险信号词\\n\\n审查合同文本时，出现以下措辞立即标红并升级复核：\\n\\n| 信号词 | 风险 |\\n|-|-|\\n| 「无条件」「不可撤销」「放弃抗辩权」 | 我方单方放弃权利 |\\n| 「一切损失」「全部责任」「无上限」 | 赔偿范围不可控 |\\n| 「自动续",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_f8ba999a83c442b0842f4b6b89c84809\", \"filename\": \"法务-高风险条款识别指南.md\", \"title\": \"法务-高风险条款识别指南\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_9df9181177524cc4bbc680343aa1fb2d\", \"title\": \"高风险信号词\", \"summary\": \"# 高风险信号词 审查合同文本时，出现以下措辞立即标红并升级复核： | 信号词 | 风险 | |-|-| | 「无条件」「不可撤销」「放弃抗辩权」 | 我方单方放弃权利 | | 「一切损失」「全部责任」「无上限」 | 赔偿范围不可控 | | 「自动续约」且无退出条款 | 被动锁定长期义务 | | 「最终解释权归对方」 | 条款解释权失衡 | | 「视为送达」「视为验收」「视为同意」 | 默示条款绕过我方确认 | | 「独家」「排他」「不得与第三方合作」 | 限制经营自由，须业务负责人+法务双确认 | | 「以对方系... # 高风险",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"服务目录总览\", \"title\": \"服务目录总览\", \"summary\": \"# 服务目录总览 IT 服务台提供以下服务，均可在服务台门户「IT 服务目录」中自助发起： | 服务类别 | 包含项 | 常规时效 | |-|-|-| | 账号权限 | 系统账号开通、权限变更、密码重置 | L1 即时–1 个工作日 | | 设备服务 | 电脑/外设申领、维修、借用 | 1–7 个工作日 | | 软件服务 | 授权软件安装、新软件采购评估 | 当天–按采购周期 | | 网络服务 | Wi-Fi/有线接入、VPN、访客网络 | 当天 | | 协作服务 | 邮箱、邮件组、共享盘、企业微信 | 当天–1...\", \"excerpt\": \"# 服务目录总览\\n\\nIT 服务台提供以下服务，均可在服务台门户「IT 服务目录」中自助发起：\\n\\n| 服务类别 | 包含项 | 常规时效 |\\n|-|-|-|\\n| 账号权限 | 系统账号开通、权限变更、密码重置 | L1 即时–1 个工作日 |\\n| 设备服务 |",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_2b70281da67c4363b6a0351aec1e9f80\", \"filename\": \"IT-服务目录与权限说明.md\", \"title\": \"IT-服务目录与权限说明\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_e22f7cf4e4754e01933e6964ef5df15b\", \"title\": \"服务目录总览\", \"summary\": \"# 服务目录总览 IT 服务台提供以下服务，均可在服务台门户「IT 服务目录」中自助发起： | 服务类别 | 包含项 | 常规时效 | |-|-|-| | 账号权限 | 系统账号开通、权限变更、密码重置 | L1 即时–1 个工作日 | | 设备服务 | 电脑/外设申领、维修、借用 | 1–7 个工作日 | | 软件服务 | 授权软件安装、新软件采购评估 | 当天–按采购周期 | | 网络服务 | Wi-Fi/有线接入、VPN、访客网络 | 当天 | | 协作服务 | 邮箱、邮件组、共享盘、企业微信 | 当天–1...\", \"exc",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"年假规则\", \"title\": \"年假规则\", \"summary\": \"# 年假规则 - 员工转正后即可享受带薪年假，按**在本公司连续工作年限**计算： | 司龄 | 年假天数 | |-|-| | 满 1 年不满 3 年 | 5 天 | | 满 3 年不满 5 年 | 8 天 | | 满 5 年不满 10 年 | 12 天 | | 满 10 年及以上 | 15 天 | - 年假按自然年计算，当年入职/离职的按在职月份折算（折算后不足 1 天的部分不计）； - 年假有效期至次年 3 月 31 日，逾期未休且未申请延期的自动清零...\", \"excerpt\": \"# 年假规则\\n\\n- 员工转正后即可享受带薪年假，按**在本公司连续工作年限**计算：\\n\\n| 司龄 | 年假天数 |\\n|-|-|\\n| 满 1 年不满 3 年 | 5 天 |\\n| 满 3 年不满 5 年 | 8 天 |\\n| 满 5 年不满 10 年 | 12 天 |\\n| 满 10 年及以上 | 15 天 |\\n\\n- 年假",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_72e93a8a01684214bd82f7b95e029593\", \"filename\": \"人事-员工手册与假期政策.md\", \"title\": \"人事-员工手册与假期政策\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_0c6233a45775401b826838cdb4686c85\", \"title\": \"年假规则\", \"summary\": \"# 年假规则 - 员工转正后即可享受带薪年假，按**在本公司连续工作年限**计算： | 司龄 | 年假天数 | |-|-| | 满 1 年不满 3 年 | 5 天 | | 满 3 年不满 5 年 | 8 天 | | 满 5 年不满 10 年 | 12 天 | | 满 10 年及以上 | 15 天 | - 年假按自然年计算，当年入职/离职的按在职月份折算（折算后不足 1 天的部分不计）； - 年假有效期至次年 3 月 31 日，逾期未休且未申请延期的自动清零...\", \"excerpt\": \"# 年假规则\\n\\n- 员工转正后即可享受带薪",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"使用说明\", \"title\": \"使用说明\", \"summary\": \"# 使用说明 - 本库沉淀历史合同审查中的典型条款处理案例，每条判例包含：原始条款问题 → 审查意见 → 处理结果 → 沉淀规则； - **沉淀规则可直接作为同类条款的审查口径**；与《合同审查标准清单》冲突时，以清单为准； - 库中无先例可循的新型条款，按《高风险条款识别指南》升级规则处理，不得自行类推结论。\", \"excerpt\": \"# 使用说明\\n\\n- 本库沉淀历史合同审查中的典型条款处理案例，每条判例包含：原始条款问题 → 审查意见 → 处理结果 → 沉淀规则；\\n- **沉淀规则可直接作为同类条款的审查口径**；与《合同审查标准清单》冲突时，以清单为准；\\n- 库中无先例可循的新型条款，按《高风险条款识别指南》升级规则处理，不得自行类推结论。\"}, {\"section_id\": \"sec_2\", \"path\": \"付款条款判例\", \"title\": \"付款条款判例\", \"summary\": \"# 付款条款判例",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_fa2d7e1b3e594fca9d553ef582dbf44b\", \"filename\": \"法务-历史条款判例库.md\", \"title\": \"法务-历史条款判例库\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_9b3b1927336a44608630ff04d9cdf3ca\", \"title\": \"使用说明\", \"summary\": \"# 使用说明 - 本库沉淀历史合同审查中的典型条款处理案例，每条判例包含：原始条款问题 → 审查意见 → 处理结果 → 沉淀规则； - **沉淀规则可直接作为同类条款的审查口径**；与《合同审查标准清单》冲突时，以清单为准； - 库中无先例可循的新型条款，按《高风险条款识别指南》升级规则处理，不得自行类推结论。\", \"excerpt\": \"# 使用说明\\n\\n- 本库沉淀历史合同审查中的典型条款处理案例，每条判例包含：原始条款问题 → 审查意见 → 处理结果 → 沉淀规则；\\n- **沉淀规则可直接作为同类条款的审查口径**；与《合同审查标准清",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"会议室使用规则\", \"title\": \"会议室使用规则\", \"summary\": \"# 会议室使用规则 - 会议室分为三类：小型洽谈室（2–4 人）、标准会议室（6–12 人）、多功能厅（30 人以上，需行政协助布置）； - 使用原则：按预订时段使用，提前结束请在系统释放；连续 15 分钟无人使用系统自动释放； - 保持整洁：白板用后擦净，垃圾带走，设备（视频终端、遥控器）不得带离； - 多功能厅使用需提前 3 个工作日申请并注明布置需求（桌椅摆放、音响、直播、茶歇）； - 视频会议：所有标准会议室配备视频终端，扫码即可入会；设备故障现场扫码报修，行政与 IT 联动处理...\", \"excerpt\": \"# 会议室使用规则\\n\\n- 会议室分为三类：小型洽谈室（2–4 人）、标准会议室（6–12 人）、多功能厅（30 人以上，需行政协助布置）；\\n- 使用原则：按预订时段使用，提前结束请在系统释放；连续 15 分钟无人使用系统自动释放；\\n- 保持整洁：白板用后擦净，垃圾带走，设备（视频终端、",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_76a10ffaafbd4c13bd1b8bac5f01e774\", \"filename\": \"行政-行政服务手册.md\", \"title\": \"行政-行政服务手册\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_1e45a6d7ae2149aa9d5fa80e45fcbb6b\", \"title\": \"会议室使用规则\", \"summary\": \"# 会议室使用规则 - 会议室分为三类：小型洽谈室（2–4 人）、标准会议室（6–12 人）、多功能厅（30 人以上，需行政协助布置）； - 使用原则：按预订时段使用，提前结束请在系统释放；连续 15 分钟无人使用系统自动释放； - 保持整洁：白板用后擦净，垃圾带走，设备（视频终端、遥控器）不得带离； - 多功能厅使用需提前 3 个工作日申请并注明布置需求（桌椅摆放、音响、直播、茶歇）； - 视频会议：所有标准会议室配备视频终端，扫码即可入会；设备故障现场扫码报修，行政与 IT 联动处理... # 会议室使用规则 - 会议室分为三类：小型洽谈",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"社保缴纳基数\", \"title\": \"社保缴纳基数\", \"summary\": \"# 社保缴纳基数 - 公司为全体正式员工缴纳「五险」：养老、医疗、失业、工伤、生育保险； - 缴费基数：按员工上一年度月平均工资核定，新入职员工按首月约定工资核定；基数上下限跟随参保地当年社平工资标准调整（每年 7 月调基）； - 缴费比例（以北京为例）：养老 公司16% / 个人8%，医疗 公司9.8% / 个人2%+3元，失业 公司0.5% / 个人0.5%，工伤 公司0.2%–1.9%（个人不缴），生育并入医疗； - 每月 15 日前入职的员工当月起缴，15 日后入职的次月起缴...\", \"excerpt\": \"# 社保缴纳基数\\n\\n- 公司为全体正式员工缴纳「五险」：养老、医疗、失业、工伤、生育保险；\\n- 缴费基数：按员工上一年度月平均工资核定，新入职员工按首月约定工资核定；基数上下限跟随参保地当年社平工资标准调整（每年 7 月调基）；\\n- 缴费比例（以北京为例）：养老 公司16% / 个人8%，医疗",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_32f3cd922da449eab5b12e2c78af7829\", \"filename\": \"人事-社保公积金政策说明.md\", \"title\": \"人事-社保公积金政策说明\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_fb16b12b0d2547b5abd5fdbf2d9fa156\", \"title\": \"社保缴纳基数\", \"summary\": \"# 社保缴纳基数 - 公司为全体正式员工缴纳「五险」：养老、医疗、失业、工伤、生育保险； - 缴费基数：按员工上一年度月平均工资核定，新入职员工按首月约定工资核定；基数上下限跟随参保地当年社平工资标准调整（每年 7 月调基）； - 缴费比例（以北京为例）：养老 公司16% / 个人8%，医疗 公司9.8% / 个人2%+3元，失业 公司0.5% / 个人0.5%，工伤 公司0.2%–1.9%（个人不缴），生育并入医疗； - 每月 15 日前入职的员工当月起缴，15 日后入职的次月起缴... # 社保缴纳基数 - 公司为全体正式员工缴",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"客户需求与商机推进\", \"title\": \"客户需求与商机推进\", \"summary\": \"# 客户需求与商机推进 1. 先确认客户希望解决的问题、使用场景、涉及角色和期望结果。 2. 区分已确认事实、客户假设和内部判断，不补写未知的预算或决策信息。 3. 用统一阶段记录商机：初步接触、需求澄清、方案沟通、商务确认或暂缓。 4. 每次沟通后记录关键结论、异议、责任人和有日期的下一步。 5. 涉及价格、交付范围、法律条款或服务承诺时，必须交由有权限人员确认后再对外表达。\", \"excerpt\": \"# 客户需求与商机推进\\n\\n1. 先确认客户希望解决的问题、使用场景、涉及角色和期望结果。\\n2. 区分已确认事实、客户假设和内部判断，不补写未知的预算或决策信息。\\n3. 用统一阶段记录商机：初步接触、需求澄清、方案沟通、商务确认或暂缓。\\n4. 每次沟通后记录关键结论、异议、责任人和有日期的下一步。\\n5. 涉及价格、交付范围、法律条款或服务承诺时，必须交由有权限人员确认后再对外表达。\"}]}",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_68ce74dd854748fdabfde28e00ddc6a3\", \"filename\": \"销售-客户拓展通用指南.md\", \"title\": \"销售-客户拓展通用指南\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_f0bbccb8291f410ba6bf0df933c9df34\", \"title\": \"客户需求与商机推进\", \"summary\": \"# 客户需求与商机推进 1. 先确认客户希望解决的问题、使用场景、涉及角色和期望结果。 2. 区分已确认事实、客户假设和内部判断，不补写未知的预算或决策信息。 3. 用统一阶段记录商机：初步接触、需求澄清、方案沟通、商务确认或暂缓。 4. 每次沟通后记录关键结论、异议、责任人和有日期的下一步。 5. 涉及价格、交付范围、法律条款或服务承诺时，必须交由有权限人员确认后再对外表达。\", \"excerpt\": \"# 客户需求与商机推进\\n\\n1. 先确认客户希望解决的问题、使用场景、涉及角色和期望结果。\\n2. 区分已确认事实、客户假设",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"内容策划与发布检查\", \"title\": \"内容策划与发布检查\", \"summary\": \"# 内容策划与发布检查 1. 简报需包含业务目标、目标受众、核心信息、使用渠道、发布时间和衡量方式。 2. 内容应围绕一个主要行动设计，并根据渠道调整长度和表达。 3. 数据、客户案例和产品能力必须有可核验来源；未知信息使用待确认标记。 4. 发布前检查品牌用语、素材授权、敏感信息、链接和必要审批。 5. 发布后按预先约定的指标复盘，不把相关性直接表述为因果关系。\", \"excerpt\": \"# 内容策划与发布检查\\n\\n1. 简报需包含业务目标、目标受众、核心信息、使用渠道、发布时间和衡量方式。\\n2. 内容应围绕一个主要行动设计，并根据渠道调整长度和表达。\\n3. 数据、客户案例和产品能力必须有可核验来源；未知信息使用待确认标记。\\n4. 发布前检查品牌用语、素材授权、敏感信息、链接和必要审批。\\n5. 发布后按预先约定的指标复盘，不把相关性直接表述为因果关系。\"}]}",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_5b0667fc1e014900b9e5363f52a066f1\", \"filename\": \"市场-内容策划通用指南.md\", \"title\": \"市场-内容策划通用指南\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_19d6bcf85fd14a979e425390605e2bc6\", \"title\": \"内容策划与发布检查\", \"summary\": \"# 内容策划与发布检查 1. 简报需包含业务目标、目标受众、核心信息、使用渠道、发布时间和衡量方式。 2. 内容应围绕一个主要行动设计，并根据渠道调整长度和表达。 3. 数据、客户案例和产品能力必须有可核验来源；未知信息使用待确认标记。 4. 发布前检查品牌用语、素材授权、敏感信息、链接和必要审批。 5. 发布后按预先约定的指标复盘，不把相关性直接表述为因果关系。\", \"excerpt\": \"# 内容策划与发布检查\\n\\n1. 简报需包含业务目标、目标受众、核心信息、使用渠道、发布时间和衡量方式。\\n2. 内容应围绕一个主要行动设",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"采购需求与供应商比较\", \"title\": \"采购需求与供应商比较\", \"summary\": \"# 采购需求与供应商比较 1. 需求申请应说明用途、规格、数量、预算范围、期望到位时间和验收标准。 2. 如有可替代方案，应区分必要条件与偏好条件，避免为单一供应商定制不必要门槛。 3. 比较供应商时使用相同口径，至少考虑总成本、交付、质量、服务和风险。 4. 需求提出、方案比较、审批和验收应由适当角色分别承担并保留记录。 5. 未完成授权前不得代表公司确认采购、付款或长期合作承诺。\", \"excerpt\": \"# 采购需求与供应商比较\\n\\n1. 需求申请应说明用途、规格、数量、预算范围、期望到位时间和验收标准。\\n2. 如有可替代方案，应区分必要条件与偏好条件，避免为单一供应商定制不必要门槛。\\n3. 比较供应商时使用相同口径，至少考虑总成本、交付、质量、服务和风险。\\n4. 需求提出、方案比较、审批和验收应由适当角色分别承担并保留记录。\\n5. 未完成授权前不得代表公司确认采购、付款或长期合作",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_d5153f4c8cda4017a3688a173520f5c4\", \"filename\": \"采购-协同流程通用指南.md\", \"title\": \"采购-协同流程通用指南\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_5817c755df494b7e812a30ea5e333db0\", \"title\": \"采购需求与供应商比较\", \"summary\": \"# 采购需求与供应商比较 1. 需求申请应说明用途、规格、数量、预算范围、期望到位时间和验收标准。 2. 如有可替代方案，应区分必要条件与偏好条件，避免为单一供应商定制不必要门槛。 3. 比较供应商时使用相同口径，至少考虑总成本、交付、质量、服务和风险。 4. 需求提出、方案比较、审批和验收应由适当角色分别承担并保留记录。 5. 未完成授权前不得代表公司确认采购、付款或长期合作承诺。\", \"excerpt\": \"# 采购需求与供应商比较\\n\\n1. 需求申请应说明用途、规格、数量、预算范围、期望到位时间和验收标准。\\n2. 如有",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"项目计划与风险跟踪\", \"title\": \"项目计划与风险跟踪\", \"summary\": \"# 项目计划与风险跟踪 1. 启动时明确目标、范围、不在范围内事项、关键角色和验收条件。 2. 里程碑应对应可验证的交付物，并标记责任人、计划日期和依赖。 3. 每次同步更新已完成事项、下一步、阻塞项、风险和待决策事项。 4. 范围、资源或日期发生变化时记录影响，并由有权限的负责人确认调整。 5. 对跨团队依赖设置明确的交付接口和升级路径，不以模糊的“跟进中”作为结果。\", \"excerpt\": \"# 项目计划与风险跟踪\\n\\n1. 启动时明确目标、范围、不在范围内事项、关键角色和验收条件。\\n2. 里程碑应对应可验证的交付物，并标记责任人、计划日期和依赖。\\n3. 每次同步更新已完成事项、下一步、阻塞项、风险和待决策事项。\\n4. 范围、资源或日期发生变化时记录影响，并由有权限的负责人确认调整。\\n5. 对跨团队依赖设置明确的交付接口和升级路径，不以模糊的“跟进中”作为结果。\"}]}",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_10f845d9dc2446408a9548660ff06998\", \"filename\": \"项目管理-推进通用指南.md\", \"title\": \"项目管理-推进通用指南\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_66be8ac915594d13a8d6373bcf6a4fa6\", \"title\": \"项目计划与风险跟踪\", \"summary\": \"# 项目计划与风险跟踪 1. 启动时明确目标、范围、不在范围内事项、关键角色和验收条件。 2. 里程碑应对应可验证的交付物，并标记责任人、计划日期和依赖。 3. 每次同步更新已完成事项、下一步、阻塞项、风险和待决策事项。 4. 范围、资源或日期发生变化时记录影响，并由有权限的负责人确认调整。 5. 对跨团队依赖设置明确的交付接口和升级路径，不以模糊的“跟进中”作为结果。\", \"excerpt\": \"# 项目计划与风险跟踪\\n\\n1. 启动时明确目标、范围、不在范围内事项、关键角色和验收条件。\\n2. 里程碑应对应可验证的交付物，并",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"指标口径与经营分析\", \"title\": \"指标口径与经营分析\", \"summary\": \"# 指标口径与经营分析 1. 分析前定义指标名称、业务含义、计算公式、数据粒度、时间范围和排除项。 2. 对比应使用一致口径，并明确环比、同比、目标值或分组基准。 3. 输出先陈述数据事实，再说明可能原因和需要进一步验证的假设。 4. 对缺失值、异常值、口径变化和样本偏差给出显式提示。 5. 建议应对应可验证的行动与后续指标，不在没有证据时给出确定性因果结论。\", \"excerpt\": \"# 指标口径与经营分析\\n\\n1. 分析前定义指标名称、业务含义、计算公式、数据粒度、时间范围和排除项。\\n2. 对比应使用一致口径，并明确环比、同比、目标值或分组基准。\\n3. 输出先陈述数据事实，再说明可能原因和需要进一步验证的假设。\\n4. 对缺失值、异常值、口径变化和样本偏差给出显式提示。\\n5. 建议应对应可验证的行动与后续指标，不在没有证据时给出确定性因果结论。\"}]}",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_da4cecbfae5f4a529124261a36fcdab8\", \"filename\": \"数据分析-经营分析通用指南.md\", \"title\": \"数据分析-经营分析通用指南\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_42dedef041234f6680ff75f920ccee00\", \"title\": \"指标口径与经营分析\", \"summary\": \"# 指标口径与经营分析 1. 分析前定义指标名称、业务含义、计算公式、数据粒度、时间范围和排除项。 2. 对比应使用一致口径，并明确环比、同比、目标值或分组基准。 3. 输出先陈述数据事实，再说明可能原因和需要进一步验证的假设。 4. 对缺失值、异常值、口径变化和样本偏差给出显式提示。 5. 建议应对应可验证的行动与后续指标，不在没有证据时给出确定性因果结论。\", \"excerpt\": \"# 指标口径与经营分析\\n\\n1. 分析前定义指标名称、业务含义、计算公式、数据粒度、时间范围和排除项。\\n2. 对比应使用一致口径，并",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"Traceable discovery input\", \"title\": \"Traceable discovery input\", \"summary\": \"# Traceable discovery input The fixture exposes POST http://127.0.0.1:16129/confirm with a JSON response field.\", \"excerpt\": \"# Traceable discovery input\\n\\nThe fixture exposes POST http://127.0.0.1:16129/confirm with a JSON response field.\"}]}",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_c311c21810524d00a85f1b6f66bc9737\", \"filename\": \"g4-native-discovery-confirm.md\", \"title\": \"g4-native-discovery-confirm\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_d80450a7473e43e1aca992d9f41c45f4\", \"title\": \"Traceable discovery input\", \"summary\": \"# Traceable discovery input The fixture exposes POST http://127.0.0.1:16129/confirm with a JSON response field.\", \"excerpt\": \"# Traceable discovery input\\n\\nThe fixture exposes POST http://127.0.0.1:16129/confirm with a ",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"Traceable discovery input\", \"title\": \"Traceable discovery input\", \"summary\": \"# Traceable discovery input The fixture exposes POST http://127.0.0.1:16129/reject with a JSON response field.\", \"excerpt\": \"# Traceable discovery input\\n\\nThe fixture exposes POST http://127.0.0.1:16129/reject with a JSON response field.\"}]}",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_30a67cea63b2453ea30e0948169b5110\", \"filename\": \"g4-native-discovery-reject.md\", \"title\": \"g4-native-discovery-reject\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_6bc7dfeea37d4af69d637321444dcbd5\", \"title\": \"Traceable discovery input\", \"summary\": \"# Traceable discovery input The fixture exposes POST http://127.0.0.1:16129/reject with a JSON response field.\", \"excerpt\": \"# Traceable discovery input\\n\\nThe fixture exposes POST http://127.0.0.1:16129/reject with a JSON",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"PilotDeck traceable discovery confirm\", \"title\": \"PilotDeck traceable discovery confirm\", \"summary\": \"# PilotDeck traceable discovery confirm The fixture exposes POST http://127.0.0.1:16129/confirm.\", \"excerpt\": \"# PilotDeck traceable discovery confirm\\n\\nThe fixture exposes POST http://127.0.0.1:16129/confirm.\"}]}",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_32e644f43d4d46a7a6467ab4a9863704\", \"filename\": \"g4-pilot-discovery-confirm.md\", \"title\": \"g4-pilot-discovery-confirm\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_b100335e09684185879e431e519e5e57\", \"title\": \"PilotDeck traceable discovery confirm\", \"summary\": \"# PilotDeck traceable discovery confirm The fixture exposes POST http://127.0.0.1:16129/confirm.\", \"excerpt\": \"# PilotDeck traceable discovery confirm\\n\\nThe fixture exposes POST http://127.0.0.1:16129/confirm.",
+      "isDiscovery": true,
+      "isBucketization": false
+    },
+    {
+      "system": "你是企业知识库 PageIndex 分桶助手。\n\n请根据输入的章节节点生成“任务桶”。系统已经会根据目录生成结构桶；你只需要补充跨章节、面向任务用途的桶，例如某类问答、规则判断、工具发现、技能发现所需要展开的知识范围。知识桶用于后续渐进式检索，因此标题、摘要、适用问题类型和章节来源必须清楚。\n\n规则：\n- 不要编造原文",
+      "user": "{\"sections\": [{\"section_id\": \"sec_1\", \"path\": \"PilotDeck traceable discovery reject\", \"title\": \"PilotDeck traceable discovery reject\", \"summary\": \"# PilotDeck traceable discovery reject The fixture exposes POST http://127.0.0.1:16129/reject.\", \"excerpt\": \"# PilotDeck traceable discovery reject\\n\\nThe fixture exposes POST http://127.0.0.1:16129/reject.\"}]}",
+      "isDiscovery": false,
+      "isBucketization": true
+    },
+    {
+      "system": "Identify useful, evidence-backed suggestions from the supplied knowledge document.\nUse only facts from its document and buckets. Do not invent steps, interfaces",
+      "user": "{\"document\": {\"id\": \"kdoc_c1957b8eb4b6414cbf8a2a135ae6f00d\", \"filename\": \"g4-pilot-discovery-reject.md\", \"title\": \"g4-pilot-discovery-reject\", \"file_type\": \"md\"}, \"buckets\": [{\"id\": \"kbucket_603d1add03cd4ed9916ed157a38f95bd\", \"title\": \"PilotDeck traceable discovery reject\", \"summary\": \"# PilotDeck traceable discovery reject The fixture exposes POST http://127.0.0.1:16129/reject.\", \"excerpt\": \"# PilotDeck traceable discovery reject\\n\\nThe fixture exposes POST http://127.0.0.1:16129/reject.\"}]}",
+      "isDiscovery": true,
+      "isBucketization": false
+    }
+  ],
+  "modelFixtureCounts": {
+    "discovery": 23,
+    "buckets": 23
+  },
+  "lifecycle": {
+    "pilotService": {
+      "exitCode": 1,
+      "signal": null,
+      "forced": false
+    },
+    "staffFrontend": {
+      "exitCode": 143,
+      "signal": null,
+      "forced": false
+    },
+    "staffService": {
+      "exitCode": null,
+      "signal": "SIGTERM",
+      "forced": false
+    },
+    "kmOwnerService": {
+      "exitCode": null,
+      "signal": "SIGTERM",
+      "forced": false
+    }
+  }
+}

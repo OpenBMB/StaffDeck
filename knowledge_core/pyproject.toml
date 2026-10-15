@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta:__legacy__"
+
+[project]
+name = "knowledge-core"
+version = "0.1.0"
+description = "Independent SQLite knowledge management service"
+requires-python = ">=3.11"
+dependencies = ["fastapi>=0.115", "uvicorn>=0.30", "sqlmodel>=0.0.39,<0.0.40", "httpx>=0.27", "pypdf>=5", "python-docx>=1.1", "beautifulsoup4>=4.12"]
+
+[project.scripts]
+knowledge-core = "knowledge_core.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["knowledge_core.legacy*", "knowledge_core.service", "knowledge_core.full_runtime", "knowledge_core.full_api"]
+
+[tool.setuptools.package-data]
+knowledge_core = ["prompts/*.md", "ui/*", "ui/assets/*"]

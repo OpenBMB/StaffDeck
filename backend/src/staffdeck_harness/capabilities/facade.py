@@ -6,7 +6,7 @@ Each facade:
 1. runs the PEP for the operation against the concrete resource (via ``Guard``),
 2. re-validates the live row against the frozen snapshot (revoked/archived/
    changed-since-activation), and
-3. calls the *existing* legacy service — ``KnowledgeService``, ``ToolExecutor``,
+3. calls the independent KM HTTP adapter or host service — ``ToolExecutor``,
    ``package_from_row`` + workspace materialization, ``HarnessExecutor`` — so no
    second implementation of any capability exists.
 
@@ -32,7 +32,7 @@ from app.core.harness_capability_invoker import (
     _workspace_root,
 )
 from app.core.harness_session_cleanup import harness_task_workspace_path
-from app.db.models import GeneralSkill, KnowledgeBase, MCPServer, ModelConfig, Tool
+from app.db.models import GeneralSkill, MCPServer, ModelConfig, Tool
 from app.harness import (
     HarnessArtifactAccessError,
     HarnessExecutor,
@@ -53,7 +53,6 @@ from app.knowledge.result_projection import (
     model_facing_knowledge as _model_facing_knowledge,
 )
 from app.knowledge.schema import KnowledgeSearchRequest
-from app.knowledge.service import KnowledgeService
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
 from staffdeck_harness.composition import projection
@@ -94,32 +93,29 @@ class KnowledgeFacade:
         if requested and not selected:
             return ModuleResult.fail("KNOWLEDGE_NOT_AVAILABLE", "请求的知识库不在当前激活范围内。")
         db, ctx = self.d.db, inv.context
+        from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+        from app.db.models import User
+        user = db.get(User, self.d.security_context.actor_user_id or self.d.security_context.principal_id)
+        adapter = StaffDeckKnowledgeAdapter(db, ctx.tenant_id, ctx.agent_id, user)
+        if not selected:
+            return ModuleResult.fail("KNOWLEDGE_NOT_AVAILABLE", "当前激活范围没有知识库。")
         for kb_id in selected:
-            row = db.get(KnowledgeBase, kb_id)
-            if row is None or row.tenant_id != ctx.tenant_id or row.status == "deleted":
+            row, binding, ref = adapter.resource_projection(kb_id)
+            if row.status != "active" or binding.status != "active":
                 return ModuleResult.fail("CAPABILITY_AUTHORIZATION_REVOKED", f"知识库 {kb_id} 已不可用。")
-            ref = projection.live_resource_ref(db, ctx.tenant_id, "knowledge_base", row, agent=self.d.agent_row)
+            expected = (version_by_base or {}).get(kb_id)
+            if expected and row.branch["head_version_id"] != expected:
+                return ModuleResult.fail("CAPABILITY_AUTHORIZATION_REVOKED", f"知识库 {kb_id} 的激活版本已改变。")
             self.d.guard.require(self.d.security_context, "knowledge.search/v1", ref)
-        versions = [str((version_by_base or {}).get(k) or "") for k in selected]
-        versions = [v for v in versions if v]
-        response = KnowledgeService(db).search(
-            KnowledgeSearchRequest(
-                tenant_id=ctx.tenant_id,
-                agent_id=ctx.agent_id if ctx.agent_id and not ctx.agent_id.endswith(":overall") else None,
-                query=query,
-                mode="chat",
-                knowledge_base_ids=selected,
-                knowledge_base_version_ids=versions,
-                max_chunks=max(1, min(int(args.get("max_chunks") or 8), 12)),
-            ),
-            self.d.model_config,
-        )
-        payload = response.model_dump(mode="json")
-        payload['query'] = query
+        payload = adapter.call("POST", "/query", {
+            "space_id": adapter.space_id, "query": query, "knowledge_base_ids": selected,
+            "max_chunks": max(1, min(int(args.get("max_chunks") or 8), 12)),
+            "use_model": True,
+        }, scoped=False)
+        payload["query"] = query
         citations = knowledge_citations_from_results([payload])
-        # The model sees a compact, citation-labelled view (like the legacy invoker's inline
-        # budget); the full response travels in ``extensions`` for evidence/UI, never to the model.
-        return ModuleResult.ok(_model_facing_knowledge(payload, citations), citations=tuple(citations), extensions={"evidence": payload})
+        return ModuleResult.ok(_model_facing_knowledge(payload, citations),
+            citations=tuple(citations), extensions={"evidence": payload})
 
 
 class GeneralSkillFacade:

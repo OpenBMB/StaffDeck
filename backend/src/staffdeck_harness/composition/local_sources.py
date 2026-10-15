@@ -23,6 +23,7 @@ class LocalStaffSource:
         user = self.db.get(User, context.user_id)
         if user is None or user.tenant_id != context.tenant_id:
             raise PermissionDenied('员工目录身份不匹配')
+        self.db.info['staffdeck_actor_id'] = user.id
         identity = profile.identity.from_user(user)
         rows = self.db.exec(select(AgentProfile).where(AgentProfile.tenant_id == context.tenant_id)
             .order_by(AgentProfile.is_overall.desc(), AgentProfile.updated_at.desc())).all()
@@ -47,6 +48,7 @@ class LocalStaffSource:
         from datetime import datetime
         from app.api.agents import _local_agent_resource_timeline_events
         from staffdeck_harness.contracts.staff import StaffResourceAssignment
+        self.db.info['staffdeck_actor_id'] = context.user_id
         return tuple(StaffResourceAssignment(row.id, context.tenant_id, context.staff_id, row.kind,
             datetime.fromisoformat(row.timestamp.replace("Z", "+00:00")), row.label)
             for row in _local_agent_resource_timeline_events(self.db, context.tenant_id, context.staff_id))
@@ -177,11 +179,21 @@ class LocalResourceCatalog:
     def resolve(self, context, resource_type, resource_id, operation):
         from app.agents.branching import get_agent
         from app.core.capability_manifest import general_skill_snapshot_digest, tool_snapshot_digest
-        from app.db.models import GeneralSkill, KnowledgeBase, MCPServer, Skill, Tool
+        from app.db.models import GeneralSkill, MCPServer, Skill, Tool
         from staffdeck_harness.composition.projection import live_resource_ref
 
+        from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+        if resource_type == "knowledge_base":
+            from app.db.models import User
+            user = self.db.get(User, context.user_id)
+            row, binding, ref = StaffDeckKnowledgeAdapter(
+                self.db, context.tenant_id, context.staff_id, user,
+            ).resource_projection(resource_id)
+            return ResourceDescriptor(ref=ref, name=row.name, operation=operation,
+                available=row.status == "active" and binding.status == "active")
+
         model = {"tool": Tool, "mcp_server": MCPServer, "general_skill": GeneralSkill,
-                 "knowledge_base": KnowledgeBase, "sop": Skill, "skill": Skill}.get(resource_type)
+                 "sop": Skill, "skill": Skill}.get(resource_type)
         row = self.db.get(model, resource_id) if model else None
         if row is None or row.tenant_id != context.tenant_id:
             raise ModuleSdkError("资源不存在或不属于当前租户", code="RESOURCE_UNAVAILABLE")

@@ -1,10 +1,4 @@
-"""Small deployable StaffDeck Knowledge module process.
-
-This entrypoint is intentionally limited to the Knowledge module protocol. It
-uses the same database models, ingestion worker, authorization boundary, and
-router as the full StaffDeck application while leaving unrelated Harness and
-channel services out of a Knowledge-only deployment.
-"""
+"""Legacy StaffDeck module protocol gateway to the independent KM owner."""
 
 from __future__ import annotations
 
@@ -15,8 +9,8 @@ from fastapi import FastAPI
 from sqlmodel import Session
 
 from app.api.module_knowledge import router as knowledge_module_router
-from app.async_jobs import shutdown_async_jobs, start_async_jobs
-from app.db import engine, init_db
+from app.db import database as knowledge_database
+from app.db import get_knowledge_session, get_session, init_db
 from app.db.models import Tenant, User
 from app.db.seed import seed_demo_data
 from app.runtime_lock import acquire_runtime_instance_lock, release_runtime_instance_lock
@@ -31,13 +25,13 @@ def _ensure_protocol_identity() -> None:
     still performs all tenant and role checks.
     """
 
-    if os.getenv("STAFFDECK_KNOWLEDGE_SEED", "true").strip().lower() in {"1", "true", "yes", "on"}:
-        with Session(engine) as db:
+    if os.getenv("STAFFDECK_KNOWLEDGE_SEED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        with Session(knowledge_database.engine) as db:
             seed_demo_data(db)
         return
-    tenant_id = "tenant_demo"
+    tenant_id = os.getenv("STAFFDECK_KNOWLEDGE_TENANT_ID", "tenant_demo")
     user_id = os.getenv("STAFFDECK_KNOWLEDGE_USER_ID", "admin").strip() or "admin"
-    with Session(engine) as db:
+    with Session(knowledge_database.engine) as db:
         if db.get(Tenant, tenant_id) is None:
             db.add(Tenant(id=tenant_id, name="Knowledge E2E Tenant"))
         if db.get(User, user_id) is None:
@@ -60,10 +54,8 @@ async def lifespan(_app: FastAPI):
     try:
         init_db()
         _ensure_protocol_identity()
-        start_async_jobs()
         yield
     finally:
-        shutdown_async_jobs()
         release_runtime_instance_lock()
 
 
@@ -83,3 +75,4 @@ def health() -> dict[str, str]:
 
 
 app.include_router(knowledge_module_router)
+app.dependency_overrides[get_session] = get_knowledge_session

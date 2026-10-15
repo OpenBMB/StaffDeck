@@ -1,0 +1,56 @@
+INFO:     172.17.0.1:63402 - "GET /health/ready HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63404 - "GET / HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63404 - "GET /assets/index-Bsj6Od8W.js HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63408 - "GET /assets/index-CWwPgyuU.css HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63404 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63408 - "GET /api/km/v1/models HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63404 - "GET /api/km/v1/identity HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63434 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63418 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63412 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63428 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     172.17.0.1:63428 - "POST /api/km/v1/documents HTTP/1.1" 202 Accepted
+INFO:     172.17.0.1:63428 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63412 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63450 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63462 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63462 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63478 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f/chunks HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63450 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f/buckets HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63450 - "PUT /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63450 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63478 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f/buckets HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63462 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f/chunks HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63486 - "GET / HTTP/1.1" 304 Not Modified
+INFO:     172.17.0.1:63450 - "GET /assets/index-CWwPgyuU.css HTTP/1.1" 304 Not Modified
+INFO:     172.17.0.1:63486 - "GET /assets/index-Bsj6Od8W.js HTTP/1.1" 304 Not Modified
+INFO:     172.17.0.1:63486 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63486 - "GET /api/km/v1/identity HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63450 - "GET /api/km/v1/models HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63494 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63508 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63508 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63450 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f/chunks HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63494 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f/buckets HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63494 - "PUT /api/km/v1/buckets/kbucket_2928dcbe6b674acfbe2ab48b0639c78f HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63494 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63450 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f/buckets HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63508 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f/chunks HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63508 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63450 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63450 - "PUT /api/km/v1/chunks/kchunk_ad85af4d23b84c9a821e2d0a16c57742 HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63450 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63508 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f/buckets HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63494 - "GET /api/km/v1/documents/kdoc_d73f67df981e47c8872db741df25e13f/chunks HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63494 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63508 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63508 - "POST /api/km/v1/query HTTP/1.1" 200 OK
+INFO:     172.17.0.1:63508 - "GET /api/km/v1/citations/kchunk_ad85af4d23b84c9a821e2d0a16c57742%3A2026-10-14T14%3A22%3A18.278573 HTTP/1.1" 200 OK
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8787 (Press CTRL+C to quit)
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1]

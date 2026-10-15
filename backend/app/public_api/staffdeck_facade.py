@@ -11,7 +11,7 @@ from collections import OrderedDict
 from threading import Lock
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import Session, select
@@ -25,7 +25,7 @@ from app.api import knowledge_bases as native_knowledge_bases
 from app.api import skills as native_skills
 from app.api import tools as native_tools
 from app.db import get_session
-from app.db.models import KnowledgeBucket, KnowledgeChunk, KnowledgeDocument, KnowledgeDiscoverySuggestion, ModelConfig, User
+from app.db.models import ModelConfig, User
 from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_scopes
 from app.public_api.errors import PublicAPIError
 from app.public_api.knowledge_pep import enforce_public_knowledge_pep
@@ -76,6 +76,8 @@ class PreviewRewrite(_Strict):
 
 
 def _agent(db: Session, principal: PublicPrincipal, agent_id: str, *, write: bool = False) -> None:
+    db.info["staffdeck_actor_id"] = principal.actor_user.id
+    db.info["staffdeck_km_agent_id"] = agent_id
     enforce_agent_access(principal, agent_id, write=write)
     ensure_public_agent(db, principal, agent_id)
     if write:
@@ -360,12 +362,25 @@ async def import_knowledge_okf_facade(
     return _payload(native_knowledge.import_okf_bundle(request, db, principal.actor_user))
 
 
+def _knowledge_asset(db, principal, agent_id, collection, identifier):
+    from types import SimpleNamespace
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+    enforce_public_knowledge_pep(db, principal, agent_id)
+    try:
+        value = StaffDeckKnowledgeAdapter(db, principal.tenant_id, agent_id, principal.actor_user).call('GET', f'/{collection}/{identifier}')
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            return None
+        raise
+    return SimpleNamespace(**value)
+
+
 @router.get("/agents/{agent_id}/knowledge-documents/{document_id}/buckets")
 def list_document_buckets_facade(
     agent_id: str, document_id: str,
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")), db: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    row = db.get(KnowledgeDocument, document_id)
+    row = _knowledge_asset(db, principal, agent_id, "documents", document_id)
     if not row:
         raise PublicAPIError(404, "DOCUMENT_NOT_FOUND", "Document not found.")
     enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=row.knowledge_base_id, document_id=document_id)
@@ -378,7 +393,7 @@ def list_bucket_chunks_facade(
     agent_id: str, bucket_id: str,
     principal: PublicPrincipal = Depends(require_scopes("knowledge:read")), db: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    bucket = db.get(KnowledgeBucket, bucket_id)
+    bucket = _knowledge_asset(db, principal, agent_id, "buckets", bucket_id)
     if not bucket:
         raise PublicAPIError(404, "BUCKET_NOT_FOUND", "Knowledge bucket not found.")
     enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=bucket.knowledge_base_id)
@@ -391,7 +406,7 @@ def update_bucket_facade(
     agent_id: str, bucket_id: str, body: dict[str, Any],
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
 ) -> Any:
-    bucket = db.get(KnowledgeBucket, bucket_id)
+    bucket = _knowledge_asset(db, principal, agent_id, "buckets", bucket_id)
     if not bucket:
         raise PublicAPIError(404, "BUCKET_NOT_FOUND", "Knowledge bucket not found.")
     enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=bucket.knowledge_base_id)
@@ -404,7 +419,7 @@ def update_chunk_facade(
     agent_id: str, chunk_id: str, body: dict[str, Any],
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
 ) -> Any:
-    chunk = db.get(KnowledgeChunk, chunk_id)
+    chunk = _knowledge_asset(db, principal, agent_id, "chunks", chunk_id)
     if not chunk:
         raise PublicAPIError(404, "CHUNK_NOT_FOUND", "Knowledge chunk not found.")
     enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=chunk.knowledge_base_id)
@@ -479,27 +494,33 @@ def list_knowledge_discoveries_facade(
     return {"data": [_payload(item) for item in rows], "next_cursor": None}
 
 
-@router.post("/agents/{agent_id}/knowledge-discoveries/{suggestion_id}:confirm")
-def confirm_knowledge_discovery_facade(
-    agent_id: str, suggestion_id: str,
-    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
-) -> Any:
-    row = db.get(KnowledgeDiscoverySuggestion, suggestion_id)
-    if not row:
-        raise PublicAPIError(404, "DISCOVERY_NOT_FOUND", "Knowledge discovery not found.")
-    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=row.knowledge_base_id)
+@router.post('/agents/{agent_id}/knowledge-discoveries/{suggestion_id}:confirm')
+def confirm_knowledge_discovery_facade(agent_id: str, suggestion_id: str, principal: PublicPrincipal=Depends(require_scopes('knowledge:write')), db: Session=Depends(get_session)) -> Any:
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True)
+    adapter = StaffDeckKnowledgeAdapter(db, principal.tenant_id, agent_id, principal.actor_user, write=True)
+    try:
+        row = adapter.call('GET', f'/suggestions/{suggestion_id}')
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise PublicAPIError(404, 'DISCOVERY_NOT_FOUND', 'Knowledge discovery not found.') from exc
+        raise
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=row['knowledge_base_id'])
     return native_knowledge.confirm_discovery(suggestion_id, principal.tenant_id, db, principal.actor_user)
 
 
-@router.post("/agents/{agent_id}/knowledge-discoveries/{suggestion_id}:reject")
-def reject_knowledge_discovery_facade(
-    agent_id: str, suggestion_id: str,
-    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
-) -> Any:
-    row = db.get(KnowledgeDiscoverySuggestion, suggestion_id)
-    if not row:
-        raise PublicAPIError(404, "DISCOVERY_NOT_FOUND", "Knowledge discovery not found.")
-    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=row.knowledge_base_id)
+@router.post('/agents/{agent_id}/knowledge-discoveries/{suggestion_id}:reject')
+def reject_knowledge_discovery_facade(agent_id: str, suggestion_id: str, principal: PublicPrincipal=Depends(require_scopes('knowledge:write')), db: Session=Depends(get_session)) -> Any:
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True)
+    adapter = StaffDeckKnowledgeAdapter(db, principal.tenant_id, agent_id, principal.actor_user, write=True)
+    try:
+        row = adapter.call('GET', f'/suggestions/{suggestion_id}')
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise PublicAPIError(404, 'DISCOVERY_NOT_FOUND', 'Knowledge discovery not found.') from exc
+        raise
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=row['knowledge_base_id'])
     return native_knowledge.reject_discovery(suggestion_id, principal.tenant_id, db, principal.actor_user)
 
 

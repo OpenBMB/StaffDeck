@@ -1,0 +1,79 @@
+{
+  "status": "passed",
+  "ingestion": [
+    {
+      "phase": "bucket_model",
+      "model": "deepseek-v4-flash-0731",
+      "call_id": "363468a1409e4c0899b904d19fc211b0",
+      "valid_bucket_count": 1
+    }
+  ],
+  "query": {
+    "chunks": [
+      {
+        "id": "kchunk_1dfe1f1b904b4f16839e4bc72f7f3f4e",
+        "document_id": "kdoc_f61e54d156ba4916bf00f9fd398b5261",
+        "bucket_id": "kbucket_ee025901a3714d859050c4ab21546c65",
+        "chunk_index": 0,
+        "content": "# Expense policy\n\nExpense reimbursement requires original receipts. Edited in standalone UI.",
+        "summary": "# Expense policy\n\nExpense reimbursement requires original receipts. Edited in standalone UI.",
+        "source_ref": "minimal-expense.md#0",
+        "metadata": {
+          "section_title": "Expense policy"
+        },
+        "created_at": "2026-10-14T10:53:54.801248",
+        "updated_at": "2026-10-14T10:53:54.801248"
+      }
+    ],
+    "buckets": [
+      {
+        "id": "kbucket_ee025901a3714d859050c4ab21546c65",
+        "document_id": "kdoc_f61e54d156ba4916bf00f9fd398b5261",
+        "title": "Expense policy",
+        "summary": "# Expense policy Expense reimbursement requires original receipts. Edited in standalone UI.",
+        "content": "# Expense policy\n\nExpense reimbursement requires original receipts. Edited in standalone UI.",
+        "metadata": {
+          "bucket_key": "expense_policy",
+          "title": "Expense policy",
+          "summary": "# Expense policy Expense reimbursement requires original receipts. Edited in standalone UI.",
+          "content": "# Expense policy\n\nExpense reimbursement requires original receipts. Edited in standalone UI.",
+          "section_ids": [
+            "sec_1"
+          ],
+          "section_paths": [
+            "Expense policy"
+          ],
+          "bucket_type": "structure",
+          "concept_type": "Topic",
+          "applicable_query_types": [
+            "answer",
+            "policy_check"
+          ]
+        },
+        "created_at": "2026-10-14T10:53:54.801248",
+        "updated_at": "2026-10-14T10:53:54.801248"
+      }
+    ],
+    "evidence_pack": [
+      {
+        "chunk_id": "kchunk_1dfe1f1b904b4f16839e4bc72f7f3f4e",
+        "document_id": "kdoc_f61e54d156ba4916bf00f9fd398b5261",
+        "content": "# Expense policy\n\nExpense reimbursement requires original receipts. Edited in standalone UI.",
+        "source_ref": "minimal-expense.md#0"
+      }
+    ],
+    "route_trace": [
+      {
+        "phase": "document_route",
+        "candidate_count": 1
+      },
+      {
+        "phase": "document_route_model",
+        "model": "deepseek-v4-flash-0731",
+        "call_id": "c4a95f02db82450a9041a4c76f59a6a7",
+        "selected_count": 1
+      }
+    ],
+    "selected_concepts": []
+  }
+}

@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testcase name="explicit KM operation: identity" time="0.003410" classname="test"/>
+	<testcase name="explicit KM operation: list_models" time="0.000396" classname="test"/>
+	<testcase name="explicit KM operation: list_spaces" time="0.000853" classname="test"/>
+	<testcase name="explicit KM operation: create_space" time="0.000452" classname="test"/>
+	<testcase name="explicit KM operation: list_bindings" time="0.000254" classname="test"/>
+	<testcase name="explicit KM operation: bind_base" time="0.000143" classname="test"/>
+	<testcase name="explicit KM operation: update_binding" time="0.000839" classname="test"/>
+	<testcase name="explicit KM operation: list_bases" time="0.000359" classname="test"/>
+	<testcase name="explicit KM operation: create_base" time="0.000823" classname="test"/>
+	<testcase name="explicit KM operation: get_base" time="0.001047" classname="test"/>
+	<testcase name="explicit KM operation: update_base" time="0.000439" classname="test"/>
+	<testcase name="explicit KM operation: delete_base" time="0.000082" classname="test"/>
+	<testcase name="explicit KM operation: list_versions" time="0.000089" classname="test"/>
+	<testcase name="explicit KM operation: get_branch" time="0.000091" classname="test"/>
+	<testcase name="explicit KM operation: copy_version" time="0.000073" classname="test"/>
+	<testcase name="explicit KM operation: sync_base" time="0.000086" classname="test"/>
+	<testcase name="explicit KM operation: publish_version" time="0.000331" classname="test"/>
+	<testcase name="explicit KM operation: rollback_version" time="0.000373" classname="test"/>
+	<testcase name="explicit KM operation: update_branch" time="0.000912" classname="test"/>
+	<testcase name="explicit KM operation: list_documents" time="0.000333" classname="test"/>
+	<testcase name="explicit KM operation: get_document" time="0.000712" classname="test"/>
+	<testcase name="explicit KM operation: import_document" time="0.000702" classname="test"/>
+	<testcase name="explicit KM operation: import_okf" time="0.000344" classname="test"/>
+	<testcase name="explicit KM operation: update_document" time="0.000438" classname="test"/>
+	<testcase name="explicit KM operation: delete_document" time="0.000237" classname="test"/>
+	<testcase name="explicit KM operation: list_document_buckets" time="0.000355" classname="test"/>
+	<testcase name="explicit KM operation: update_bucket" time="0.000112" classname="test"/>
+	<testcase name="explicit KM operation: list_bucket_chunks" time="0.000098" classname="test"/>
+	<testcase name="explicit KM operation: list_document_chunks" time="0.000146" classname="test"/>
+	<testcase name="explicit KM operation: update_chunk" time="0.000131" classname="test"/>
+	<testcase name="explicit KM operation: get_job" time="0.000130" classname="test"/>
+	<testcase name="explicit KM operation: list_jobs" time="0.000236" classname="test"/>
+	<testcase name="explicit KM operation: cancel_job" time="0.000190" classname="test"/>
+	<testcase name="explicit KM operation: list_okf_concepts" time="0.000101" classname="test"/>
+	<testcase name="explicit KM operation: get_okf_concept" time="0.000569" classname="test"/>
+	<testcase name="explicit KM operation: get_bucket" time="0.000607" classname="test"/>
+	<testcase name="explicit KM operation: get_chunk" time="0.000334" classname="test"/>
+	<testcase name="explicit KM operation: get_concept" time="0.000317" classname="test"/>
+	<testcase name="explicit KM operation: get_discovery" time="0.000427" classname="test"/>
+	<testcase name="explicit KM operation: upsert_okf_concept" time="0.000193" classname="test"/>
+	<testcase name="explicit KM operation: update_concept" time="0.000265" classname="test"/>
+	<testcase name="explicit KM operation: list_concepts" time="0.000131" classname="test"/>
+	<testcase name="explicit KM operation: upsert_concept" time="0.000077" classname="test"/>
+	<testcase name="explicit KM operation: export_okf" time="0.000091" classname="test"/>
+	<testcase name="explicit KM operation: lint_okf" time="0.000098" classname="test"/>
+	<testcase name="explicit KM operation: list_discoveries" time="0.000226" classname="test"/>
+	<testcase name="explicit KM operation: confirm_discovery" time="0.000383" classname="test"/>
+	<testcase name="explicit KM operation: review_discovery" time="0.000689" classname="test"/>
+	<testcase name="explicit KM operation: reject_discovery" time="0.000157" classname="test"/>
+	<testcase name="explicit KM operation: export_discovery" time="0.000118" classname="test"/>
+	<testcase name="explicit KM operation: publish_discovery" time="0.000097" classname="test"/>
+	<testcase name="explicit KM operation: query" time="0.000096" classname="test"/>
+	<testcase name="explicit KM operation: resolve_citation" time="0.000097" classname="test"/>
+	<testcase name="unknown operations, identity and scope overrides, missing edit versions are rejected" time="0.000229" classname="test"/>
+	<testcase name="unsupported independent methods are rejected during configuration" time="0.000830" classname="test"/>
+	<testcase name="runtime space directory is limited to the binding even with a broad service credential" time="0.018164" classname="test"/>
+	<testcase name="independent KM config and runtime query need no StaffDeck identity or service" time="0.008935" classname="test"/>
+	<testcase name="independent KM port propagates upstream failure and timeout" time="0.032071" classname="test"/>
+	<testcase name="minimal capability negotiation uses instance scope and refuses disabled methods and parameters" time="0.027217" classname="test"/>
+	<testcase name="PD model and parse transport accepts user principals without a StaffDeck employee" time="0.031317" classname="test"/>
+	<testcase name="GatewayServer shutdown closes active WebSocket clients" time="0.069682" classname="test"/>
+	<testcase name="GatewayServer keeps non-loopback binding opt-in" time="0.000249" classname="test"/>
+	<testcase name="GatewayServer requires an explicit token for remote binding" time="0.000106" classname="test"/>
+	<testcase name="remote Gateway binding serves health but never exposes the local token endpoint" time="0.007101" classname="test"/>
+	<testcase name="remote Gateway binding accepts an authenticated SDK WebSocket" time="0.055706" classname="test"/>
+	<testcase name="remote Gateway binding rejects an incorrect SDK token" time="0.002430" classname="test"/>
+	<!-- tests 66 -->
+	<!-- suites 0 -->
+	<!-- pass 66 -->
+	<!-- fail 0 -->
+	<!-- cancelled 0 -->
+	<!-- skipped 0 -->
+	<!-- todo 0 -->
+	<!-- duration_ms 801.886041 -->
+</testsuites>

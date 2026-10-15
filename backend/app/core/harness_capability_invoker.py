@@ -66,7 +66,6 @@ from app.harness.errors import HarnessExecutionError
 from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
-from app.knowledge.service import KnowledgeService
 from app.skills.tool_authorization import current_sop_tool_authorization
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
@@ -993,27 +992,29 @@ class HarnessCapabilityInvoker:
             for kb_id in selected
             if str(version_by_base.get(kb_id) or "").strip()
         ]
-        response = KnowledgeService(self.db).search(
-            KnowledgeSearchRequest(
-                tenant_id=self.tenant_id,
-                agent_id=self.agent_id,
-                query=query,
-                mode="chat",
-                knowledge_base_ids=selected,
-                knowledge_base_version_ids=selected_version_ids,
-                max_chunks=max(
-                    1, min(int(arguments.get("max_chunks") or 8), 12)
-                ),
-            ),
-            self.model_config,
-        )
-        payload = response.model_dump(mode="json")
-        result = {
-            "success": True,
-            "data": payload,
+        from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+        from app.db.models import User
+        adapter = StaffDeckKnowledgeAdapter(self.db, self.tenant_id, self.agent_id,
+            self.db.get(User, self.session.user_id))
+        if not selected:
+            return _failure("KNOWLEDGE_NOT_AVAILABLE", "当前 TaskFrame 没有可用知识库。")
+        for identifier in selected:
+            adapter.require_base(identifier, "use")
+            row = adapter.call("GET", f"/knowledge-bases/{identifier}")
+            if row["status"] != "active" or row["branch"]["status"] != "active":
+                return _failure("CAPABILITY_AUTHORIZATION_REVOKED", "知识库已不可用。")
+            if version_by_base.get(identifier) and row["branch"]["head_version_id"] != version_by_base[identifier]:
+                return _failure("CAPABILITY_AUTHORIZATION_REVOKED", "知识库的激活版本已改变。")
+        payload = adapter.call("POST", "/query", {
+            "space_id": adapter.space_id, "query": query,
+            "knowledge_base_ids": selected,
+            "max_chunks": max(1, min(int(arguments.get("max_chunks") or 8), 12)),
+            "use_model": True,
+        }, scoped=False)
+        return self._persist_large_json_result({
+            "success": True, "data": payload,
             "citations": knowledge_citations_from_results([payload]),
-        }
-        return self._persist_large_json_result(result, call_id=call_id)
+        }, call_id=call_id)
 
     def _invoke_external_tool(
         self,

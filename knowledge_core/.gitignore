@@ -1,0 +1,12 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+*.sqlite
+*.sqlite-*
+*.km-lock
+acceptance/**/isolated-source/
+acceptance/**/identity.json
+acceptance/**/demo/

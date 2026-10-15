@@ -1,0 +1,72 @@
+[dev-launcher] resolved dev ports:
+  server (express/ws)  →  16102   (env-pinned)
+  gateway (pilotdeck)  →  16103   (env-pinned)
+  vite client         →  16101   (env-pinned)
+
+
+  VITE v7.3.3  ready in 113 ms
+
+  ➜  Local:   http://localhost:16101/
+  ➜  Network: http://192.168.6.215:16101/
+  ➜  Network: http://192.168.9.110:16101/
+  ➜  Network: http://192.168.40.44:16101/
+  ➜  Network: http://172.27.246.34:16101/
+(node:70720) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+12:23:36 PM [vite] http proxy error: /api/auth/status
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1135:18)
+    at afterConnectMultiple (node:net:1716:7)
+12:23:37 PM [vite] http proxy error: /api/auth/status
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1135:18)
+    at afterConnectMultiple (node:net:1716:7)
+
+[2m════════════════════════════════════════════════════════════[0m
+[36m[INFO][0m App Installation: [1m/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui[0m
+[36m[INFO][0m Database: [2m../../../../../../../var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-xhO8Io/pilot-home/auth.db[0m
+       [2m(Using custom DATABASE_PATH from environment)[0m
+[2m════════════════════════════════════════════════════════════[0m
+
+12:23:37 PM [vite] http proxy error: /api/auth/status
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1135:18)
+    at afterConnectMultiple (node:net:1716:7)
+SERVER_PORT from runtime config: 16102
+Database initialized successfully
+Database migrations completed successfully
+Web Push notifications configured
+[36m[INFO][0m Chat execution routed through PilotDeck gateway (src/gateway).
+
+[36m[INFO][0m Starting in production mode...
+
+[2m═══════════════════════════════════════════════════════════════[0m
+  [1mPilotDeck Server - Ready[0m
+[2m═══════════════════════════════════════════════════════════════[0m
+
+[36m[INFO][0m Server URL:  [1mhttp://localhost:16102[0m
+[36m[INFO][0m Installed at: [2m/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui[0m
+[34m[TIP][0m  Run "pilotdeck status" for full configuration details
+
+[pilotdeck-config-watcher] watching /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-xhO8Io/pilotdeck.yaml, /private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-xhO8Io/pilotdeck.yaml
+(node:70752) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+PilotDeck server listening: http://127.0.0.1:16103
+WebSocket: ws://127.0.0.1:16103/ws
+Token: /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-xhO8Io/pilot-home/server-token
+[runtime-supervisor] Gateway ready on 127.0.0.1:16103
+[pilotdeck-bridge] connected → ws://127.0.0.1:16103/ws
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtYnJvd3Nlci1vd25lciIsImlhdCI6MTc5MTk1MTgxNiwiZXhwIjoxNzkyNTU2NjE2fQ.z6zIdoBAGlb-n3jCKwTHaRJMfhIQTCIEun89GCCRtUg
+[OK] WebSocket authenticated for user: g4-browser-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtYnJvd3Nlci1vd25lciIsImlhdCI6MTc5MTk1MTgxNiwiZXhwIjoxNzkyNTU2NjE2fQ.z6zIdoBAGlb-n3jCKwTHaRJMfhIQTCIEun89GCCRtUg
+[INFO] Chat WebSocket connected
+🔌 Chat client disconnected code=1005
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtYnJvd3Nlci1vd25lciIsImlhdCI6MTc5MTk1MTgxNiwiZXhwIjoxNzkyNTU2NjE2fQ.z6zIdoBAGlb-n3jCKwTHaRJMfhIQTCIEun89GCCRtUg
+[OK] WebSocket authenticated for user: g4-browser-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtYnJvd3Nlci1vd25lciIsImlhdCI6MTc5MTk1MTgxNiwiZXhwIjoxNzkyNTU2NjE2fQ.z6zIdoBAGlb-n3jCKwTHaRJMfhIQTCIEun89GCCRtUg
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+[BROWSER 2026-10-14T04:23:47.022Z] shutdownGlobalChrome called | caller: at shutdownGlobalChrome (file:///Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui/server/utils/globalChrome.js:301:76) <- at <anonymous> (/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui/server/index.js:3748:25)

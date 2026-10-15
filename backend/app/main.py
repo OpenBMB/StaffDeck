@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import Depends, FastAPI
 from app.security.api_policy import install_response_filters, module_policy
@@ -18,6 +19,9 @@ from app.api import (
     general_skills,
     knowledge,
     knowledge_bases,
+    knowledge_publication,
+    knowledge_capabilities,
+    knowledge_proxy,
     memories,
     mock,
     module_knowledge,
@@ -148,6 +152,9 @@ app.include_router(agents.enterprise_router, dependencies=[Depends(module_policy
 app.include_router(general_skills.router, dependencies=[Depends(module_policy("general_skill"))])
 app.include_router(knowledge_bases.router, dependencies=[Depends(module_policy("knowledge_base"))])
 app.include_router(knowledge.router, dependencies=[Depends(module_policy("knowledge_base", use_endpoints=("search_knowledge",)))])
+app.include_router(knowledge_publication.router)
+app.include_router(knowledge_capabilities.router)
+app.include_router(knowledge_proxy.router)
 app.include_router(skills.router, dependencies=[Depends(module_policy("sop"))])
 app.include_router(model_configs.router, dependencies=[Depends(module_policy("model_config"))])
 app.include_router(memories.router)

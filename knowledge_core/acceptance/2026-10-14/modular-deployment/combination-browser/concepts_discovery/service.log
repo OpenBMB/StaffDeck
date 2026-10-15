@@ -1,0 +1,75 @@
+INFO:     Started server process [29629]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:52296 (Press CTRL+C to quit)
+INFO:     127.0.0.1:52300 - "GET /health/ready HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52312 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52312 - "GET /assets/index-Bsj6Od8W.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "GET /assets/index-CWwPgyuU.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52312 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52315 - "GET /assets/shared-3ZpJah8W.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52312 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:52318 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52314 - "GET /assets/download-CaoZv7Gf.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "GET /assets/ConceptsPanel-DVL0gU9-.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52316 - "GET /assets/DiscoveryPanel-DTfp6F0e.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52317 - "GET /assets/check-C7YOhO8w.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52312 - "GET /assets/send-BxhYzV1C.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52315 - "GET /api/km/v1/identity HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "GET /api/km/v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52314 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52316 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52314 - "GET /api/km/v1/concepts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "GET /api/km/v1/suggestions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "POST /api/km/v1/documents HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:52313 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52314 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52314 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52314 - "GET /api/km/v1/suggestions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "GET /api/km/v1/concepts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52314 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74/buckets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52316 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74/chunks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52316 - "PUT /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52316 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52314 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74/buckets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74/chunks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52314 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52312 - "GET / HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:52313 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "GET /api/km/v1/identity HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52316 - "GET /api/km/v1/models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52317 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52315 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52322 - "GET /api/km/v1/suggestions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "GET /api/km/v1/concepts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "GET /api/km/v1/suggestions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52322 - "GET /api/km/v1/concepts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52322 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74/buckets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52315 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74/chunks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52315 - "PUT /api/km/v1/buckets/kbucket_16e7a4dd99b74a979c48915fb6c16bee HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52315 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52322 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74/chunks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74/buckets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52322 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "GET /api/km/v1/suggestions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52322 - "GET /api/km/v1/concepts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52322 - "PUT /api/km/v1/chunks/kchunk_dee63c93d0a34a11936aa5a7106d05c2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52322 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74/buckets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52315 - "GET /api/km/v1/documents/kdoc_b348a1fff7524b4abf8c34f9a16a6e74/chunks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52315 - "GET /api/km/v1/documents HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "GET /api/km/v1/jobs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52315 - "GET /api/km/v1/suggestions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "GET /api/km/v1/concepts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "POST /api/km/v1/query HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "GET /api/km/v1/citations/kchunk_dee63c93d0a34a11936aa5a7106d05c2%3A2026-10-14T14%3A16%3A35.263080 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52321 - "GET /api/km/v1/okf HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [29629]

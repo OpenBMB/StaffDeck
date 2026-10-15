@@ -43,6 +43,31 @@ class KnowledgeProvider(LocalCapabilityProvider):
     module_id = "knowledge.local"
 
     def publication_targets(self, context):
+        from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+        if enabled():
+            adapter = StaffDeckKnowledgeAdapter(context.db, context.user.tenant_id, None, context.user)
+            adapter.ensure_space()
+            targets = []
+            from fastapi import HTTPException
+            for row in adapter.call("GET", "/knowledge-bases"):
+                if row["status"] != "active":
+                    continue
+                try:
+                    adapter.require_base(row["id"], "manage")
+                    targets.append({"id": row["id"], "name": row["name"]})
+                except HTTPException as error:
+                    if error.status_code != 403:
+                        raise
+            from staffdeck_harness.contracts.security import ResourceRef
+            from app.security.module_policy import require_resource
+            try:
+                require_resource(context.user, ResourceRef("knowledge_base", "new-default-knowledge-base", context.user.tenant_id), "create", module="knowledge")
+                can_create = True
+            except HTTPException as error:
+                if error.status_code != 403:
+                    raise
+                can_create = False
+            return {"targets": targets, "can_use_default": can_create}
         from app.api.knowledge_bases import list_knowledge_bases
         from app.security.api_policy import resource_ref
         from app.security.module_policy import require_resource
@@ -71,6 +96,19 @@ class KnowledgeProvider(LocalCapabilityProvider):
         return {"targets": targets, "can_use_default": default_allowed}
 
     def publish_document(self, context, payload):
+        from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+        if enabled():
+            adapter = StaffDeckKnowledgeAdapter(context.db, context.user.tenant_id, None, context.user, write=True)
+            if payload.get("knowledge_base_id"):
+                adapter.require_base(payload["knowledge_base_id"], "edit")
+            else:
+                from app.security.module_policy import require_resource
+                from staffdeck_harness.contracts.security import ResourceRef
+                require_resource(context.user, ResourceRef("knowledge_base", "new-default-knowledge-base", context.user.tenant_id), "create", module="knowledge")
+            from app.api.knowledge import upload_document
+            from app.knowledge.schema import KnowledgeDocumentUploadRequest
+            return upload_document(KnowledgeDocumentUploadRequest.model_validate(payload),
+                agent_id=None, db=context.db, current_user=context.user).model_dump(mode="json")
         from app.security.api_policy import resource_ref
         from app.security.module_policy import require_resource
         from staffdeck_harness.contracts.security import ResourceRef

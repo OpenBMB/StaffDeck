@@ -1,0 +1,21 @@
+schemaVersion: 1
+modules:
+  knowledge:
+    enabled: true
+    implementationId: knowledge-core
+    frontendModule: staffdeck.knowledge
+    contract: knowledge-core/v1
+    transport: rest-http-v1
+    endpoint: http://127.0.0.1:8787
+    pilotDeckUserId: "1"
+    spaceId: local
+    spaces:
+      - id: local
+        name: Local
+    methods: [query, resolve_citation]
+  sop:
+    enabled: false
+frontend:
+  businessModules:
+    agent.routing:
+      enabled: false

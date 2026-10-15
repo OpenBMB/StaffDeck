@@ -1,0 +1,18 @@
+{
+  "name": "authentication",
+  "status": "passed",
+  "command": [
+    "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/venv/bin/python",
+    "-m",
+    "knowledge_core.cli",
+    "--config",
+    "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/combinations/authentication/configuration.json",
+    "--database-url",
+    "sqlite:////Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/combinations/authentication/knowledge-77546731117f4f6ead82dc6509a88c4d.sqlite",
+    "--port",
+    "58893",
+    "--identity-file",
+    "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/combinations/authentication/identity.json"
+  ],
+  "shutdown_returncode": -15
+}

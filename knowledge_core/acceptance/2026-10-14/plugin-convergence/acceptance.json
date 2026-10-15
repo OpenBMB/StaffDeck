@@ -1,0 +1,26 @@
+{
+  "status": "complete",
+  "gates": {
+    "regression": {
+      "status": "passed"
+    },
+    "compatibility": {
+      "status": "passed"
+    },
+    "full_browser": {
+      "status": "passed"
+    },
+    "pd_model": {
+      "status": "passed"
+    },
+    "upgrade": {
+      "status": "passed"
+    },
+    "artifact": {
+      "status": "passed"
+    },
+    "cleanup": {
+      "status": "passed"
+    }
+  }
+}

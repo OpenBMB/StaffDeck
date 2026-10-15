@@ -15,7 +15,6 @@ from app.db.models import (
     APISOPDraft,
     AgentResourceBinding,
     GeneralSkill,
-    KnowledgeBase,
     Skill,
     ChatSession,
     Tool,
@@ -174,7 +173,7 @@ def _validate_capability_refs(db: Session, row: APISOPDraft, card: SkillCard) ->
     errors: list[dict[str, str]] = []
     type_models = {
         "general_skill": GeneralSkill,
-        "knowledge_base": KnowledgeBase,
+        "knowledge_base": None,
         "tool": Tool,
     }
     refs_by_type: dict[str, set[str]] = {key: set() for key in type_models}
@@ -185,6 +184,19 @@ def _validate_capability_refs(db: Session, row: APISOPDraft, card: SkillCard) ->
     for resource_type, ids in refs_by_type.items():
         model = type_models[resource_type]
         for resource_id in ids:
+            if resource_type == "knowledge_base":
+                from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter
+                from fastapi import HTTPException
+                try:
+                    resource = StaffDeckKnowledgeAdapter(db, row.tenant_id, row.agent_id).call("GET", f"/knowledge-bases/{resource_id}")
+                    unavailable = resource["status"] != "active" or resource["branch"]["status"] != "active"
+                except HTTPException as error:
+                    if error.status_code != 404:
+                        raise
+                    unavailable = True
+                if unavailable:
+                    errors.append({"path": "capability_refs.knowledge_base", "code": "CAPABILITY_UNAVAILABLE", "detail": f"knowledge_base {resource_id} is not active and bound to this agent."})
+                continue
             resource = db.get(model, resource_id)
             binding = db.exec(
                 select(AgentResourceBinding).where(

@@ -1,19 +1,24 @@
 """Exercise the production public/native query boundary over persistent version rows."""
 import json
+import os
 import subprocess
 import sys
+import sqlite3
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.agents.branching import ensure_private_resource_binding, mark_resource_private_for_agent
+from knowledge_core.models import (KnowledgeModel, KnowledgeBinding, KnowledgeBranch, Space, KnowledgeBase, KnowledgeBaseVersion, KnowledgeBucket, KnowledgeChunk, KnowledgeConcept, KnowledgeDocument)
+from knowledge_core.api import create_app
+from knowledge_core.runtime import Runtime
+from knowledge_core.identity import Principal, StaticBearerIdentity
+from knowledge_core.configuration import Configuration
+from knowledge_core.conversion import legacy_scope_data, populate, read_database
+import app.knowledge.http_adapter as adapter
 from app.db import get_session
-from app.db.models import (
-    AgentKnowledgeBranch, AgentProfile, AgentResourceBinding, KnowledgeBase, KnowledgeBaseVersion,
-    KnowledgeBucket, KnowledgeChunk, KnowledgeConcept, KnowledgeDocument, Tenant, User,
-)
+from app.db.models import AgentProfile, Tenant, User
 from app.public_api.auth import PublicPrincipal, get_public_principal
 from app.public_api.pilotdeck_knowledge_read import router
 
@@ -21,29 +26,25 @@ from app.public_api.pilotdeck_knowledge_read import router
 def seed(path):
     engine = create_engine(f"sqlite:///{path}")
     SQLModel.metadata.create_all(engine)
+    KnowledgeModel.metadata.create_all(engine)
     with Session(engine) as db:
         db.add(Tenant(id="tenant", name="Test"))
         db.add(User(id="admin", tenant_id="tenant", username="admin", role="admin", password_hash="unused"))
         db.add_all([AgentProfile(id=a, tenant_id="tenant", name=a) for a in ("target", "other")])
+        for owner in ("target", "other"):
+            db.add(Space(id=f"sd:tenant:{owner}", tenant_id="tenant", name=owner, owner_id="admin"))
         for label, owner, status in (("current", "target", "active"),
                                      ("private", "other", "active"),
                                      ("deleted", "target", "deleted"),
                                      ("concept", "other", "active")):
             base = KnowledgeBase(id=label, tenant_id="tenant", name=label)
-            mark_resource_private_for_agent(base, owner)
             db.add(base)
             db.add(KnowledgeBaseVersion(id=f"v-{label}", tenant_id="tenant", knowledge_base_id=label,
                                        version="1.0.0", name=label))
-            db.add(AgentKnowledgeBranch(tenant_id="tenant", agent_id=owner, knowledge_base_id=label,
-                                       status=status))
+            db.add(KnowledgeBranch(tenant_id="tenant", space_id=f"sd:tenant:{owner}", knowledge_base_id=label,
+                                       head_version_id=f"v-{label}", base_version_id=f"v-{label}", status=status))
             db.flush()
-            ensure_private_resource_binding(db, "tenant", owner, "knowledge_base", label)
-            binding = db.exec(select(AgentResourceBinding).where(
-                AgentResourceBinding.agent_id == owner, AgentResourceBinding.resource_id == label,
-                AgentResourceBinding.resource_type == "knowledge_base",
-            )).one()
-            binding.status = status
-            db.add(binding)
+            db.add(KnowledgeBinding(tenant_id="tenant", space_id=f"sd:tenant:{owner}", knowledge_base_id=label, status=status))
             if label == "concept":
                 db.add(KnowledgeConcept(id="concept-only", tenant_id="tenant", knowledge_base_id=label,
                                        knowledge_base_version_id=f"v-{label}", concept_id="scope/concept",
@@ -64,13 +65,37 @@ def seed(path):
                                    title="scope fact", content_md=f"scope fact {label}"))
         db.commit()
     engine.dispose()
+    data = legacy_scope_data(read_database(path))
+    with sqlite3.connect(path) as connection:
+        for name in read_database(path):
+            connection.execute('DROP TABLE "' + name + '"')
+    runtime = Runtime(f"sqlite:///{path}", configuration=Configuration('full', {'authentication': True}),
+                      identity=StaticBearerIdentity({'scope-token': Principal('host', 'tenant')}))
+    runtime.initialize()
+    populate(runtime, data)
+    runtime.close()
 
 
 def probe(path):
-    engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+    path = Path(path)
+    host_path = path.with_name('host.sqlite')
+    engine = create_engine(f"sqlite:///{host_path}", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        if not db.get(User, 'admin'):
+            db.add(Tenant(id='tenant', name='Test'))
+            db.add(User(id='admin', tenant_id='tenant', username='admin', role='admin', password_hash='unused'))
+            db.add_all([AgentProfile(id=a, tenant_id='tenant', name=a) for a in ('target', 'other')])
+            db.commit()
     app = FastAPI()
     app.include_router(router)
-    with Session(engine) as db:
+    runtime = Runtime(f"sqlite:///{path}", configuration=Configuration('full', {'authentication': True}),
+                      identity=StaticBearerIdentity({"scope-token": Principal("host", "tenant", spaces=frozenset({"*"}))}))
+    os.environ["STAFFDECK_KM_URL"] = "http://knowledge"
+    os.environ["STAFFDECK_KM_BEARER"] = "scope-token"
+    original_request = adapter.httpx.request
+    with TestClient(create_app(runtime)) as core, Session(engine) as db:
+        adapter.httpx.request = lambda method, url, **kwargs: core.request(method, url.removeprefix("http://knowledge"), **{key: value for key, value in kwargs.items() if key != "timeout"})
         actor = db.get(User, "admin")
         principal = PublicPrincipal(tenant_id="tenant", actor_user=actor,
                                     scopes=frozenset({"knowledge:read"}), agent_id="target")
@@ -106,6 +131,7 @@ def probe(path):
             assert client.post("/agents/target/knowledge-module/v2/module/call", json=body).status_code == 400
             principal = PublicPrincipal(tenant_id="tenant", actor_user=actor, scopes=frozenset({"knowledge:read"}), agent_id="other")
             assert client.post("/agents/target/knowledge-module/v2/module/call", json=body | {"payload": {"operation": "query", "input": {"query": "scope fact"}}}).status_code == 403
+    adapter.httpx.request = original_request
     engine.dispose()
     return {"query_cases": 10, "guards": 2}
 

@@ -1,0 +1,59 @@
+{
+  "status": "passed",
+  "checks": [
+    {
+      "name": "self_contained_build",
+      "status": "passed",
+      "evidence": [
+        "docker/build.log"
+      ]
+    },
+    {
+      "name": "container_workflow_and_storage",
+      "status": "passed",
+      "evidence": [
+        "docker/minimal-browser.json",
+        "docker/storage.json",
+        "docker/minimal-desktop.png",
+        "docker/minimal-mobile.png"
+      ]
+    },
+    {
+      "name": "normal_shutdown",
+      "status": "passed",
+      "evidence": [
+        "docker/shutdown.json",
+        "docker/service.log"
+      ]
+    }
+  ],
+  "build_command": [
+    "docker",
+    "build",
+    "--progress=plain",
+    "--build-arg",
+    "HTTP_PROXY=",
+    "--build-arg",
+    "HTTPS_PROXY=",
+    "--build-arg",
+    "http_proxy=",
+    "--build-arg",
+    "https_proxy=",
+    "--build-arg",
+    "NO_PROXY=*",
+    "-t",
+    "knowledge-core:modular-acceptance",
+    "."
+  ],
+  "build_source": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core",
+  "run_command": [
+    "docker",
+    "run",
+    "--detach",
+    "--name",
+    "km-modular-21f84be21e4a",
+    "-p",
+    "127.0.0.1:54050:8787",
+    "knowledge-core:modular-acceptance"
+  ]
+}

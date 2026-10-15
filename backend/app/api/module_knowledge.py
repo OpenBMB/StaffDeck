@@ -13,7 +13,6 @@ from sqlmodel import Session
 
 from app.api.knowledge import (
     cancel_job,
-    chunk_read,
     confirm_discovery,
     get_bucket_chunks,
     get_document,
@@ -47,7 +46,7 @@ from app.api.knowledge_bases import (
     upsert_okf_concept,
 )
 from app.db import get_session
-from app.db.models import KnowledgeChunk, User
+from app.db.models import User
 from app.knowledge.schema import (
     KnowledgeBaseCreateRequest,
     KnowledgeBaseRollbackRequest,
@@ -184,6 +183,10 @@ def module_call(
 def _dispatch(operation: str, value: dict[str, Any], db: Session) -> Any:
     tenant_id = _text(value, "tenantId", "tenant_id", default_env="STAFFDECK_KNOWLEDGE_TENANT_ID")
     agent_id = _optional_text(value, "agentId", "agent_id")
+    from app.knowledge.http_adapter import enabled
+    if enabled():
+        _actor(db, value, tenant_id)
+        db.info["staffdeck_km_agent_id"] = agent_id
 
     if operation == "list_bases":
         return list_knowledge_bases(tenant_id, agent_id, db)
@@ -427,10 +430,18 @@ def _dispatch(operation: str, value: dict[str, Any], db: Session) -> Any:
         return search_knowledge(request, db, _actor(db, value, tenant_id))
     if operation == "resolve_citation":
         chunk_id = _text(value, "chunkId", "chunk_id")
-        chunk = db.get(KnowledgeChunk, chunk_id)
-        if not chunk or chunk.tenant_id != tenant_id:
-            raise HTTPException(status_code=404, detail="Knowledge citation not found")
-        return chunk_read(chunk)
+        from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter
+        actor = _actor(db, value, tenant_id)
+        try:
+            row = StaffDeckKnowledgeAdapter(db, tenant_id, agent_id, actor).call(
+                "GET", f"/citations/{chunk_id}",
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise HTTPException(404, "Knowledge citation not found") from exc
+            raise
+        from app.knowledge.schema import KnowledgeChunkRead
+        return KnowledgeChunkRead.model_validate(row)
     raise ValueError(f"Unsupported knowledge operation: {operation}")
 
 

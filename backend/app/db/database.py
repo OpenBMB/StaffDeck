@@ -9,7 +9,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import get_settings
 from app.db.database_path import normalize_database_url
-from app.db.models import new_id, utc_now
+from app.db.models import AgentProfile, AgentResourceBinding, ModelConfig, Tenant, User, new_id, utc_now
 
 
 def _normalize_database_url(url: str) -> str:
@@ -50,13 +50,7 @@ _CHANNEL_SCOPE_REBUILD_MIGRATION_ID = "20260719_channel_scope_rebuild"
 _CHANNEL_BINDINGS_MULTI_MIGRATION_ID = "20260721_channel_bindings_multi"
 _CHANNEL_ACCOUNT_KEY_MIGRATION_ID = "20260723_channel_account_key_v1"
 _FEISHU_CHANNEL_SCHEMA_MIGRATION_ID = "20260724_feishu_channel_schema_v1"
-_CAPABILITY_SCOPE_TABLES = (
-    "general_skills",
-    "tools",
-    "mcp_servers",
-    "knowledge_bases",
-    "knowledge_base_versions",
-)
+_CAPABILITY_SCOPE_TABLES = ('general_skills', 'tools', 'mcp_servers')
 
 
 def init_db() -> None:
@@ -67,6 +61,13 @@ def init_db() -> None:
     _migrate_sqlite_skill_schema()
     if settings.startup_orphan_cleanup_enabled:
         _purge_orphaned_chat_sessions()
+
+
+
+
+def get_knowledge_session() -> Generator[Session, None, None]:
+    with Session(engine) as session:
+        yield session
 
 
 def _purge_orphaned_chat_sessions() -> None:
@@ -112,18 +113,18 @@ def _configure_sqlite_runtime() -> None:
 
 
 def _migrate_sqlite_skill_schema() -> None:
-    if not database_url.startswith("sqlite"):
+    if not database_url.startswith('sqlite'):
         return
-
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
-    legacy_key = "so" + "p"
-    legacy_active_column = f"active_{legacy_key}_id"
-    legacy_stack_column = f"{legacy_key}_stack_json"
-    legacy_allowed_column = f"allowed_{legacy_key}s_json"
-    legacy_table = f"{legacy_key}_skills"
-    legacy_id_column = f"{legacy_key}_id"
-    legacy_id_prefix = f"{legacy_key}_"
+    tables = {name for name in tables if not name.startswith('knowledge_') and name != 'agent_knowledge_branches'}
+    legacy_key = 'so' + 'p'
+    legacy_active_column = f'active_{legacy_key}_id'
+    legacy_stack_column = f'{legacy_key}_stack_json'
+    legacy_allowed_column = f'allowed_{legacy_key}s_json'
+    legacy_table = f'{legacy_key}_skills'
+    legacy_id_column = f'{legacy_key}_id'
+    legacy_id_prefix = f'{legacy_key}_'
     with _sqlite_immediate_connection() as conn:
         _migrate_model_api_protocols(conn, tables)
         _migrate_model_secret_references(conn, tables)
@@ -138,533 +139,232 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_wechat_kf_accounts(conn, tables)
         _migrate_capability_scope_schema(conn, inspector, tables)
         _migrate_harness_v2_schema(conn, inspector, tables)
-
-        if "api_jobs" in tables:
-            job_columns = {column["name"] for column in inspector.get_columns("api_jobs")}
-            api_job_columns = {
-                "execution_owner": "ALTER TABLE api_jobs ADD COLUMN execution_owner VARCHAR",
-                "execution_generation": (
-                    "ALTER TABLE api_jobs ADD COLUMN execution_generation INTEGER NOT NULL DEFAULT 0"
-                ),
-                "lease_expires_at": "ALTER TABLE api_jobs ADD COLUMN lease_expires_at DATETIME",
-            }
+        if 'api_jobs' in tables:
+            job_columns = {column['name'] for column in inspector.get_columns('api_jobs')}
+            api_job_columns = {'execution_owner': 'ALTER TABLE api_jobs ADD COLUMN execution_owner VARCHAR', 'execution_generation': 'ALTER TABLE api_jobs ADD COLUMN execution_generation INTEGER NOT NULL DEFAULT 0', 'lease_expires_at': 'ALTER TABLE api_jobs ADD COLUMN lease_expires_at DATETIME'}
             for column_name, ddl in api_job_columns.items():
                 if column_name not in job_columns:
                     conn.execute(text(ddl))
-
-        if "webhook_deliveries" in tables:
-            webhook_columns = {
-                column["name"] for column in inspector.get_columns("webhook_deliveries")
-            }
-            webhook_delivery_columns = {
-                "delivery_owner": (
-                    "ALTER TABLE webhook_deliveries ADD COLUMN delivery_owner VARCHAR"
-                ),
-                "lease_expires_at": (
-                    "ALTER TABLE webhook_deliveries ADD COLUMN lease_expires_at DATETIME"
-                ),
-            }
+        if 'webhook_deliveries' in tables:
+            webhook_columns = {column['name'] for column in inspector.get_columns('webhook_deliveries')}
+            webhook_delivery_columns = {'delivery_owner': 'ALTER TABLE webhook_deliveries ADD COLUMN delivery_owner VARCHAR', 'lease_expires_at': 'ALTER TABLE webhook_deliveries ADD COLUMN lease_expires_at DATETIME'}
             for column_name, ddl in webhook_delivery_columns.items():
                 if column_name not in webhook_columns:
                     conn.execute(text(ddl))
-
-        if "users" in tables:
-            user_columns = {column["name"] for column in inspector.get_columns("users")}
-            if "role" not in user_columns:
+        if 'users' in tables:
+            user_columns = {column['name'] for column in inspector.get_columns('users')}
+            if 'role' not in user_columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'member'"))
-            if "source" not in user_columns:
+            if 'source' not in user_columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN source VARCHAR NOT NULL DEFAULT 'web'"))
-            if "disabled" not in user_columns:
-                conn.execute(text("ALTER TABLE users ADD COLUMN disabled BOOLEAN NOT NULL DEFAULT 0"))
-            if "display_name" in user_columns:
-                conn.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS ix_users_tenant_id_display_name "
-                        "ON users(tenant_id, display_name)"
-                    )
-                )
+            if 'disabled' not in user_columns:
+                conn.execute(text('ALTER TABLE users ADD COLUMN disabled BOOLEAN NOT NULL DEFAULT 0'))
+            if 'display_name' in user_columns:
+                conn.execute(text('CREATE INDEX IF NOT EXISTS ix_users_tenant_id_display_name ON users(tenant_id, display_name)'))
             _migrate_user_source_backfill(conn)
-
-        if "sessions" in tables:
-            session_columns = {column["name"] for column in inspector.get_columns("sessions")}
-            if "agent_id" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN agent_id VARCHAR"))
-            if "title" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN title VARCHAR"))
-            if "active_skill_id" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN active_skill_id VARCHAR"))
+        if 'sessions' in tables:
+            session_columns = {column['name'] for column in inspector.get_columns('sessions')}
+            if 'agent_id' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN agent_id VARCHAR'))
+            if 'title' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN title VARCHAR'))
+            if 'active_skill_id' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN active_skill_id VARCHAR'))
                 if legacy_active_column in session_columns:
-                    conn.execute(text(f"UPDATE sessions SET active_skill_id = {legacy_active_column}"))
-            if "skill_stack_json" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN skill_stack_json JSON"))
+                    conn.execute(text(f'UPDATE sessions SET active_skill_id = {legacy_active_column}'))
+            if 'skill_stack_json' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN skill_stack_json JSON'))
                 if legacy_stack_column in session_columns:
-                    conn.execute(text(f"UPDATE sessions SET skill_stack_json = {legacy_stack_column}"))
+                    conn.execute(text(f'UPDATE sessions SET skill_stack_json = {legacy_stack_column}'))
                 else:
                     conn.execute(text("UPDATE sessions SET skill_stack_json = '[]'"))
-            if "pending_tasks_json" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN pending_tasks_json JSON"))
+            if 'pending_tasks_json' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN pending_tasks_json JSON'))
                 conn.execute(text("UPDATE sessions SET pending_tasks_json = '[]'"))
-            if "awaiting_input_json" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN awaiting_input_json JSON"))
-            if "knowledge_context_json" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN knowledge_context_json JSON"))
-                conn.execute(text("UPDATE sessions SET knowledge_context_json = '[]'"))
-            if "context_state_json" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN context_state_json JSON"))
+            if 'awaiting_input_json' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN awaiting_input_json JSON'))
+            if 'context_state_json' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN context_state_json JSON'))
                 conn.execute(text("UPDATE sessions SET context_state_json = '{}'"))
-            if "channel" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN channel VARCHAR"))
-            if "external_conv_id" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN external_conv_id VARCHAR"))
-            if "channel_target_json" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_target_json JSON"))
-            if "channel_binding_id" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_binding_id VARCHAR"))
-            if "channel_account_key" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN channel_account_key VARCHAR"))
-            if "team_id" not in session_columns:
-                conn.execute(text("ALTER TABLE sessions ADD COLUMN team_id VARCHAR"))
-            # SQLite 唯一索引中 NULL 互不相等，web 会话（channel 为空）不受约束；
-            # 含 channel_binding_id 以隔离同企业多 Bot(老三列索引先 DROP 再按新四列重建)
-            session_index_columns = {
-                tuple(index["column_names"])
-                for index in inspector.get_indexes("sessions")
-                if index["name"] == "uq_sessions_agent_channel_extconv"
-            }
-            if ("agent_id", "channel", "external_conv_id") in session_index_columns:
-                conn.execute(text("DROP INDEX IF EXISTS uq_sessions_agent_channel_extconv"))
-            conn.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_agent_channel_extconv "
-                    "ON sessions(agent_id, channel, channel_binding_id, external_conv_id)"
-                )
-            )
-            if "channel_bindings" in tables:
-                conn.execute(
-                    text(
-                        "UPDATE sessions SET channel_account_key = ("
-                        "SELECT external_account_key FROM channel_bindings "
-                        "WHERE channel_bindings.id = sessions.channel_binding_id) "
-                        "WHERE channel_binding_id IS NOT NULL AND EXISTS ("
-                        "SELECT 1 FROM channel_bindings "
-                        "WHERE channel_bindings.id = sessions.channel_binding_id)"
-                    )
-                )
-
-        if "channel_conv_states" in tables:
-            conv_columns = {column["name"] for column in inspector.get_columns("channel_conv_states")}
-            if "manual_pin_until" not in conv_columns:
-                conn.execute(text("ALTER TABLE channel_conv_states ADD COLUMN manual_pin_until DATETIME"))
-            if "routing_revision" not in conv_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE channel_conv_states ADD COLUMN routing_revision "
-                        "INTEGER NOT NULL DEFAULT 0"
-                    )
-                )
-
-        if "channel_bindings" in tables:
-            binding_columns = {column["name"] for column in inspector.get_columns("channel_bindings")}
-            if "last_connected_at" not in binding_columns:
-                conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN last_connected_at DATETIME"))
-            if "team_id" not in binding_columns:
-                conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN team_id VARCHAR"))
-            if "name" not in binding_columns:
-                conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN name VARCHAR"))
-
-        if "channel_deliveries" in tables:
-            delivery_columns = {column["name"] for column in inspector.get_columns("channel_deliveries")}
-            if "sending_since" not in delivery_columns:
-                conn.execute(text("ALTER TABLE channel_deliveries ADD COLUMN sending_since DATETIME"))
-            if "delivery_owner" not in delivery_columns:
-                conn.execute(text("ALTER TABLE channel_deliveries ADD COLUMN delivery_owner VARCHAR"))
-            if "delivery_generation" not in delivery_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE channel_deliveries ADD COLUMN delivery_generation "
-                        "INTEGER NOT NULL DEFAULT 0"
-                    )
-                )
-
-        if "channel_inbound_events" in tables:
-            inbound_columns = {
-                column["name"] for column in inspector.get_columns("channel_inbound_events")
-            }
-            if "processor_lease_expires_at" not in inbound_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE channel_inbound_events ADD COLUMN "
-                        "processor_lease_expires_at DATETIME"
-                    )
-                )
-
-        if "human_handoff_requests" in tables:
-            handoff_columns = {
-                column["name"] for column in inspector.get_columns("human_handoff_requests")
-            }
-            if "notify_message_id" not in handoff_columns:
-                conn.execute(
-                    text("ALTER TABLE human_handoff_requests ADD COLUMN notify_message_id VARCHAR")
-                )
-                conn.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS ix_human_handoff_requests_notify_message_id "
-                        "ON human_handoff_requests(notify_message_id)"
-                    )
-                )
-
-        if "messages" in tables:
-            message_columns = {column["name"] for column in inspector.get_columns("messages")}
-            if "metadata_json" not in message_columns:
-                conn.execute(text("ALTER TABLE messages ADD COLUMN metadata_json JSON"))
+            if 'channel' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN channel VARCHAR'))
+            if 'external_conv_id' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN external_conv_id VARCHAR'))
+            if 'channel_target_json' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN channel_target_json JSON'))
+            if 'channel_binding_id' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN channel_binding_id VARCHAR'))
+            if 'channel_account_key' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN channel_account_key VARCHAR'))
+            if 'team_id' not in session_columns:
+                conn.execute(text('ALTER TABLE sessions ADD COLUMN team_id VARCHAR'))
+            session_index_columns = {tuple(index['column_names']) for index in inspector.get_indexes('sessions') if index['name'] == 'uq_sessions_agent_channel_extconv'}
+            if ('agent_id', 'channel', 'external_conv_id') in session_index_columns:
+                conn.execute(text('DROP INDEX IF EXISTS uq_sessions_agent_channel_extconv'))
+            conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_sessions_agent_channel_extconv ON sessions(agent_id, channel, channel_binding_id, external_conv_id)'))
+            if 'channel_bindings' in tables:
+                conn.execute(text('UPDATE sessions SET channel_account_key = (SELECT external_account_key FROM channel_bindings WHERE channel_bindings.id = sessions.channel_binding_id) WHERE channel_binding_id IS NOT NULL AND EXISTS (SELECT 1 FROM channel_bindings WHERE channel_bindings.id = sessions.channel_binding_id)'))
+        if 'channel_conv_states' in tables:
+            conv_columns = {column['name'] for column in inspector.get_columns('channel_conv_states')}
+            if 'manual_pin_until' not in conv_columns:
+                conn.execute(text('ALTER TABLE channel_conv_states ADD COLUMN manual_pin_until DATETIME'))
+            if 'routing_revision' not in conv_columns:
+                conn.execute(text('ALTER TABLE channel_conv_states ADD COLUMN routing_revision INTEGER NOT NULL DEFAULT 0'))
+        if 'channel_bindings' in tables:
+            binding_columns = {column['name'] for column in inspector.get_columns('channel_bindings')}
+            if 'last_connected_at' not in binding_columns:
+                conn.execute(text('ALTER TABLE channel_bindings ADD COLUMN last_connected_at DATETIME'))
+            if 'team_id' not in binding_columns:
+                conn.execute(text('ALTER TABLE channel_bindings ADD COLUMN team_id VARCHAR'))
+            if 'name' not in binding_columns:
+                conn.execute(text('ALTER TABLE channel_bindings ADD COLUMN name VARCHAR'))
+        if 'channel_deliveries' in tables:
+            delivery_columns = {column['name'] for column in inspector.get_columns('channel_deliveries')}
+            if 'sending_since' not in delivery_columns:
+                conn.execute(text('ALTER TABLE channel_deliveries ADD COLUMN sending_since DATETIME'))
+            if 'delivery_owner' not in delivery_columns:
+                conn.execute(text('ALTER TABLE channel_deliveries ADD COLUMN delivery_owner VARCHAR'))
+            if 'delivery_generation' not in delivery_columns:
+                conn.execute(text('ALTER TABLE channel_deliveries ADD COLUMN delivery_generation INTEGER NOT NULL DEFAULT 0'))
+        if 'channel_inbound_events' in tables:
+            inbound_columns = {column['name'] for column in inspector.get_columns('channel_inbound_events')}
+            if 'processor_lease_expires_at' not in inbound_columns:
+                conn.execute(text('ALTER TABLE channel_inbound_events ADD COLUMN processor_lease_expires_at DATETIME'))
+        if 'human_handoff_requests' in tables:
+            handoff_columns = {column['name'] for column in inspector.get_columns('human_handoff_requests')}
+            if 'notify_message_id' not in handoff_columns:
+                conn.execute(text('ALTER TABLE human_handoff_requests ADD COLUMN notify_message_id VARCHAR'))
+                conn.execute(text('CREATE INDEX IF NOT EXISTS ix_human_handoff_requests_notify_message_id ON human_handoff_requests(notify_message_id)'))
+        if 'messages' in tables:
+            message_columns = {column['name'] for column in inspector.get_columns('messages')}
+            if 'metadata_json' not in message_columns:
+                conn.execute(text('ALTER TABLE messages ADD COLUMN metadata_json JSON'))
                 conn.execute(text("UPDATE messages SET metadata_json = '{}' WHERE metadata_json IS NULL"))
-
-        if "tools" in tables:
-            tool_columns = {column["name"] for column in inspector.get_columns("tools")}
-            if "bucket" not in tool_columns:
+        if 'tools' in tables:
+            tool_columns = {column['name'] for column in inspector.get_columns('tools')}
+            if 'bucket' not in tool_columns:
                 conn.execute(text("ALTER TABLE tools ADD COLUMN bucket VARCHAR NOT NULL DEFAULT '未分桶'"))
-            if "tool_type" not in tool_columns:
+            if 'tool_type' not in tool_columns:
                 conn.execute(text("ALTER TABLE tools ADD COLUMN tool_type VARCHAR NOT NULL DEFAULT 'http'"))
-            if "config_json" not in tool_columns:
-                conn.execute(text("ALTER TABLE tools ADD COLUMN config_json JSON"))
+            if 'config_json' not in tool_columns:
+                conn.execute(text('ALTER TABLE tools ADD COLUMN config_json JSON'))
                 conn.execute(text("UPDATE tools SET config_json = '{}' WHERE config_json IS NULL"))
-            if "allowed_skills_json" not in tool_columns:
-                conn.execute(text("ALTER TABLE tools ADD COLUMN allowed_skills_json JSON"))
+            if 'allowed_skills_json' not in tool_columns:
+                conn.execute(text('ALTER TABLE tools ADD COLUMN allowed_skills_json JSON'))
                 if legacy_allowed_column in tool_columns:
-                    conn.execute(text(f"UPDATE tools SET allowed_skills_json = {legacy_allowed_column}"))
+                    conn.execute(text(f'UPDATE tools SET allowed_skills_json = {legacy_allowed_column}'))
                 else:
                     conn.execute(text("UPDATE tools SET allowed_skills_json = '[]'"))
-            if "mcp_server_id" not in tool_columns:
-                conn.execute(text("ALTER TABLE tools ADD COLUMN mcp_server_id VARCHAR"))
-            if "capability_scope_inherited" not in tool_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE tools ADD COLUMN capability_scope_inherited "
-                        "BOOLEAN NOT NULL DEFAULT 1"
-                    )
-                )
-            conn.execute(
-                text(
-                    "UPDATE tools SET capability_scope_inherited = 1 "
-                    "WHERE capability_scope_inherited IS NULL"
-                )
-            )
-
-        if "external_business_tasks" in tables:
-            task_columns = {
-                column["name"]
-                for column in inspector.get_columns("external_business_tasks")
-            }
-            additions = {
-                "status_config_json": (
-                    "ALTER TABLE external_business_tasks ADD COLUMN status_config_json JSON"
-                ),
-                "idempotency_key": (
-                    "ALTER TABLE external_business_tasks ADD COLUMN idempotency_key VARCHAR"
-                ),
-                "lease_owner": (
-                    "ALTER TABLE external_business_tasks ADD COLUMN lease_owner VARCHAR"
-                ),
-                "lease_expires_at": (
-                    "ALTER TABLE external_business_tasks ADD COLUMN lease_expires_at DATETIME"
-                ),
-                "expires_at": (
-                    "ALTER TABLE external_business_tasks ADD COLUMN expires_at DATETIME"
-                ),
-                "task_frame_id": (
-                    "ALTER TABLE external_business_tasks ADD COLUMN task_frame_id VARCHAR"
-                ),
-                "resume_step_id": (
-                    "ALTER TABLE external_business_tasks ADD COLUMN resume_step_id VARCHAR"
-                ),
-            }
+            if 'mcp_server_id' not in tool_columns:
+                conn.execute(text('ALTER TABLE tools ADD COLUMN mcp_server_id VARCHAR'))
+            if 'capability_scope_inherited' not in tool_columns:
+                conn.execute(text('ALTER TABLE tools ADD COLUMN capability_scope_inherited BOOLEAN NOT NULL DEFAULT 1'))
+            conn.execute(text('UPDATE tools SET capability_scope_inherited = 1 WHERE capability_scope_inherited IS NULL'))
+        if 'external_business_tasks' in tables:
+            task_columns = {column['name'] for column in inspector.get_columns('external_business_tasks')}
+            additions = {'status_config_json': 'ALTER TABLE external_business_tasks ADD COLUMN status_config_json JSON', 'idempotency_key': 'ALTER TABLE external_business_tasks ADD COLUMN idempotency_key VARCHAR', 'lease_owner': 'ALTER TABLE external_business_tasks ADD COLUMN lease_owner VARCHAR', 'lease_expires_at': 'ALTER TABLE external_business_tasks ADD COLUMN lease_expires_at DATETIME', 'expires_at': 'ALTER TABLE external_business_tasks ADD COLUMN expires_at DATETIME', 'task_frame_id': 'ALTER TABLE external_business_tasks ADD COLUMN task_frame_id VARCHAR', 'resume_step_id': 'ALTER TABLE external_business_tasks ADD COLUMN resume_step_id VARCHAR'}
             for column_name, ddl in additions.items():
                 if column_name not in task_columns:
                     conn.execute(text(ddl))
-            conn.execute(
-                text(
-                    "UPDATE external_business_tasks SET status_config_json = '{}' "
-                    "WHERE status_config_json IS NULL"
-                )
-            )
-            conn.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS "
-                    "uq_external_business_tasks_idempotency_key "
-                    "ON external_business_tasks(idempotency_key) "
-                    "WHERE idempotency_key IS NOT NULL"
-                )
-            )
-
-        if "mcp_servers" in tables:
-            mcp_server_columns = {
-                column["name"] for column in inspector.get_columns("mcp_servers")
-            }
-            if "apps_mode" not in mcp_server_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE mcp_servers ADD COLUMN apps_mode "
-                        "VARCHAR NOT NULL DEFAULT 'disabled'"
-                    )
-                )
-            if "negotiated_capabilities_json" not in mcp_server_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE mcp_servers ADD COLUMN negotiated_capabilities_json JSON"
-                    )
-                )
-                conn.execute(
-                    text(
-                        "UPDATE mcp_servers SET negotiated_capabilities_json = '{}' "
-                        "WHERE negotiated_capabilities_json IS NULL"
-                    )
-                )
-
-        if "agent_profiles" in tables:
-            agent_columns = {
-                column["name"] for column in inspector.get_columns("agent_profiles")
-            }
-            if "harness_max_actions" not in agent_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE agent_profiles ADD COLUMN harness_max_actions "
-                        "INTEGER NOT NULL DEFAULT 32"
-                    )
-                )
-
-        if "ui_configs" in tables:
-            ui_columns = {column["name"] for column in inspector.get_columns("ui_configs")}
-            if "reflection_max_rounds" not in ui_columns:
-                conn.execute(
-                    text("ALTER TABLE ui_configs ADD COLUMN reflection_max_rounds INTEGER NOT NULL DEFAULT 1")
-                )
-            if "agent_loop_max_actions" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN agent_loop_max_actions "
-                        "INTEGER NOT NULL DEFAULT 32"
-                    )
-                )
-            if "context_token_budget" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN context_token_budget "
-                        "INTEGER NOT NULL DEFAULT 32000"
-                    )
-                )
-            if "context_compaction_trigger_ratio" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN context_compaction_trigger_ratio "
-                        "FLOAT NOT NULL DEFAULT 0.70"
-                    )
-                )
-            if "context_recent_round_limit" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN context_recent_round_limit "
-                        "INTEGER NOT NULL DEFAULT 6"
-                    )
-                )
-            if "context_long_summary_token_budget" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN context_long_summary_token_budget "
-                        "INTEGER NOT NULL DEFAULT 4000"
-                    )
-                )
-            if "context_medium_summary_token_budget" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN context_medium_summary_token_budget "
-                        "INTEGER NOT NULL DEFAULT 4000"
-                    )
-                )
-            if "context_allowed_roles" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN context_allowed_roles "
-                        "JSON NOT NULL DEFAULT '[\"user\", \"assistant\"]'"
-                    )
-                )
-            if "context_long_summary_prefix" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN context_long_summary_prefix "
-                        "VARCHAR NOT NULL DEFAULT '历史的信息可以被总结为：'"
-                    )
-                )
-            if "context_medium_summary_prefix" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN context_medium_summary_prefix "
-                        "VARCHAR NOT NULL DEFAULT '近期的历史信息总结为：'"
-                    )
-                )
-            if "sandbox_enabled" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN sandbox_enabled "
-                        "BOOLEAN NOT NULL DEFAULT 0"
-                    )
-                )
-            if "sandbox_network_mode" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN sandbox_network_mode "
-                        "VARCHAR(32) NOT NULL DEFAULT 'all'"
-                    )
-                )
-            if "sandbox_allowed_domains" not in ui_columns:
-                conn.execute(
-                    text(
-                        "ALTER TABLE ui_configs ADD COLUMN sandbox_allowed_domains "
-                        "JSON NOT NULL DEFAULT '[]'"
-                    )
-                )
-            if "harness_storage_path" not in ui_columns:
-                conn.execute(
-                    text("ALTER TABLE ui_configs ADD COLUMN harness_storage_path VARCHAR")
-                )
-
-        if "team_tasks" in tables:
-            team_task_columns = {
-                column["name"] for column in inspector.get_columns("team_tasks")
-            }
-            if "team_run_id" not in team_task_columns:
-                conn.execute(text("ALTER TABLE team_tasks ADD COLUMN team_run_id VARCHAR"))
-                conn.execute(
-                    text("CREATE INDEX IF NOT EXISTS ix_team_tasks_team_run_id ON team_tasks (team_run_id)")
-                )
-            if "source_turn_id" not in team_task_columns:
-                conn.execute(text("ALTER TABLE team_tasks ADD COLUMN source_turn_id VARCHAR"))
-                conn.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS ix_team_tasks_source_turn_id "
-                        "ON team_tasks (source_turn_id)"
-                    )
-                )
-            if "depends_on_task_ids_json" not in team_task_columns:
-                conn.execute(text("ALTER TABLE team_tasks ADD COLUMN depends_on_task_ids_json JSON"))
-                conn.execute(
-                    text(
-                        "UPDATE team_tasks SET depends_on_task_ids_json = '[]' "
-                        "WHERE depends_on_task_ids_json IS NULL"
-                    )
-                )
-            if "activation_condition_json" not in team_task_columns:
-                conn.execute(text("ALTER TABLE team_tasks ADD COLUMN activation_condition_json JSON"))
-                conn.execute(
-                    text(
-                        "UPDATE team_tasks SET activation_condition_json = '{}' "
-                        "WHERE activation_condition_json IS NULL"
-                    )
-                )
-
-        if "skill_feedback" in tables:
-            feedback_columns = {column["name"] for column in inspector.get_columns("skill_feedback")}
-            if "skill_version" not in feedback_columns:
-                conn.execute(text("ALTER TABLE skill_feedback ADD COLUMN skill_version VARCHAR"))
-            if "step_id" not in feedback_columns:
-                conn.execute(text("ALTER TABLE skill_feedback ADD COLUMN step_id VARCHAR"))
-
-        if "message_feedback" in tables:
-            message_feedback_columns = {column["name"] for column in inspector.get_columns("message_feedback")}
-            feedback_column_sql = {
-                "analysis_status": "ALTER TABLE message_feedback ADD COLUMN analysis_status VARCHAR NOT NULL DEFAULT 'pending'",
-                "analysis_bucket": "ALTER TABLE message_feedback ADD COLUMN analysis_bucket VARCHAR",
-                "analysis_reason": "ALTER TABLE message_feedback ADD COLUMN analysis_reason VARCHAR",
-                "analysis_summary": "ALTER TABLE message_feedback ADD COLUMN analysis_summary VARCHAR",
-                "analysis_confidence": "ALTER TABLE message_feedback ADD COLUMN analysis_confidence FLOAT",
-                "analysis_json": "ALTER TABLE message_feedback ADD COLUMN analysis_json JSON",
-                "analyzed_at": "ALTER TABLE message_feedback ADD COLUMN analyzed_at DATETIME",
-            }
+            conn.execute(text("UPDATE external_business_tasks SET status_config_json = '{}' WHERE status_config_json IS NULL"))
+            conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_external_business_tasks_idempotency_key ON external_business_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL'))
+        if 'mcp_servers' in tables:
+            mcp_server_columns = {column['name'] for column in inspector.get_columns('mcp_servers')}
+            if 'apps_mode' not in mcp_server_columns:
+                conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN apps_mode VARCHAR NOT NULL DEFAULT 'disabled'"))
+            if 'negotiated_capabilities_json' not in mcp_server_columns:
+                conn.execute(text('ALTER TABLE mcp_servers ADD COLUMN negotiated_capabilities_json JSON'))
+                conn.execute(text("UPDATE mcp_servers SET negotiated_capabilities_json = '{}' WHERE negotiated_capabilities_json IS NULL"))
+        if 'agent_profiles' in tables:
+            agent_columns = {column['name'] for column in inspector.get_columns('agent_profiles')}
+            if 'harness_max_actions' not in agent_columns:
+                conn.execute(text('ALTER TABLE agent_profiles ADD COLUMN harness_max_actions INTEGER NOT NULL DEFAULT 32'))
+        if 'ui_configs' in tables:
+            ui_columns = {column['name'] for column in inspector.get_columns('ui_configs')}
+            if 'reflection_max_rounds' not in ui_columns:
+                conn.execute(text('ALTER TABLE ui_configs ADD COLUMN reflection_max_rounds INTEGER NOT NULL DEFAULT 1'))
+            if 'agent_loop_max_actions' not in ui_columns:
+                conn.execute(text('ALTER TABLE ui_configs ADD COLUMN agent_loop_max_actions INTEGER NOT NULL DEFAULT 32'))
+            if 'context_token_budget' not in ui_columns:
+                conn.execute(text('ALTER TABLE ui_configs ADD COLUMN context_token_budget INTEGER NOT NULL DEFAULT 32000'))
+            if 'context_compaction_trigger_ratio' not in ui_columns:
+                conn.execute(text('ALTER TABLE ui_configs ADD COLUMN context_compaction_trigger_ratio FLOAT NOT NULL DEFAULT 0.70'))
+            if 'context_recent_round_limit' not in ui_columns:
+                conn.execute(text('ALTER TABLE ui_configs ADD COLUMN context_recent_round_limit INTEGER NOT NULL DEFAULT 6'))
+            if 'context_long_summary_token_budget' not in ui_columns:
+                conn.execute(text('ALTER TABLE ui_configs ADD COLUMN context_long_summary_token_budget INTEGER NOT NULL DEFAULT 4000'))
+            if 'context_medium_summary_token_budget' not in ui_columns:
+                conn.execute(text('ALTER TABLE ui_configs ADD COLUMN context_medium_summary_token_budget INTEGER NOT NULL DEFAULT 4000'))
+            if 'context_allowed_roles' not in ui_columns:
+                conn.execute(text('ALTER TABLE ui_configs ADD COLUMN context_allowed_roles JSON NOT NULL DEFAULT \'["user", "assistant"]\''))
+            if 'context_long_summary_prefix' not in ui_columns:
+                conn.execute(text("ALTER TABLE ui_configs ADD COLUMN context_long_summary_prefix VARCHAR NOT NULL DEFAULT '历史的信息可以被总结为：'"))
+            if 'context_medium_summary_prefix' not in ui_columns:
+                conn.execute(text("ALTER TABLE ui_configs ADD COLUMN context_medium_summary_prefix VARCHAR NOT NULL DEFAULT '近期的历史信息总结为：'"))
+            if 'sandbox_enabled' not in ui_columns:
+                conn.execute(text('ALTER TABLE ui_configs ADD COLUMN sandbox_enabled BOOLEAN NOT NULL DEFAULT 0'))
+            if 'sandbox_network_mode' not in ui_columns:
+                conn.execute(text("ALTER TABLE ui_configs ADD COLUMN sandbox_network_mode VARCHAR(32) NOT NULL DEFAULT 'all'"))
+            if 'sandbox_allowed_domains' not in ui_columns:
+                conn.execute(text("ALTER TABLE ui_configs ADD COLUMN sandbox_allowed_domains JSON NOT NULL DEFAULT '[]'"))
+            if 'harness_storage_path' not in ui_columns:
+                conn.execute(text('ALTER TABLE ui_configs ADD COLUMN harness_storage_path VARCHAR'))
+        if 'team_tasks' in tables:
+            team_task_columns = {column['name'] for column in inspector.get_columns('team_tasks')}
+            if 'team_run_id' not in team_task_columns:
+                conn.execute(text('ALTER TABLE team_tasks ADD COLUMN team_run_id VARCHAR'))
+                conn.execute(text('CREATE INDEX IF NOT EXISTS ix_team_tasks_team_run_id ON team_tasks (team_run_id)'))
+            if 'source_turn_id' not in team_task_columns:
+                conn.execute(text('ALTER TABLE team_tasks ADD COLUMN source_turn_id VARCHAR'))
+                conn.execute(text('CREATE INDEX IF NOT EXISTS ix_team_tasks_source_turn_id ON team_tasks (source_turn_id)'))
+            if 'depends_on_task_ids_json' not in team_task_columns:
+                conn.execute(text('ALTER TABLE team_tasks ADD COLUMN depends_on_task_ids_json JSON'))
+                conn.execute(text("UPDATE team_tasks SET depends_on_task_ids_json = '[]' WHERE depends_on_task_ids_json IS NULL"))
+            if 'activation_condition_json' not in team_task_columns:
+                conn.execute(text('ALTER TABLE team_tasks ADD COLUMN activation_condition_json JSON'))
+                conn.execute(text("UPDATE team_tasks SET activation_condition_json = '{}' WHERE activation_condition_json IS NULL"))
+        if 'skill_feedback' in tables:
+            feedback_columns = {column['name'] for column in inspector.get_columns('skill_feedback')}
+            if 'skill_version' not in feedback_columns:
+                conn.execute(text('ALTER TABLE skill_feedback ADD COLUMN skill_version VARCHAR'))
+            if 'step_id' not in feedback_columns:
+                conn.execute(text('ALTER TABLE skill_feedback ADD COLUMN step_id VARCHAR'))
+        if 'message_feedback' in tables:
+            message_feedback_columns = {column['name'] for column in inspector.get_columns('message_feedback')}
+            feedback_column_sql = {'analysis_status': "ALTER TABLE message_feedback ADD COLUMN analysis_status VARCHAR NOT NULL DEFAULT 'pending'", 'analysis_bucket': 'ALTER TABLE message_feedback ADD COLUMN analysis_bucket VARCHAR', 'analysis_reason': 'ALTER TABLE message_feedback ADD COLUMN analysis_reason VARCHAR', 'analysis_summary': 'ALTER TABLE message_feedback ADD COLUMN analysis_summary VARCHAR', 'analysis_confidence': 'ALTER TABLE message_feedback ADD COLUMN analysis_confidence FLOAT', 'analysis_json': 'ALTER TABLE message_feedback ADD COLUMN analysis_json JSON', 'analyzed_at': 'ALTER TABLE message_feedback ADD COLUMN analyzed_at DATETIME'}
             for column_name, ddl in feedback_column_sql.items():
                 if column_name not in message_feedback_columns:
                     conn.execute(text(ddl))
-            if "analysis_json" not in message_feedback_columns:
+            if 'analysis_json' not in message_feedback_columns:
                 conn.execute(text("UPDATE message_feedback SET analysis_json = '{}' WHERE analysis_json IS NULL"))
-
-        if "general_skills" in tables:
-            general_skill_columns = {column["name"] for column in inspector.get_columns("general_skills")}
-            if "skill_files_json" not in general_skill_columns:
-                conn.execute(text("ALTER TABLE general_skills ADD COLUMN skill_files_json JSON"))
+        if 'general_skills' in tables:
+            general_skill_columns = {column['name'] for column in inspector.get_columns('general_skills')}
+            if 'skill_files_json' not in general_skill_columns:
+                conn.execute(text('ALTER TABLE general_skills ADD COLUMN skill_files_json JSON'))
                 conn.execute(text("UPDATE general_skills SET skill_files_json = '[]' WHERE skill_files_json IS NULL"))
-            if "metadata_json" not in general_skill_columns:
-                conn.execute(text("ALTER TABLE general_skills ADD COLUMN metadata_json JSON"))
+            if 'metadata_json' not in general_skill_columns:
+                conn.execute(text('ALTER TABLE general_skills ADD COLUMN metadata_json JSON'))
                 conn.execute(text("UPDATE general_skills SET metadata_json = '{}' WHERE metadata_json IS NULL"))
-
-        _migrate_knowledge_base_schema(conn, inspector, tables)
         _seed_default_agents(conn, tables)
-
-        if legacy_table in tables and "skills" in tables:
-            rows = conn.execute(text(f"SELECT * FROM {legacy_table}")).mappings().all()
+        if legacy_table in tables and 'skills' in tables:
+            rows = conn.execute(text(f'SELECT * FROM {legacy_table}')).mappings().all()
             for row in rows:
-                skill_id = _normalize_skill_identifier(
-                    row.get("skill_id") or row.get(legacy_id_column),
-                    legacy_id_prefix,
-                )
+                skill_id = _normalize_skill_identifier(row.get('skill_id') or row.get(legacy_id_column), legacy_id_prefix)
                 if not skill_id:
                     continue
-                target_id = str(row["id"]).replace(legacy_id_prefix, "skill_", 1)
-                existing = conn.execute(
-                    text("SELECT id FROM skills WHERE tenant_id = :tenant_id AND skill_id = :skill_id"),
-                    {"tenant_id": row["tenant_id"], "skill_id": skill_id},
-                ).first()
+                target_id = str(row['id']).replace(legacy_id_prefix, 'skill_', 1)
+                existing = conn.execute(text('SELECT id FROM skills WHERE tenant_id = :tenant_id AND skill_id = :skill_id'), {'tenant_id': row['tenant_id'], 'skill_id': skill_id}).first()
                 if existing:
                     continue
-                content = _migrate_skill_content(row.get("content_json"), skill_id)
-                existing_id = conn.execute(
-                    text("SELECT id FROM skills WHERE id = :id"),
-                    {"id": target_id},
-                ).first()
+                content = _migrate_skill_content(row.get('content_json'), skill_id)
+                existing_id = conn.execute(text('SELECT id FROM skills WHERE id = :id'), {'id': target_id}).first()
                 if existing_id:
-                    conn.execute(
-                        text(
-                            """
-                            UPDATE skills
-                            SET skill_id = :skill_id, content_json = :content_json, updated_at = :updated_at
-                            WHERE id = :id
-                            """
-                        ),
-                        {
-                            "id": target_id,
-                            "skill_id": skill_id,
-                            "content_json": json.dumps(content, ensure_ascii=False),
-                            "updated_at": row.get("updated_at"),
-                        },
-                    )
+                    conn.execute(text('\n                            UPDATE skills\n                            SET skill_id = :skill_id, content_json = :content_json, updated_at = :updated_at\n                            WHERE id = :id\n                            '), {'id': target_id, 'skill_id': skill_id, 'content_json': json.dumps(content, ensure_ascii=False), 'updated_at': row.get('updated_at')})
                     continue
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO skills (
-                            id, tenant_id, skill_id, version, name, business_domain,
-                            description, content_json, status, created_at, updated_at
-                        )
-                        VALUES (
-                            :id, :tenant_id, :skill_id, :version, :name, :business_domain,
-                            :description, :content_json, :status, :created_at, :updated_at
-                        )
-                        """
-                    ),
-                    {
-                        "id": target_id,
-                        "tenant_id": row["tenant_id"],
-                        "skill_id": skill_id,
-                        "version": row.get("version") or "1.0.0",
-                        "name": row["name"],
-                        "business_domain": row.get("business_domain"),
-                        "description": row.get("description"),
-                        "content_json": json.dumps(content, ensure_ascii=False),
-                        "status": row.get("status") or "draft",
-                        "created_at": row.get("created_at"),
-                        "updated_at": row.get("updated_at"),
-                    },
-                )
-        if "skills" in tables:
+                conn.execute(text('\n                        INSERT INTO skills (\n                            id, tenant_id, skill_id, version, name, business_domain,\n                            description, content_json, status, created_at, updated_at\n                        )\n                        VALUES (\n                            :id, :tenant_id, :skill_id, :version, :name, :business_domain,\n                            :description, :content_json, :status, :created_at, :updated_at\n                        )\n                        '), {'id': target_id, 'tenant_id': row['tenant_id'], 'skill_id': skill_id, 'version': row.get('version') or '1.0.0', 'name': row['name'], 'business_domain': row.get('business_domain'), 'description': row.get('description'), 'content_json': json.dumps(content, ensure_ascii=False), 'status': row.get('status') or 'draft', 'created_at': row.get('created_at'), 'updated_at': row.get('updated_at')})
+        if 'skills' in tables:
             _normalize_existing_skill_rows(conn, legacy_id_prefix)
-            if "skill_versions" in tables:
+            if 'skill_versions' in tables:
                 _normalize_existing_skill_version_rows(conn, legacy_id_prefix)
                 _seed_skill_versions(conn)
             _normalize_agent_branch_rows(conn, tables)
@@ -1922,18 +1622,13 @@ def _ensure_skill_graph(content: dict[str, object]) -> dict[str, object]:
 
 def _ensure_required_capability_refs(nodes: list[object]) -> None:
     """Repair legacy nodes where a required capability was not also selected."""
-
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        refs = node.get("capability_refs")
+        refs = node.get('capability_refs')
         if not isinstance(refs, dict):
             continue
-        for required_field, selected_field in (
-            ("required_general_skill_ids", "general_skill_ids"),
-            ("required_tool_ids", "tool_ids"),
-            ("required_knowledge_base_ids", "knowledge_base_ids"),
-        ):
+        for required_field, selected_field in (('required_general_skill_ids', 'general_skill_ids'), ('required_tool_ids', 'tool_ids'), ('required_knowledge_base_ids', 'knowledge_base_ids')):
             required = refs.get(required_field)
             if not isinstance(required, list):
                 continue
@@ -1946,26 +1641,14 @@ def _ensure_required_capability_refs(nodes: list[object]) -> None:
 
 
 def _step_to_node_dict(step: dict[str, object]) -> dict[str, object]:
-    actions = step.get("allowed_actions") if isinstance(step.get("allowed_actions"), list) else []
-    expected = step.get("expected_user_info") if isinstance(step.get("expected_user_info"), list) else []
-    node_type = "collect_info" if expected else "response"
-    if any(isinstance(action, str) and action.startswith("call_tool:") for action in actions):
-        node_type = "tool_call"
-    if "handoff_human" in actions:
-        node_type = "handoff"
-    return {
-        "node_id": str(step.get("step_id") or step.get("node_id") or "step"),
-        "type": node_type,
-        "name": str(step.get("name") or step.get("step_id") or "步骤"),
-        "instruction": str(step.get("instruction") or ""),
-        "optional": bool(step.get("optional") or False),
-        "condition": step.get("condition") if isinstance(step.get("condition"), str) else None,
-        "expected_user_info": expected,
-        "allowed_actions": actions,
-        "knowledge_scope": step.get("knowledge_scope") if isinstance(step.get("knowledge_scope"), dict) else {},
-        "retry_policy": step.get("retry_policy") if isinstance(step.get("retry_policy"), dict) else {},
-        "metadata": step.get("metadata") if isinstance(step.get("metadata"), dict) else {},
-    }
+    actions = step.get('allowed_actions') if isinstance(step.get('allowed_actions'), list) else []
+    expected = step.get('expected_user_info') if isinstance(step.get('expected_user_info'), list) else []
+    node_type = 'collect_info' if expected else 'response'
+    if any((isinstance(action, str) and action.startswith('call_tool:') for action in actions)):
+        node_type = 'tool_call'
+    if 'handoff_human' in actions:
+        node_type = 'handoff'
+    return {'node_id': str(step.get('step_id') or step.get('node_id') or 'step'), 'type': node_type, 'name': str(step.get('name') or step.get('step_id') or '步骤'), 'instruction': str(step.get('instruction') or ''), 'optional': bool(step.get('optional') or False), 'condition': step.get('condition') if isinstance(step.get('condition'), str) else None, 'expected_user_info': expected, 'allowed_actions': actions, 'retry_policy': step.get('retry_policy') if isinstance(step.get('retry_policy'), dict) else {}, 'metadata': step.get('metadata') if isinstance(step.get('metadata'), dict) else {}}
 
 
 def _first_node_id(nodes: object) -> str | None:
@@ -2238,381 +1921,10 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
     )
 
 
-def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
-    legacy_documents = "knowledge_documents" in tables and "knowledge_base_version_id" not in {
-        column["name"] for column in inspector.get_columns("knowledge_documents")
-    }
-    tenant_ids = _tenant_ids(conn, tables)
-    default_ids: dict[str, str] = {}
-    if "knowledge_bases" in tables:
-        for tenant_id in tenant_ids:
-            default_id = _default_knowledge_base_id(tenant_id)
-            existing = conn.execute(
-                text("SELECT id FROM knowledge_bases WHERE tenant_id = :tenant_id AND (id = :id OR name = :name) ORDER BY CASE WHEN id = :id THEN 0 ELSE 1 END LIMIT 1"),
-                {"id": default_id, "tenant_id": tenant_id, "name": "默认知识库"},
-            ).first()
-            default_ids[tenant_id] = str(existing[0]) if existing else default_id
-            if not existing:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO knowledge_bases (
-                            id, tenant_id, name, description, status, capability_scope,
-                            metadata_json, created_at, updated_at
-                        )
-                        VALUES (
-                            :id, :tenant_id, :name, :description, 'active', 'general',
-                            '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                        )
-                        """
-                    ),
-                    {
-                        "id": default_id,
-                        "tenant_id": tenant_id,
-                        "name": "默认知识库",
-                        "description": "系统默认知识库",
-                    },
-                )
-
-    table_names = {
-        "knowledge_documents": "knowledge_base_id",
-        "knowledge_buckets": "knowledge_base_id",
-        "knowledge_chunks": "knowledge_base_id",
-        "knowledge_concepts": "knowledge_base_id",
-        "knowledge_discovery_suggestions": "knowledge_base_id",
-        "knowledge_ingest_jobs": "knowledge_base_id",
-    }
-    for table_name, column_name in table_names.items():
-        if table_name not in tables:
-            continue
-        columns = {column["name"] for column in inspector.get_columns(table_name)}
-        if column_name not in columns:
-            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} VARCHAR"))
-        rows = conn.execute(
-            text(f"SELECT DISTINCT tenant_id FROM {table_name} WHERE {column_name} IS NULL OR {column_name} = ''")
-        ).mappings().all()
-        for row in rows:
-            tenant_id = str(row.get("tenant_id") or "")
-            if tenant_id:
-                conn.execute(
-                    text(f"UPDATE {table_name} SET {column_name} = :knowledge_base_id WHERE tenant_id = :tenant_id AND ({column_name} IS NULL OR {column_name} = '')"),
-                    {"tenant_id": tenant_id, "knowledge_base_id": default_ids.get(tenant_id, _default_knowledge_base_id(tenant_id))},
-                )
-
-    resolved_version_ids: dict[str, str] = {}
-    if "knowledge_base_versions" in tables and "knowledge_bases" in tables:
-        knowledge_bases = conn.execute(text("SELECT * FROM knowledge_bases")).mappings().all()
-        for row in knowledge_bases:
-            knowledge_base_id = str(row["id"])
-            version_id = _knowledge_base_version_id(knowledge_base_id, "1.0.0")
-            existing = conn.execute(
-                text(
-                    """
-                    SELECT id FROM knowledge_base_versions
-                    WHERE id = :id
-                       OR (
-                            tenant_id = :tenant_id
-                            AND knowledge_base_id = :knowledge_base_id
-                            AND version = '1.0.0'
-                       )
-                    """
-                ),
-                {
-                    "id": version_id,
-                    "tenant_id": row["tenant_id"],
-                    "knowledge_base_id": knowledge_base_id,
-                },
-            ).first()
-            if existing:
-                version_id = str(existing[0])
-            else:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO knowledge_base_versions (
-                            id, tenant_id, knowledge_base_id, version, name, description,
-                            status, capability_scope, metadata_json, created_at, updated_at
-                        )
-                        VALUES (
-                            :id, :tenant_id, :knowledge_base_id, '1.0.0', :name, :description,
-                            :status, :capability_scope, :metadata_json,
-                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                        )
-                        """
-                    ),
-                    {
-                        "id": version_id,
-                        "tenant_id": row["tenant_id"],
-                        "knowledge_base_id": knowledge_base_id,
-                        "name": row["name"],
-                        "description": row.get("description"),
-                        "status": row.get("status") or "active",
-                        "capability_scope": (
-                            row.get("capability_scope")
-                            if row.get("capability_scope") in {"general", "sop_specific"}
-                            else "general"
-                        ),
-                        "metadata_json": row.get("metadata_json") or "{}",
-                    },
-                )
-            resolved_version_ids[knowledge_base_id] = version_id
-
-    for table_name in table_names:
-        if table_name not in tables:
-            continue
-        columns = {column["name"] for column in inspector.get_columns(table_name)}
-        if "knowledge_base_version_id" not in columns:
-            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN knowledge_base_version_id VARCHAR"))
-        rows = conn.execute(
-            text(
-                f"""
-                SELECT DISTINCT knowledge_base_id FROM {table_name}
-                WHERE knowledge_base_id IS NOT NULL
-                  AND knowledge_base_id != ''
-                  AND (knowledge_base_version_id IS NULL OR knowledge_base_version_id = '')
-                """
-            )
-        ).mappings().all()
-        for row in rows:
-            knowledge_base_id = str(row.get("knowledge_base_id") or "")
-            if not knowledge_base_id:
-                continue
-            conn.execute(
-                text(
-                    f"""
-                    UPDATE {table_name}
-                    SET knowledge_base_version_id = :version_id
-                    WHERE knowledge_base_id = :knowledge_base_id
-                      AND (knowledge_base_version_id IS NULL OR knowledge_base_version_id = '')
-                    """
-                ),
-                {
-                    "knowledge_base_id": knowledge_base_id,
-                    "version_id": resolved_version_ids.get(
-                        knowledge_base_id,
-                        _knowledge_base_version_id(knowledge_base_id, "1.0.0"),
-                    ),
-                },
-            )
-
-    # Only the pre-version document schema needs conversion. Current uploads and
-    # edited version copies must keep their original resource/branch identities.
-    if legacy_documents:
-        _split_document_backed_knowledge_bases(conn, tables)
 
 
-def _split_document_backed_knowledge_bases(conn, tables: set[str]) -> None:
-    required_tables = {"knowledge_bases", "knowledge_base_versions", "knowledge_documents"}
-    if not required_tables.issubset(tables):
-        return
-
-    document_groups = conn.execute(
-        text(
-            """
-            SELECT knowledge_base_id, COUNT(id) AS document_count
-            FROM knowledge_documents
-            WHERE knowledge_base_id IS NOT NULL AND knowledge_base_id != ''
-            GROUP BY knowledge_base_id
-            """
-        )
-    ).mappings().all()
-    multi_document_base_ids = {
-        str(row["knowledge_base_id"])
-        for row in document_groups
-        if int(row.get("document_count") or 0) > 1
-    }
-    if not multi_document_base_ids:
-        return
-
-    for source_knowledge_base_id in sorted(multi_document_base_ids):
-        source = conn.execute(
-            text("SELECT * FROM knowledge_bases WHERE id = :id"),
-            {"id": source_knowledge_base_id},
-        ).mappings().first()
-        if not source:
-            continue
-        # Even legacy rows may already have owner associations. Do not invent
-        # replacement grants or reset their branch/version/privacy semantics.
-        associated = False
-        for table_name, column_name in (
-            ("agent_knowledge_branches", "knowledge_base_id"),
-            ("agent_resource_bindings", "resource_id"),
-        ):
-            if table_name not in tables:
-                continue
-            resource_clause = " AND resource_type = 'knowledge_base'" if table_name == "agent_resource_bindings" else ""
-            if conn.execute(text(
-                f"SELECT 1 FROM {table_name} WHERE tenant_id = :tenant_id "
-                f"AND {column_name} = :id{resource_clause} LIMIT 1"
-            ), {"tenant_id": source["tenant_id"], "id": source_knowledge_base_id}).first():
-                associated = True
-                break
-        if associated:
-            continue
-        documents = conn.execute(
-            text(
-                """
-                SELECT *
-                FROM knowledge_documents
-                WHERE knowledge_base_id = :knowledge_base_id
-                ORDER BY created_at, id
-                """
-            ),
-            {"knowledge_base_id": source_knowledge_base_id},
-        ).mappings().all()
-        if len(documents) <= 1:
-            continue
-        for document in documents:
-            target_id = _document_knowledge_base_id(str(document["id"]))
-            target = conn.execute(
-                text("SELECT id FROM knowledge_bases WHERE id = :id"),
-                {"id": target_id},
-            ).first()
-            target_name = _unique_migrated_knowledge_base_name(
-                conn,
-                str(source["tenant_id"]),
-                _document_knowledge_base_name(document),
-                target_id,
-            )
-            metadata = _json_object(source.get("metadata_json"))
-            metadata.update(
-                {
-                    "created_from_document_upload": True,
-                    "source_document_id": document["id"],
-                    "source_filename": document.get("filename"),
-                    "split_from_knowledge_base_id": source_knowledge_base_id,
-                }
-            )
-            if not target:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO knowledge_bases (
-                            id, tenant_id, name, description, status, capability_scope,
-                            metadata_json, created_at, updated_at
-                        )
-                        VALUES (
-                            :id, :tenant_id, :name, :description, :status, :capability_scope,
-                            :metadata_json, :created_at, CURRENT_TIMESTAMP
-                        )
-                        """
-                    ),
-                    {
-                        "id": target_id,
-                        "tenant_id": source["tenant_id"],
-                        "name": target_name,
-                        "description": f"由文档 {document.get('filename') or document['id']} 创建",
-                        "status": "active",
-                        "capability_scope": (
-                            source.get("capability_scope")
-                            if source.get("capability_scope") in {"general", "sop_specific"}
-                            else "general"
-                        ),
-                        "metadata_json": json.dumps(metadata, ensure_ascii=False),
-                        "created_at": document.get("created_at") or source.get("created_at"),
-                    },
-                )
-            version_id = _knowledge_base_version_id(target_id, "1.0.0")
-            version_exists = conn.execute(
-                text("SELECT id FROM knowledge_base_versions WHERE id = :id"),
-                {"id": version_id},
-            ).first()
-            if not version_exists:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO knowledge_base_versions (
-                            id, tenant_id, knowledge_base_id, version, name, description,
-                            status, capability_scope, metadata_json, created_at, updated_at
-                        )
-                        VALUES (
-                            :id, :tenant_id, :knowledge_base_id, '1.0.0', :name, :description,
-                            'active', :capability_scope, :metadata_json,
-                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                        )
-                        """
-                    ),
-                    {
-                        "id": version_id,
-                        "tenant_id": source["tenant_id"],
-                        "knowledge_base_id": target_id,
-                        "name": target_name,
-                        "description": f"由文档 {document.get('filename') or document['id']} 创建",
-                        "capability_scope": (
-                            source.get("capability_scope")
-                            if source.get("capability_scope") in {"general", "sop_specific"}
-                            else "general"
-                        ),
-                        "metadata_json": json.dumps(metadata, ensure_ascii=False),
-                    },
-                )
-            _move_document_knowledge_rows(conn, tables, str(document["id"]), target_id, version_id)
 
 
-def _move_document_knowledge_rows(
-    conn,
-    tables: set[str],
-    document_id: str,
-    knowledge_base_id: str,
-    version_id: str,
-) -> None:
-    document_scoped_tables = (
-        "knowledge_buckets",
-        "knowledge_chunks",
-        "knowledge_concepts",
-        "knowledge_discovery_suggestions",
-    )
-    if "knowledge_documents" in tables:
-        conn.execute(
-            text(
-                """
-                UPDATE knowledge_documents
-                SET knowledge_base_id = :knowledge_base_id,
-                    knowledge_base_version_id = :version_id
-                WHERE id = :document_id
-                """
-            ),
-            {
-                "document_id": document_id,
-                "knowledge_base_id": knowledge_base_id,
-                "version_id": version_id,
-            },
-        )
-    for table_name in document_scoped_tables:
-        if table_name not in tables:
-            continue
-        conn.execute(
-            text(
-                f"""
-                UPDATE {table_name}
-                SET knowledge_base_id = :knowledge_base_id,
-                    knowledge_base_version_id = :version_id
-                WHERE document_id = :document_id
-                """
-            ),
-            {
-                "document_id": document_id,
-                "knowledge_base_id": knowledge_base_id,
-                "version_id": version_id,
-            },
-        )
-    if "knowledge_ingest_jobs" not in tables:
-        return
-    conn.execute(
-        text(
-            """
-            UPDATE knowledge_ingest_jobs
-            SET knowledge_base_id = :knowledge_base_id,
-                knowledge_base_version_id = :version_id
-            WHERE document_id = :document_id
-            """
-        ),
-        {
-            "document_id": document_id,
-            "knowledge_base_id": knowledge_base_id,
-            "version_id": version_id,
-        },
-    )
 
 
 def _json_object(value: object) -> dict[str, object]:
@@ -2628,42 +1940,10 @@ def _json_object(value: object) -> dict[str, object]:
     return {}
 
 
-def _document_knowledge_base_id(document_id: str) -> str:
-    return f"kb_doc_{document_id}"
 
 
-def _document_knowledge_base_name(document) -> str:
-    title = str(document.get("title") or "").strip()
-    if title:
-        return title
-    filename = str(document.get("filename") or "").strip()
-    stem = Path(filename).stem.strip()
-    return stem or filename or "未命名知识库"
 
 
-def _unique_migrated_knowledge_base_name(
-    conn,
-    tenant_id: str,
-    base_name: str,
-    target_id: str,
-) -> str:
-    normalized = base_name.strip() or "未命名知识库"
-    existing_names = {
-        str(row[0])
-        for row in conn.execute(
-            text("SELECT name FROM knowledge_bases WHERE tenant_id = :tenant_id AND id != :target_id"),
-            {"tenant_id": tenant_id, "target_id": target_id},
-        ).all()
-        if row[0]
-    }
-    if normalized not in existing_names:
-        return normalized
-    index = 2
-    while True:
-        candidate = f"{normalized} {index}"
-        if candidate not in existing_names:
-            return candidate
-        index += 1
 
 
 def _seed_default_agents(conn, tables: set[str]) -> None:
@@ -2705,68 +1985,21 @@ def _seed_default_agents(conn, tables: set[str]) -> None:
 
 def _seed_default_agent_bindings(conn, tenant_id: str) -> None:
     default_agent = _default_agent_id(tenant_id)
-    active_default = conn.execute(
-        text(
-            """
-            SELECT id FROM agent_profiles
-            WHERE id = :id AND tenant_id = :tenant_id AND status != 'archived'
-            """
-        ),
-        {"id": default_agent, "tenant_id": tenant_id},
-    ).first()
+    active_default = conn.execute(text("\n            SELECT id FROM agent_profiles\n            WHERE id = :id AND tenant_id = :tenant_id AND status != 'archived'\n            "), {'id': default_agent, 'tenant_id': tenant_id}).first()
     if not active_default:
         return
-    resource_queries = (
-        ("skill", "SELECT id, status FROM skills WHERE tenant_id = :tenant_id AND status != 'deleted'"),
-        ("general_skill", "SELECT id, status FROM general_skills WHERE tenant_id = :tenant_id AND status != 'deleted'"),
-        ("knowledge_base", "SELECT id, status FROM knowledge_bases WHERE tenant_id = :tenant_id AND status != 'deleted'"),
-    )
+    resource_queries = (('skill', "SELECT id, status FROM skills WHERE tenant_id = :tenant_id AND status != 'deleted'"), ('general_skill', "SELECT id, status FROM general_skills WHERE tenant_id = :tenant_id AND status != 'deleted'"))
     for resource_type, sql in resource_queries:
-        rows = conn.execute(text(sql), {"tenant_id": tenant_id}).mappings().all()
+        rows = conn.execute(text(sql), {'tenant_id': tenant_id}).mappings().all()
         for row in rows:
-            resource_id = str(row.get("id") or "")
+            resource_id = str(row.get('id') or '')
             if not resource_id:
                 continue
-            binding_status = "active" if str(row.get("status") or "") in {"active", "published"} else "inactive"
-            existing = conn.execute(
-                text(
-                    """
-                    SELECT id FROM agent_resource_bindings
-                    WHERE tenant_id = :tenant_id AND agent_id = :agent_id
-                      AND resource_type = :resource_type AND resource_id = :resource_id
-                    """
-                ),
-                {
-                    "tenant_id": tenant_id,
-                    "agent_id": default_agent,
-                    "resource_type": resource_type,
-                    "resource_id": resource_id,
-                },
-            ).first()
+            binding_status = 'active' if str(row.get('status') or '') in {'active', 'published'} else 'inactive'
+            existing = conn.execute(text('\n                    SELECT id FROM agent_resource_bindings\n                    WHERE tenant_id = :tenant_id AND agent_id = :agent_id\n                      AND resource_type = :resource_type AND resource_id = :resource_id\n                    '), {'tenant_id': tenant_id, 'agent_id': default_agent, 'resource_type': resource_type, 'resource_id': resource_id}).first()
             if existing:
                 continue
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO agent_resource_bindings (
-                        id, tenant_id, agent_id, resource_type, resource_id, status,
-                        metadata_json, created_at, updated_at
-                    )
-                    VALUES (
-                        :id, :tenant_id, :agent_id, :resource_type, :resource_id, :status,
-                        '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                    )
-                    """
-                ),
-                {
-                    "id": _agent_resource_binding_id(tenant_id, default_agent, resource_type, resource_id),
-                    "tenant_id": tenant_id,
-                    "agent_id": default_agent,
-                    "resource_type": resource_type,
-                    "resource_id": resource_id,
-                    "status": binding_status,
-                },
-            )
+            conn.execute(text("\n                    INSERT INTO agent_resource_bindings (\n                        id, tenant_id, agent_id, resource_type, resource_id, status,\n                        metadata_json, created_at, updated_at\n                    )\n                    VALUES (\n                        :id, :tenant_id, :agent_id, :resource_type, :resource_id, :status,\n                        '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP\n                    )\n                    "), {'id': _agent_resource_binding_id(tenant_id, default_agent, resource_type, resource_id), 'tenant_id': tenant_id, 'agent_id': default_agent, 'resource_type': resource_type, 'resource_id': resource_id, 'status': binding_status})
 
 
 def _archive_default_agent(conn, tenant_id: str) -> None:
@@ -2826,109 +2059,28 @@ def _archive_default_agent(conn, tenant_id: str) -> None:
 
 
 def _seed_agent_branch_state(conn, inspector, tables: set[str]) -> None:
-    if "agent_profiles" not in tables:
+    if 'agent_profiles' not in tables:
         return
-    if "agent_skill_branches" in tables and "skills" in tables:
-        agents = conn.execute(
-            text("SELECT id, tenant_id FROM agent_profiles WHERE is_overall = 0 AND status != 'archived'")
-        ).mappings().all()
+    if 'agent_skill_branches' in tables and 'skills' in tables:
+        agents = conn.execute(text("SELECT id, tenant_id FROM agent_profiles WHERE is_overall = 0 AND status != 'archived'")).mappings().all()
         for agent in agents:
-            tenant_id = str(agent["tenant_id"])
-            agent_id = str(agent["id"])
+            tenant_id = str(agent['tenant_id'])
+            agent_id = str(agent['id'])
             _seed_default_agent_bindings(conn, tenant_id)
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT s.*
-                    FROM skills s
-                    JOIN agent_resource_bindings b
-                      ON b.resource_id = s.id
-                     AND b.resource_type = 'skill'
-                     AND b.tenant_id = s.tenant_id
-                    WHERE s.tenant_id = :tenant_id
-                      AND b.agent_id = :agent_id
-                      AND s.status != 'deleted'
-                    """
-                ),
-                {"tenant_id": tenant_id, "agent_id": agent_id},
-            ).mappings().all()
+            rows = conn.execute(text("\n                    SELECT s.*\n                    FROM skills s\n                    JOIN agent_resource_bindings b\n                      ON b.resource_id = s.id\n                     AND b.resource_type = 'skill'\n                     AND b.tenant_id = s.tenant_id\n                    WHERE s.tenant_id = :tenant_id\n                      AND b.agent_id = :agent_id\n                      AND s.status != 'deleted'\n                    "), {'tenant_id': tenant_id, 'agent_id': agent_id}).mappings().all()
             for row in rows:
                 _seed_agent_skill_branch(conn, agent_id, row)
-
-    if "agent_knowledge_branches" in tables and "knowledge_bases" in tables:
-        agents = conn.execute(
-            text("SELECT id, tenant_id FROM agent_profiles WHERE is_overall = 0 AND status != 'archived'")
-        ).mappings().all()
-        for agent in agents:
-            tenant_id = str(agent["tenant_id"])
-            agent_id = str(agent["id"])
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT kb.*
-                    FROM knowledge_bases kb
-                    JOIN agent_resource_bindings b
-                      ON b.resource_id = kb.id
-                     AND b.resource_type = 'knowledge_base'
-                     AND b.tenant_id = kb.tenant_id
-                    WHERE kb.tenant_id = :tenant_id
-                      AND b.agent_id = :agent_id
-                      AND kb.status != 'deleted'
-                    """
-                ),
-                {"tenant_id": tenant_id, "agent_id": agent_id},
-            ).mappings().all()
-            for row in rows:
-                _seed_agent_knowledge_branch(conn, agent_id, row)
-
-    if "agent_model_bindings" in tables:
-        # Employee-level model selection has been retired. Clearing legacy rows during startup
-        # prevents older databases or clients from silently pinning employees to stale models.
-        conn.execute(text("DELETE FROM agent_model_bindings"))
+    if 'agent_model_bindings' in tables:
+        conn.execute(text('DELETE FROM agent_model_bindings'))
 
 
 def _normalize_agent_branch_rows(conn, tables: set[str]) -> None:
-    if "agent_resource_bindings" in tables:
-        _normalize_canonical_ids(
-            conn,
-            table="agent_resource_bindings",
-            select_columns=("id", "tenant_id", "agent_id", "resource_type", "resource_id"),
-            key_columns=("tenant_id", "agent_id", "resource_type", "resource_id"),
-            id_factory=lambda row: _agent_resource_binding_id(
-                str(row["tenant_id"]),
-                str(row["agent_id"]),
-                str(row["resource_type"]),
-                str(row["resource_id"]),
-            ),
-        )
-    if "agent_skill_branches" in tables:
-        _normalize_canonical_ids(
-            conn,
-            table="agent_skill_branches",
-            select_columns=("id", "tenant_id", "agent_id", "skill_id"),
-            key_columns=("tenant_id", "agent_id", "skill_id"),
-            id_factory=lambda row: _agent_skill_branch_id(str(row["agent_id"]), str(row["skill_id"])),
-        )
-    if "agent_skill_branch_versions" in tables:
-        _normalize_canonical_ids(
-            conn,
-            table="agent_skill_branch_versions",
-            select_columns=("id", "tenant_id", "agent_id", "skill_id", "version"),
-            key_columns=("tenant_id", "agent_id", "skill_id", "version"),
-            id_factory=lambda row: _agent_skill_branch_version_id(
-                str(row["agent_id"]),
-                str(row["skill_id"]),
-                str(row["version"]),
-            ),
-        )
-    if "agent_knowledge_branches" in tables:
-        _normalize_canonical_ids(
-            conn,
-            table="agent_knowledge_branches",
-            select_columns=("id", "tenant_id", "agent_id", "knowledge_base_id"),
-            key_columns=("tenant_id", "agent_id", "knowledge_base_id"),
-            id_factory=lambda row: _agent_knowledge_branch_id(str(row["agent_id"]), str(row["knowledge_base_id"])),
-        )
+    if 'agent_resource_bindings' in tables:
+        _normalize_canonical_ids(conn, table='agent_resource_bindings', select_columns=('id', 'tenant_id', 'agent_id', 'resource_type', 'resource_id'), key_columns=('tenant_id', 'agent_id', 'resource_type', 'resource_id'), id_factory=lambda row: _agent_resource_binding_id(str(row['tenant_id']), str(row['agent_id']), str(row['resource_type']), str(row['resource_id'])))
+    if 'agent_skill_branches' in tables:
+        _normalize_canonical_ids(conn, table='agent_skill_branches', select_columns=('id', 'tenant_id', 'agent_id', 'skill_id'), key_columns=('tenant_id', 'agent_id', 'skill_id'), id_factory=lambda row: _agent_skill_branch_id(str(row['agent_id']), str(row['skill_id'])))
+    if 'agent_skill_branch_versions' in tables:
+        _normalize_canonical_ids(conn, table='agent_skill_branch_versions', select_columns=('id', 'tenant_id', 'agent_id', 'skill_id', 'version'), key_columns=('tenant_id', 'agent_id', 'skill_id', 'version'), id_factory=lambda row: _agent_skill_branch_version_id(str(row['agent_id']), str(row['skill_id']), str(row['version'])))
 
 
 def _normalize_canonical_ids(
@@ -3029,48 +2181,19 @@ def _seed_agent_skill_branch(conn, agent_id: str, row) -> None:
     )
 
 
-def _seed_agent_knowledge_branch(conn, agent_id: str, row) -> None:
-    branch_id = _agent_knowledge_branch_id(agent_id, str(row["id"]))
-    existing = conn.execute(text("SELECT id FROM agent_knowledge_branches WHERE id = :id"), {"id": branch_id}).first()
-    if existing:
-        return
-    branch_status = "active" if str(row.get("status") or "") == "active" else "inactive"
-    conn.execute(
-        text(
-            """
-            INSERT INTO agent_knowledge_branches (
-                id, tenant_id, agent_id, knowledge_base_id, base_version, head_version,
-                status, sync_state, metadata_json, created_at, updated_at
-            )
-            VALUES (
-                :id, :tenant_id, :agent_id, :knowledge_base_id, '1.0.0', '1.0.0',
-                :status, 'synced', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-            )
-            """
-        ),
-        {
-            "id": branch_id,
-            "tenant_id": row["tenant_id"],
-            "agent_id": agent_id,
-            "knowledge_base_id": row["id"],
-            "status": branch_status,
-        },
-    )
 
 
 def _tenant_ids(conn, tables: set[str]) -> list[str]:
     ids: set[str] = set()
-    if "tenants" in tables:
-        ids.update(str(row[0]) for row in conn.execute(text("SELECT id FROM tenants")).all() if row[0])
-    for table_name in ("skills", "general_skills", "knowledge_documents", "sessions"):
+    if 'tenants' in tables:
+        ids.update((str(row[0]) for row in conn.execute(text('SELECT id FROM tenants')).all() if row[0]))
+    for table_name in ('skills', 'general_skills', 'sessions'):
         if table_name not in tables:
             continue
-        ids.update(str(row[0]) for row in conn.execute(text(f"SELECT DISTINCT tenant_id FROM {table_name}")).all() if row[0])
+        ids.update((str(row[0]) for row in conn.execute(text(f'SELECT DISTINCT tenant_id FROM {table_name}')).all() if row[0]))
     return sorted(ids)
 
 
-def _default_knowledge_base_id(tenant_id: str) -> str:
-    return f"kb_{tenant_id}_default"
 
 
 def _overall_agent_id(tenant_id: str) -> str:
@@ -3081,8 +2204,6 @@ def _default_agent_id(tenant_id: str) -> str:
     return f"agent_{tenant_id}_default"
 
 
-def _knowledge_base_version_id(knowledge_base_id: str, version: str) -> str:
-    return f"kbver_{knowledge_base_id}_{version.replace('.', '_').replace('-', '_')}"
 
 
 def _agent_skill_branch_id(agent_id: str, skill_id: str) -> str:
@@ -3094,8 +2215,6 @@ def _agent_skill_branch_version_id(agent_id: str, skill_id: str, version: str) -
     return f"agentbranchver_{agent_id}_{skill_id}_{safe_version}"
 
 
-def _agent_knowledge_branch_id(agent_id: str, knowledge_base_id: str) -> str:
-    return f"agentkb_{agent_id}_{knowledge_base_id}"
 
 
 def _agent_resource_binding_id(tenant_id: str, agent_id: str, resource_type: str, resource_id: str) -> str:

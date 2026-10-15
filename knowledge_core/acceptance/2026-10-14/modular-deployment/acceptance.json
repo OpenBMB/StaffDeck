@@ -1,0 +1,56 @@
+{
+  "status": "complete",
+  "gates": {
+    "core_and_compatibility_regression": {
+      "status": "passed"
+    },
+    "isolated_full_artifact": {
+      "status": "passed"
+    },
+    "pd_runtime": {
+      "status": "passed"
+    },
+    "isolated_lexical": {
+      "status": "passed"
+    },
+    "isolated_direct_model": {
+      "status": "passed"
+    },
+    "module_compositions": {
+      "status": "passed"
+    },
+    "combination_browser": {
+      "status": "passed"
+    },
+    "downgrade": {
+      "status": "passed"
+    },
+    "docker": {
+      "status": "passed"
+    },
+    "full_storage": {
+      "status": "passed"
+    },
+    "full_compatibility": {
+      "status": "passed"
+    },
+    "full_lifespan_browser": {
+      "status": "passed"
+    },
+    "pd_model": {
+      "status": "passed"
+    },
+    "iframe_upgrade": {
+      "status": "passed"
+    },
+    "host_cleanup": {
+      "status": "passed"
+    },
+    "process_task_recovery": {
+      "status": "passed"
+    },
+    "publication": {
+      "status": "passed"
+    }
+  }
+}

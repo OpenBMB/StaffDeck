@@ -1,0 +1,183 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 604B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:22-slim
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/library/python:3.12-slim
+#3 DONE 0.1s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 108B done
+#4 DONE 0.0s
+
+#5 [ui 1/6] FROM docker.io/library/node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
+#5 resolve docker.io/library/node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 0.0s done
+#5 DONE 0.0s
+
+#6 [wheel 1/6] FROM docker.io/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+#6 resolve docker.io/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 0.0s done
+#6 DONE 0.0s
+
+#7 [internal] load build context
+#7 transferring context: 213.22kB 0.0s done
+#7 DONE 0.0s
+
+#8 [ui 3/6] COPY ui/package*.json ./
+#8 CACHED
+
+#9 [ui 5/6] COPY ui/ ./
+#9 CACHED
+
+#10 [ui 4/6] RUN npm ci
+#10 CACHED
+
+#11 [ui 2/6] WORKDIR /src/ui
+#11 CACHED
+
+#12 [ui 6/6] RUN npm run build
+#12 CACHED
+
+#13 [wheel 2/6] WORKDIR /src
+#13 CACHED
+
+#14 [wheel 3/6] COPY pyproject.toml setup.py ./
+#14 CACHED
+
+#15 [wheel 4/6] COPY src/ ./src/
+#15 DONE 0.0s
+
+#16 [wheel 5/6] COPY --from=ui /src/src/knowledge_core/ui/ ./src/knowledge_core/ui/
+#16 DONE 0.0s
+
+#17 [wheel 6/6] RUN pip wheel --no-deps --wheel-dir /dist .
+#17 1.119 Processing /src
+#17 1.121   Installing build dependencies: started
+#17 4.022   Installing build dependencies: finished with status 'done'
+#17 4.022   Getting requirements to build wheel: started
+#17 4.196   Getting requirements to build wheel: finished with status 'done'
+#17 4.197   Preparing metadata (pyproject.toml): started
+#17 4.337   Preparing metadata (pyproject.toml): finished with status 'done'
+#17 4.339 Building wheels for collected packages: knowledge-core
+#17 4.339   Building wheel for knowledge-core (pyproject.toml): started
+#17 4.506   Building wheel for knowledge-core (pyproject.toml): finished with status 'done'
+#17 4.507   Created wheel for knowledge-core: filename=knowledge_core-0.1.0-py3-none-any.whl size=205493 sha256=ec60e3bd06237f67f547976c8ce7b9184a4a98186580d362c9aad3681b7f596e
+#17 4.507   Stored in directory: /tmp/pip-ephem-wheel-cache-xtitp_f0/wheels/be/16/c1/367c544384017c548a18cd5b8ec9d158b60362a7ae1a22dff3
+#17 4.508 Successfully built knowledge-core
+#17 4.927 
+#17 4.927 [notice] A new release of pip is available: 25.0.1 -> 26.2.1
+#17 4.927 [notice] To update, run: pip install --upgrade pip
+#17 DONE 5.0s
+
+#18 [stage-2 2/5] WORKDIR /opt/km
+#18 CACHED
+
+#19 [stage-2 3/5] COPY --from=wheel /dist/ /opt/km/dist/
+#19 DONE 0.0s
+
+#20 [stage-2 4/5] RUN pip install --no-cache-dir /opt/km/dist/*.whl
+#20 0.961 Processing ./dist/knowledge_core-0.1.0-py3-none-any.whl
+#20 1.408 Collecting fastapi>=0.115 (from knowledge-core==0.1.0)
+#20 1.720   Downloading fastapi-0.143.1-py3-none-any.whl.metadata (26 kB)
+#20 1.914 Collecting uvicorn>=0.30 (from knowledge-core==0.1.0)
+#20 2.014   Downloading uvicorn-0.54.0-py3-none-any.whl.metadata (6.6 kB)
+#20 2.132 Collecting sqlmodel<0.0.40,>=0.0.39 (from knowledge-core==0.1.0)
+#20 2.231   Downloading sqlmodel-0.0.39-py3-none-any.whl.metadata (9.4 kB)
+#20 2.354 Collecting httpx>=0.27 (from knowledge-core==0.1.0)
+#20 2.453   Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+#20 2.582 Collecting pypdf>=5 (from knowledge-core==0.1.0)
+#20 2.680   Downloading pypdf-6.20.1-py3-none-any.whl.metadata (7.6 kB)
+#20 2.792 Collecting python-docx>=1.1 (from knowledge-core==0.1.0)
+#20 2.893   Downloading python_docx-1.2.0-py3-none-any.whl.metadata (2.0 kB)
+#20 3.007 Collecting beautifulsoup4>=4.12 (from knowledge-core==0.1.0)
+#20 3.109   Downloading beautifulsoup4-4.15.0-py3-none-any.whl.metadata (3.8 kB)
+#20 3.234 Collecting soupsieve>=1.6.1 (from beautifulsoup4>=4.12->knowledge-core==0.1.0)
+#20 3.334   Downloading soupsieve-3.0.3-py3-none-any.whl.metadata (4.4 kB)
+#20 3.451 Collecting typing-extensions>=4.0.0 (from beautifulsoup4>=4.12->knowledge-core==0.1.0)
+#20 3.550   Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+#20 3.681 Collecting starlette>=0.46.0 (from fastapi>=0.115->knowledge-core==0.1.0)
+#20 3.780   Downloading starlette-1.8.0-py3-none-any.whl.metadata (6.6 kB)
+#20 4.009 Collecting pydantic>=2.9.0 (from fastapi>=0.115->knowledge-core==0.1.0)
+#20 4.110   Downloading pydantic-2.14.1-py3-none-any.whl.metadata (133 kB)
+#20 4.292 Collecting typing-inspection>=0.4.2 (from fastapi>=0.115->knowledge-core==0.1.0)
+#20 4.392   Downloading typing_inspection-0.4.4-py3-none-any.whl.metadata (2.6 kB)
+#20 4.500 Collecting annotated-doc>=0.0.2 (from fastapi>=0.115->knowledge-core==0.1.0)
+#20 4.599   Downloading annotated_doc-0.0.5-py3-none-any.whl.metadata (6.5 kB)
+#20 4.719 Collecting opentelemetry-api>=1.44.0 (from fastapi>=0.115->knowledge-core==0.1.0)
+#20 4.817   Downloading opentelemetry_api-1.45.1-py3-none-any.whl.metadata (1.4 kB)
+#20 4.939 Collecting anyio (from httpx>=0.27->knowledge-core==0.1.0)
+#20 5.038   Downloading anyio-4.15.1-py3-none-any.whl.metadata (4.7 kB)
+#20 5.160 Collecting certifi (from httpx>=0.27->knowledge-core==0.1.0)
+#20 5.261   Downloading certifi-2026.7.22-py3-none-any.whl.metadata (2.5 kB)
+#20 5.380 Collecting httpcore==1.* (from httpx>=0.27->knowledge-core==0.1.0)
+#20 5.481   Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+#20 5.596 Collecting idna (from httpx>=0.27->knowledge-core==0.1.0)
+#20 5.698   Downloading idna-3.20-py3-none-any.whl.metadata (7.2 kB)
+#20 5.816 Collecting h11>=0.16 (from httpcore==1.*->httpx>=0.27->knowledge-core==0.1.0)
+#20 5.918   Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+#20 6.195 Collecting lxml>=3.1.0 (from python-docx>=1.1->knowledge-core==0.1.0)
+#20 6.294   Downloading lxml-6.1.3-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl.metadata (3.3 kB)
+#20 6.582 Collecting SQLAlchemy<2.1.0,>=2.0.14 (from sqlmodel<0.0.40,>=0.0.39->knowledge-core==0.1.0)
+#20 6.686   Downloading sqlalchemy-2.0.54-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl.metadata (9.7 kB)
+#20 6.808 Collecting click>=7.0 (from uvicorn>=0.30->knowledge-core==0.1.0)
+#20 6.907   Downloading click-8.5.0-py3-none-any.whl.metadata (2.6 kB)
+#20 7.024 Collecting annotated-types>=0.6.0 (from pydantic>=2.9.0->fastapi>=0.115->knowledge-core==0.1.0)
+#20 7.126   Downloading annotated_types-0.8.0-py3-none-any.whl.metadata (15 kB)
+#20 7.830 Collecting pydantic-core==2.50.1 (from pydantic>=2.9.0->fastapi>=0.115->knowledge-core==0.1.0)
+#20 7.933   Downloading pydantic_core-2.50.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl.metadata (6.5 kB)
+#20 8.098 Collecting greenlet>=1 (from SQLAlchemy<2.1.0,>=2.0.14->sqlmodel<0.0.40,>=0.0.39->knowledge-core==0.1.0)
+#20 8.197   Downloading greenlet-3.5.6-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl.metadata (3.8 kB)
+#20 8.311 Downloading beautifulsoup4-4.15.0-py3-none-any.whl (109 kB)
+#20 8.424 Downloading fastapi-0.143.1-py3-none-any.whl (144 kB)
+#20 8.539 Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+#20 8.982 Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+#20 9.127 Downloading pypdf-6.20.1-py3-none-any.whl (402 kB)
+#20 9.281 Downloading python_docx-1.2.0-py3-none-any.whl (252 kB)
+#20 9.391 Downloading sqlmodel-0.0.39-py3-none-any.whl (29 kB)
+#20 9.492 Downloading uvicorn-0.54.0-py3-none-any.whl (87 kB)
+#20 9.591 Downloading annotated_doc-0.0.5-py3-none-any.whl (5.3 kB)
+#20 9.691 Downloading click-8.5.0-py3-none-any.whl (125 kB)
+#20 9.795 Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+#20 9.895 Downloading lxml-6.1.3-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl (5.0 MB)
+#20 11.18    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.0/5.0 MB 3.7 MB/s eta 0:00:00
+#20 11.28 Downloading opentelemetry_api-1.45.1-py3-none-any.whl (60 kB)
+#20 11.38 Downloading pydantic-2.14.1-py3-none-any.whl (488 kB)
+#20 11.50 Downloading pydantic_core-2.50.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl (2.0 MB)
+#20 11.90    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.0/2.0 MB 4.7 MB/s eta 0:00:00
+#20 12.00 Downloading soupsieve-3.0.3-py3-none-any.whl (41 kB)
+#20 12.10 Downloading sqlalchemy-2.0.54-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl (3.4 MB)
+#20 14.88    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.4/3.4 MB 1.2 MB/s eta 0:00:00
+#20 19.87 Downloading starlette-1.8.0-py3-none-any.whl (79 kB)
+#20 19.97 Downloading anyio-4.15.1-py3-none-any.whl (132 kB)
+#20 20.33 Downloading idna-3.20-py3-none-any.whl (69 kB)
+#20 20.64 Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+#20 20.94 Downloading typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+#20 21.04 Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+#20 21.25 Downloading annotated_types-0.8.0-py3-none-any.whl (13 kB)
+#20 21.35 Downloading greenlet-3.5.6-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl (611 kB)
+#20 21.37    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 611.7/611.7 kB 28.5 MB/s eta 0:00:00
+#20 21.41 Installing collected packages: typing-extensions, soupsieve, pypdf, lxml, idna, h11, greenlet, click, certifi, annotated-types, annotated-doc, uvicorn, typing-inspection, SQLAlchemy, python-docx, pydantic-core, opentelemetry-api, httpcore, beautifulsoup4, anyio, starlette, pydantic, httpx, sqlmodel, fastapi, knowledge-core
+#20 22.93 Successfully installed SQLAlchemy-2.0.54 annotated-doc-0.0.5 annotated-types-0.8.0 anyio-4.15.1 beautifulsoup4-4.15.0 certifi-2026.7.22 click-8.5.0 fastapi-0.143.1 greenlet-3.5.6 h11-0.16.0 httpcore-1.0.9 httpx-0.28.1 idna-3.20 knowledge-core-0.1.0 lxml-6.1.3 opentelemetry-api-1.45.1 pydantic-2.14.1 pydantic-core-2.50.1 pypdf-6.20.1 python-docx-1.2.0 soupsieve-3.0.3 sqlmodel-0.0.39 starlette-1.8.0 typing-extensions-4.16.0 typing-inspection-0.4.4 uvicorn-0.54.0
+#20 22.93 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+#20 23.33 
+#20 23.33 [notice] A new release of pip is available: 25.0.1 -> 26.2.1
+#20 23.33 [notice] To update, run: pip install --upgrade pip
+#20 DONE 23.5s
+
+#21 [stage-2 5/5] RUN mkdir /data
+#21 DONE 0.2s
+
+#22 exporting to image
+#22 exporting layers
+#22 exporting layers 1.7s done
+#22 exporting manifest sha256:64629cb13f8325bc48d25c1867b906d7cf5d402aa1c473a5f7549395b8cb5703 done
+#22 exporting config sha256:a326859c8631a307ecbe0e9b3bd8df4e8318078e76c322373379ee92558ba80a done
+#22 exporting attestation manifest sha256:8fb52beb4f33c341dc45af4d6eb4a979aeef85597ce82b79a803c4df5a4bab00 done
+#22 exporting manifest list sha256:f4aae9812adaf350e4e63de32d0dbd41ed89a9fc4e3354ec64c4d4f7f0f684e6 done
+#22 naming to docker.io/library/knowledge-core:modular-acceptance done
+#22 unpacking to docker.io/library/knowledge-core:modular-acceptance
+#22 unpacking to docker.io/library/knowledge-core:modular-acceptance 0.3s done
+#22 DONE 2.0s

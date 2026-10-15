@@ -1,0 +1,52 @@
+{
+  "status": "passed",
+  "wheel": "knowledge_core-0.1.0-py3-none-any.whl",
+  "browser": {
+    "origin": "http://127.0.0.1:18787",
+    "name": "Acceptance 1791952847643",
+    "workflow": [
+      "create",
+      "upload",
+      "edit",
+      "bucket-edit",
+      "chunk-edit",
+      "wiki-edit",
+      "search",
+      "citation",
+      "copy",
+      "publish",
+      "rollback",
+      "sync",
+      "rename",
+      "hide",
+      "restore",
+      "graph",
+      "okf-lint",
+      "okf-export",
+      "okf-import",
+      "mobile"
+    ],
+    "pageErrors": []
+  },
+  "isolation": {
+    "package": "/private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-artifact-m6dw5why/venv/lib/python3.12/site-packages/knowledge_core/__init__.py",
+    "tables": [
+      "knowledge_spaces",
+      "knowledge_bindings",
+      "knowledge_branches",
+      "knowledge_publications",
+      "knowledge_citation_snapshots",
+      "knowledge_version_access",
+      "knowledge_bases",
+      "knowledge_base_versions",
+      "knowledge_documents",
+      "knowledge_buckets",
+      "knowledge_chunks",
+      "knowledge_concepts",
+      "knowledge_discovery_suggestions",
+      "knowledge_ingest_jobs"
+    ],
+    "host_imports": []
+  },
+  "service_exit_code": -15
+}

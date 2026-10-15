@@ -1,0 +1,360 @@
+{
+  "status": "passed",
+  "origin": "http://127.0.0.1:52325",
+  "requests": [
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/config"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/identity"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/spaces"
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:52325/api/km/v1/spaces"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/models?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/branch?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/branch?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4/buckets?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4/chunks?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "PUT",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4/buckets?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4/chunks?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/config"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/identity"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/spaces"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/models?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/branch?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4/buckets?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4/chunks?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "PUT",
+      "url": "http://127.0.0.1:52325/api/km/v1/buckets/kbucket_d6fd4d7b83794c698a327a66124d608b?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4/buckets?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4/chunks?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/branch?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "PUT",
+      "url": "http://127.0.0.1:52325/api/km/v1/chunks/kchunk_19455fbe3e8d47b49009e569c4f884cf?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4/buckets?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_6e1a73533f774072bad56f9c8d4177a4/chunks?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/branch?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:52325/api/km/v1/query"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/citations/kchunk_19455fbe3e8d47b49009e569c4f884cf:2026-10-14T14:16:38.661597?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions/copy?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/branch?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/branch?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions/publish?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/branch?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/branch?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "POST",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions/rollback?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/branch?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/jobs?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/versions?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/knowledge-bases/kbase_9588ae08aacd4e4cb51b165b2734f1cd/branch?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_7cf775a82e9248b39bef1288a2ea2b5b?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_7cf775a82e9248b39bef1288a2ea2b5b/buckets?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:52325/api/km/v1/documents/kdoc_7cf775a82e9248b39bef1288a2ea2b5b/chunks?space_id=0dce3233-e5e3-4529-abd5-3d52831576f0&knowledge_base_id=kbase_9588ae08aacd4e4cb51b165b2734f1cd"
+    }
+  ],
+  "errors": [],
+  "steps": [
+    "upload",
+    "task_terminal",
+    "edit",
+    "bucket_edit",
+    "chunk_edit",
+    "reload",
+    "query",
+    "citation",
+    "desktop",
+    "mobile",
+    "no_disabled_requests"
+  ]
+}

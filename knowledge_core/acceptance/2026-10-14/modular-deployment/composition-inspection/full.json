@@ -1,0 +1,532 @@
+{
+  "status": "failed",
+  "configuration": {
+    "protocol": "knowledge-config/v1",
+    "preset": "full",
+    "modules": {
+      "authentication": false,
+      "spaces": true,
+      "catalog": true,
+      "versions": true,
+      "concepts": true,
+      "discovery": true,
+      "publication": true
+    },
+    "api_protocol": "knowledge-core/v1",
+    "identity_required": false,
+    "model_mode": "lexical",
+    "operations": {
+      "identity": {
+        "method": "GET",
+        "path": "/api/km/v1/identity"
+      },
+      "list_spaces": {
+        "method": "GET",
+        "path": "/api/km/v1/spaces"
+      },
+      "create_space": {
+        "method": "POST",
+        "path": "/api/km/v1/spaces"
+      },
+      "list_bindings": {
+        "method": "GET",
+        "path": "/api/km/v1/bindings"
+      },
+      "bind_base": {
+        "method": "POST",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/bindings"
+      },
+      "update_binding": {
+        "method": "PUT",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/binding"
+      },
+      "list_bases": {
+        "method": "GET",
+        "path": "/api/km/v1/knowledge-bases"
+      },
+      "create_base": {
+        "method": "POST",
+        "path": "/api/km/v1/knowledge-bases"
+      },
+      "get_base": {
+        "method": "GET",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}"
+      },
+      "update_base": {
+        "method": "PUT",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}"
+      },
+      "delete_base": {
+        "method": "DELETE",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}"
+      },
+      "list_versions": {
+        "method": "GET",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/versions"
+      },
+      "copy_version": {
+        "method": "POST",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/versions/copy"
+      },
+      "sync_base": {
+        "method": "POST",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/versions/sync"
+      },
+      "publish_version": {
+        "method": "POST",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/versions/publish"
+      },
+      "rollback_version": {
+        "method": "POST",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/versions/rollback"
+      },
+      "update_branch": {
+        "method": "PUT",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/branch"
+      },
+      "list_documents": {
+        "method": "GET",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/documents"
+      },
+      "import_document": {
+        "method": "POST",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/documents"
+      },
+      "get_document": {
+        "method": "GET",
+        "path": "/api/km/v1/documents/{document_id}"
+      },
+      "update_document": {
+        "method": "PUT",
+        "path": "/api/km/v1/documents/{document_id}"
+      },
+      "delete_document": {
+        "method": "DELETE",
+        "path": "/api/km/v1/documents/{document_id}"
+      },
+      "list_document_buckets": {
+        "method": "GET",
+        "path": "/api/km/v1/documents/{document_id}/buckets"
+      },
+      "list_document_chunks": {
+        "method": "GET",
+        "path": "/api/km/v1/documents/{document_id}/chunks"
+      },
+      "list_bucket_chunks": {
+        "method": "GET",
+        "path": "/api/km/v1/buckets/{bucket_id}/chunks"
+      },
+      "get_bucket": {
+        "method": "GET",
+        "path": "/api/km/v1/buckets/{bucket_id}"
+      },
+      "update_bucket": {
+        "method": "PUT",
+        "path": "/api/km/v1/buckets/{bucket_id}"
+      },
+      "get_chunk": {
+        "method": "GET",
+        "path": "/api/km/v1/chunks/{chunk_id}"
+      },
+      "update_chunk": {
+        "method": "PUT",
+        "path": "/api/km/v1/chunks/{chunk_id}"
+      },
+      "get_concept": {
+        "method": "GET",
+        "path": "/api/km/v1/concepts/{concept_id}"
+      },
+      "update_concept": {
+        "method": "PUT",
+        "path": "/api/km/v1/concepts/{concept_id}"
+      },
+      "get_job": {
+        "method": "GET",
+        "path": "/api/km/v1/jobs/{job_id}"
+      },
+      "list_jobs": {
+        "method": "GET",
+        "path": "/api/km/v1/jobs"
+      },
+      "cancel_job": {
+        "method": "POST",
+        "path": "/api/km/v1/jobs/{job_id}/cancel"
+      },
+      "query": {
+        "method": "POST",
+        "path": "/api/km/v1/query"
+      },
+      "resolve_citation": {
+        "method": "GET",
+        "path": "/api/km/v1/citations/{chunk_id}"
+      },
+      "list_okf_concepts": {
+        "method": "GET",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/concepts"
+      },
+      "get_okf_concept": {
+        "method": "GET",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/concepts/{concept_id:path}"
+      },
+      "upsert_okf_concept": {
+        "method": "PUT",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/concepts/{concept_id:path}"
+      },
+      "export_okf": {
+        "method": "GET",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/okf"
+      },
+      "import_okf": {
+        "method": "POST",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/okf"
+      },
+      "lint_okf": {
+        "method": "POST",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/okf/lint"
+      },
+      "list_discoveries": {
+        "method": "GET",
+        "path": "/api/km/v1/knowledge-bases/{knowledge_base_id}/suggestions"
+      },
+      "get_discovery": {
+        "method": "GET",
+        "path": "/api/km/v1/suggestions/{suggestion_id}"
+      },
+      "confirm_discovery": {
+        "method": "POST",
+        "path": "/api/km/v1/suggestions/{suggestion_id}/review"
+      },
+      "review_discovery": {
+        "method": "POST",
+        "path": "/api/km/v1/suggestions/{suggestion_id}/review"
+      },
+      "reject_discovery": {
+        "method": "POST",
+        "path": "/api/km/v1/suggestions/{suggestion_id}/reject"
+      },
+      "export_discovery": {
+        "method": "POST",
+        "path": "/api/km/v1/suggestions/{suggestion_id}/export"
+      },
+      "publish_discovery": {
+        "method": "POST",
+        "path": "/api/km/v1/suggestions/{suggestion_id}/publish"
+      }
+    }
+  },
+  "tables": [
+    "knowledge_base_versions",
+    "knowledge_bases",
+    "knowledge_bindings",
+    "knowledge_branches",
+    "knowledge_buckets",
+    "knowledge_chunks",
+    "knowledge_citation_snapshots",
+    "knowledge_concepts",
+    "knowledge_discovery_suggestions",
+    "knowledge_documents",
+    "knowledge_ingest_jobs",
+    "knowledge_publications",
+    "knowledge_spaces",
+    "knowledge_version_access"
+  ],
+  "imports": [
+    "knowledge_core.configuration",
+    "knowledge_core.runtime",
+    "knowledge_core.api",
+    "knowledge_core.identity",
+    "knowledge_core.models",
+    "knowledge_core.database",
+    "knowledge_core.parser",
+    "knowledge_core.ports",
+    "knowledge_core.publication",
+    "knowledge_core.citations",
+    "knowledge_core.okf",
+    "knowledge_core.capability_scope",
+    "knowledge_core.schema",
+    "knowledge_core.telemetry",
+    "knowledge_core.service",
+    "knowledge_core.full_runtime",
+    "knowledge_core.versions",
+    "knowledge_core.full_api",
+    "knowledge_core.locking",
+    "knowledge_core.capability_catalog"
+  ],
+  "routes": [
+    {
+      "path": "/openapi.json",
+      "methods": [
+        "GET",
+        "HEAD"
+      ]
+    },
+    {
+      "path": "/docs",
+      "methods": [
+        "GET",
+        "HEAD"
+      ]
+    },
+    {
+      "path": "/docs/oauth2-redirect",
+      "methods": [
+        "GET",
+        "HEAD"
+      ]
+    },
+    {
+      "path": "/redoc",
+      "methods": [
+        "GET",
+        "HEAD"
+      ]
+    },
+    {
+      "path": "/api/km/config",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/identity",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/health/live",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/health/ready",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/spaces",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/spaces",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/branch",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/bindings",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/km/v1/bindings",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/binding",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/versions",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/versions/{operation}",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/documents",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/documents",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/jobs/{job_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/jobs/{job_id}/cancel",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/km/v1/documents/{document_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/documents/{document_id}",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "path": "/api/km/v1/documents/{document_id}",
+      "methods": [
+        "DELETE"
+      ]
+    },
+    {
+      "path": "/api/km/v1/documents/{document_id}/{layer}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/query",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/km/v1/citations/{chunk_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/jobs",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/okf",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/okf",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/concepts",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/okf/lint",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/concepts/{concept_id:path}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/concepts/{concept_id:path}",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "path": "/api/km/v1/{layer}/{resource_id}",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/buckets/{bucket_id}/chunks",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/{layer}/{resource_id}",
+      "methods": [
+        "PUT"
+      ]
+    },
+    {
+      "path": "/api/km/v1/knowledge-bases/{kb_id}/suggestions",
+      "methods": [
+        "GET"
+      ]
+    },
+    {
+      "path": "/api/km/v1/suggestions/{suggestion_id}/{operation}",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/ui/v1",
+      "methods": []
+    },
+    {
+      "path": "",
+      "methods": []
+    }
+  ],
+  "violations": [
+    "Full bypasses module factories and uses legacy service/storage",
+    "Legacy all-module ORM tables remain",
+    "Legacy runtime implementation loaded"
+  ]
+}

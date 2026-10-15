@@ -1,0 +1,156 @@
+INFO:     Started server process [2060]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:18787 (Press CTRL+C to quit)
+INFO:     127.0.0.1:62034 - "GET /health/ready HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62043 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62043 - "GET /assets/index-Ciqbce6X.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62044 - "GET /assets/index-DTUvMoKh.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62043 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62043 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:62044 - "GET /api/km/v1/spaces HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62044 - "GET /api/km/v1/knowledge-bases?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62043 - "GET /api/km/v1/bindings?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62045 - "GET /api/km/v1/jobs?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "POST /api/km/v1/knowledge-bases HTTP/1.1" 201 Created
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/bindings?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62053 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "POST /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:62053 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/jobs/kjob_9ae47091c45f41589cac47fd1e85c7f8?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62053 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/buckets?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/chunks?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "PUT /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62053 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/buckets?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62053 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/chunks?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62053 - "PUT /api/km/v1/buckets/kbucket_1d3e739614c249d6a6a77f63848f9038?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62053 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/buckets?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/chunks?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62053 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET / HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62055 - "GET /assets/index-DTUvMoKh.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62054 - "GET /assets/index-Ciqbce6X.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62054 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/spaces HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/bindings?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/jobs?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62053 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/buckets?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/chunks?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "PUT /api/km/v1/chunks/kchunk_de40ff03751f4400976643e2fdb1169f?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/chunks?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/buckets?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62053 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET / HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62064 - "GET /assets/index-Ciqbce6X.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62054 - "GET /assets/index-DTUvMoKh.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62054 - "GET /api/km/config HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/spaces HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/bindings?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/jobs?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/buckets?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/documents/kdoc_dffd7c5e955149ffa04e608429aaa944/chunks?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "PUT /api/km/v1/concepts/kconcept_ce7c27564fb24ed1a222180c24c16c51?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "POST /api/km/v1/query HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/citations/kchunk_de40ff03751f4400976643e2fdb1169f?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "POST /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions/copy?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "POST /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions/publish?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "POST /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions/rollback?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "POST /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions/sync?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "PUT /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/bindings?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "DELETE /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?permanent=false&space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/bindings?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "PUT /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/binding?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/bindings?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/okf?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "POST /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/okf/lint?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "POST /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/okf HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62064 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62054 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/documents?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62052 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/concepts?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62051 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/suggestions?space_id=local HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62055 - "GET /api/km/v1/knowledge-bases/kb_96e783594bad4314bed06888ff2eaeb2/versions?space_id=local HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [2060]

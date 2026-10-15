@@ -1,0 +1,189 @@
+
+added 79 packages in 1s
+
+> @knowledge/ui@0.1.0 build
+> tsc --noEmit && vite build
+
+vite v8.3.4 building client environment for production...
+transforming...
+✓ 1917 modules transformed.
+rendering chunks...
+computing gzip size...
+../src/knowledge_core/ui/version.json                         0.07 kB │ gzip:  0.09 kB
+../src/knowledge_core/ui/index.html                           0.36 kB │ gzip:  0.27 kB
+../src/knowledge_core/ui/assets/KnowledgePage-DoIkATbY.css    3.23 kB │ gzip:  0.99 kB
+../src/knowledge_core/ui/assets/index-CrCOm_e4.css            7.58 kB │ gzip:  2.19 kB
+../src/knowledge_core/ui/assets/KnowledgePage-CDNKKmgG.js    97.52 kB │ gzip: 32.52 kB
+../src/knowledge_core/ui/assets/index-5juuKkRo.js           162.62 kB │ gzip: 53.26 kB
+
+✓ built in 244ms
+Building wheel...
+running egg_info
+creating src/knowledge_core.egg-info
+writing src/knowledge_core.egg-info/PKG-INFO
+writing dependency_links to src/knowledge_core.egg-info/dependency_links.txt
+writing entry points to src/knowledge_core.egg-info/entry_points.txt
+writing requirements to src/knowledge_core.egg-info/requires.txt
+writing top-level names to src/knowledge_core.egg-info/top_level.txt
+writing manifest file 'src/knowledge_core.egg-info/SOURCES.txt'
+reading manifest file 'src/knowledge_core.egg-info/SOURCES.txt'
+writing manifest file 'src/knowledge_core.egg-info/SOURCES.txt'
+running bdist_wheel
+running build
+running build_py
+copying src/knowledge_core/kernel/use_cases.py -> build/lib/knowledge_core/kernel
+copying src/knowledge_core/kernel/processing.py -> build/lib/knowledge_core/kernel
+running egg_info
+writing src/knowledge_core.egg-info/PKG-INFO
+writing dependency_links to src/knowledge_core.egg-info/dependency_links.txt
+writing entry points to src/knowledge_core.egg-info/entry_points.txt
+writing requirements to src/knowledge_core.egg-info/requires.txt
+writing top-level names to src/knowledge_core.egg-info/top_level.txt
+reading manifest file 'src/knowledge_core.egg-info/SOURCES.txt'
+writing manifest file 'src/knowledge_core.egg-info/SOURCES.txt'
+copying src/knowledge_core/ui/version.json -> build/lib/knowledge_core/ui
+copying src/knowledge_core/ui/index.html -> build/lib/knowledge_core/ui
+copying src/knowledge_core/ui/assets/index-CrCOm_e4.css -> build/lib/knowledge_core/ui/assets
+copying src/knowledge_core/ui/assets/KnowledgePage-CDNKKmgG.js -> build/lib/knowledge_core/ui/assets
+copying src/knowledge_core/ui/assets/KnowledgePage-DoIkATbY.css -> build/lib/knowledge_core/ui/assets
+copying src/knowledge_core/ui/assets/index-5juuKkRo.js -> build/lib/knowledge_core/ui/assets
+installing to build/bdist.macosx-11.0-arm64/wheel
+running install
+running install_lib
+creating build/bdist.macosx-11.0-arm64/wheel
+creating build/bdist.macosx-11.0-arm64/wheel/knowledge_core
+copying build/lib/knowledge_core/citations.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+creating build/bdist.macosx-11.0-arm64/wheel/knowledge_core/ui
+copying build/lib/knowledge_core/ui/version.json -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/ui
+copying build/lib/knowledge_core/ui/index.html -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/ui
+creating build/bdist.macosx-11.0-arm64/wheel/knowledge_core/ui/assets
+copying build/lib/knowledge_core/ui/assets/index-CrCOm_e4.css -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/ui/assets
+copying build/lib/knowledge_core/ui/assets/index-bWvID5wk.js -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/ui/assets
+copying build/lib/knowledge_core/ui/assets/KnowledgePage-CDNKKmgG.js -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/ui/assets
+copying build/lib/knowledge_core/ui/assets/KnowledgePage-DoIkATbY.css -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/ui/assets
+copying build/lib/knowledge_core/ui/assets/index-Ciqbce6X.js -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/ui/assets
+copying build/lib/knowledge_core/ui/assets/index-5juuKkRo.js -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/ui/assets
+copying build/lib/knowledge_core/ui/assets/index-DTUvMoKh.css -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/ui/assets
+copying build/lib/knowledge_core/ui/assets/KnowledgePage-D6TKKWJl.js -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/ui/assets
+copying build/lib/knowledge_core/configuration.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/service.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/full_api.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/full_runtime.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/models.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/database.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/client.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/ports.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/conversion.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/__init__.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/telemetry.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/runtime.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/parser.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/api.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/cli.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/assembly.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/publication.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/http_publication.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+creating build/bdist.macosx-11.0-arm64/wheel/knowledge_core/prompts
+copying build/lib/knowledge_core/prompts/knowledge_discovery_prompt.md -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/prompts
+copying build/lib/knowledge_core/prompts/knowledge_bucket_prompt.md -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/prompts
+copying build/lib/knowledge_core/prompts/knowledge_document_route_prompt.md -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/prompts
+copying build/lib/knowledge_core/prompts/knowledge_search_prompt.md -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/prompts
+copying build/lib/knowledge_core/result_projection.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/okf.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/http_capabilities.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/versions.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+creating build/bdist.macosx-11.0-arm64/wheel/knowledge_core/modules
+copying build/lib/knowledge_core/modules/catalog.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/modules
+copying build/lib/knowledge_core/modules/discovery.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/modules
+copying build/lib/knowledge_core/modules/__init__.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/modules
+copying build/lib/knowledge_core/modules/spaces.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/modules
+copying build/lib/knowledge_core/modules/publication.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/modules
+copying build/lib/knowledge_core/modules/authentication.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/modules
+copying build/lib/knowledge_core/modules/versions.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/modules
+copying build/lib/knowledge_core/modules/concepts.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/modules
+copying build/lib/knowledge_core/modules/base.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/modules
+copying build/lib/knowledge_core/modules/okf_rules.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/modules
+copying build/lib/knowledge_core/migration.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/identity.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+copying build/lib/knowledge_core/capability_scope.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+creating build/bdist.macosx-11.0-arm64/wheel/knowledge_core/kernel
+copying build/lib/knowledge_core/kernel/algorithms.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/kernel
+copying build/lib/knowledge_core/kernel/__init__.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/kernel
+copying build/lib/knowledge_core/kernel/runtime.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/kernel
+copying build/lib/knowledge_core/kernel/api.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/kernel
+copying build/lib/knowledge_core/kernel/storage.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/kernel
+copying build/lib/knowledge_core/kernel/use_cases.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/kernel
+copying build/lib/knowledge_core/kernel/processing.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/kernel
+copying build/lib/knowledge_core/kernel/schema.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core/kernel
+copying build/lib/knowledge_core/schema.py -> build/bdist.macosx-11.0-arm64/wheel/./knowledge_core
+running install_egg_info
+Copying src/knowledge_core.egg-info to build/bdist.macosx-11.0-arm64/wheel/./knowledge_core-0.1.0-py3.14.egg-info
+running install_scripts
+creating build/bdist.macosx-11.0-arm64/wheel/knowledge_core-0.1.0.dist-info/WHEEL
+creating '/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-real-model/isolated-source/dist/.tmp-zuna3kdv/knowledge_core-0.1.0-py3-none-any.whl' and adding 'build/bdist.macosx-11.0-arm64/wheel' to it
+adding 'knowledge_core/__init__.py'
+adding 'knowledge_core/api.py'
+adding 'knowledge_core/assembly.py'
+adding 'knowledge_core/capability_scope.py'
+adding 'knowledge_core/citations.py'
+adding 'knowledge_core/cli.py'
+adding 'knowledge_core/client.py'
+adding 'knowledge_core/configuration.py'
+adding 'knowledge_core/conversion.py'
+adding 'knowledge_core/database.py'
+adding 'knowledge_core/full_api.py'
+adding 'knowledge_core/full_runtime.py'
+adding 'knowledge_core/http_capabilities.py'
+adding 'knowledge_core/http_publication.py'
+adding 'knowledge_core/identity.py'
+adding 'knowledge_core/migration.py'
+adding 'knowledge_core/models.py'
+adding 'knowledge_core/okf.py'
+adding 'knowledge_core/parser.py'
+adding 'knowledge_core/ports.py'
+adding 'knowledge_core/publication.py'
+adding 'knowledge_core/result_projection.py'
+adding 'knowledge_core/runtime.py'
+adding 'knowledge_core/schema.py'
+adding 'knowledge_core/service.py'
+adding 'knowledge_core/telemetry.py'
+adding 'knowledge_core/versions.py'
+adding 'knowledge_core/kernel/__init__.py'
+adding 'knowledge_core/kernel/algorithms.py'
+adding 'knowledge_core/kernel/api.py'
+adding 'knowledge_core/kernel/processing.py'
+adding 'knowledge_core/kernel/runtime.py'
+adding 'knowledge_core/kernel/schema.py'
+adding 'knowledge_core/kernel/storage.py'
+adding 'knowledge_core/kernel/use_cases.py'
+adding 'knowledge_core/modules/__init__.py'
+adding 'knowledge_core/modules/authentication.py'
+adding 'knowledge_core/modules/base.py'
+adding 'knowledge_core/modules/catalog.py'
+adding 'knowledge_core/modules/concepts.py'
+adding 'knowledge_core/modules/discovery.py'
+adding 'knowledge_core/modules/okf_rules.py'
+adding 'knowledge_core/modules/publication.py'
+adding 'knowledge_core/modules/spaces.py'
+adding 'knowledge_core/modules/versions.py'
+adding 'knowledge_core/prompts/knowledge_bucket_prompt.md'
+adding 'knowledge_core/prompts/knowledge_discovery_prompt.md'
+adding 'knowledge_core/prompts/knowledge_document_route_prompt.md'
+adding 'knowledge_core/prompts/knowledge_search_prompt.md'
+adding 'knowledge_core/ui/index.html'
+adding 'knowledge_core/ui/version.json'
+adding 'knowledge_core/ui/assets/KnowledgePage-CDNKKmgG.js'
+adding 'knowledge_core/ui/assets/KnowledgePage-D6TKKWJl.js'
+adding 'knowledge_core/ui/assets/KnowledgePage-DoIkATbY.css'
+adding 'knowledge_core/ui/assets/index-5juuKkRo.js'
+adding 'knowledge_core/ui/assets/index-Ciqbce6X.js'
+adding 'knowledge_core/ui/assets/index-CrCOm_e4.css'
+adding 'knowledge_core/ui/assets/index-DTUvMoKh.css'
+adding 'knowledge_core/ui/assets/index-bWvID5wk.js'
+adding 'knowledge_core-0.1.0.dist-info/METADATA'
+adding 'knowledge_core-0.1.0.dist-info/WHEEL'
+adding 'knowledge_core-0.1.0.dist-info/entry_points.txt'
+adding 'knowledge_core-0.1.0.dist-info/top_level.txt'
+adding 'knowledge_core-0.1.0.dist-info/RECORD'
+removing build/bdist.macosx-11.0-arm64/wheel
+Successfully built dist/knowledge_core-0.1.0-py3-none-any.whl

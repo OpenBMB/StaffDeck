@@ -1,0 +1,41 @@
+{
+  "status": "passed",
+  "source": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/isolated-source",
+  "wheel": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/isolated-source/dist/knowledge_core-0.1.0-py3-none-any.whl",
+  "commands": [
+    {
+      "command": [
+        "/Users/a1/.nvm/versions/node/v22.23.1/bin/node",
+        "build.mjs"
+      ],
+      "cwd": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/isolated-source",
+      "log": "build.log"
+    },
+    {
+      "command": [
+        "/Users/a1/.local/bin/uv",
+        "pip",
+        "install",
+        "--reinstall",
+        "--python",
+        "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/venv/bin/python",
+        "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/isolated-source/dist/knowledge_core-0.1.0-py3-none-any.whl"
+      ],
+      "cwd": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/isolated-source",
+      "log": "install.log"
+    },
+    {
+      "command": [
+        "/Users/a1/.nvm/versions/node/v22.23.1/bin/node",
+        "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/isolated-source/scripts/minimal_browser.mjs"
+      ],
+      "cwd": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final",
+      "log": "browser.log"
+    }
+  ],
+  "database": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/minimal-c40d4ed597e140ea9cba92b6b180457e.sqlite",
+  "shutdown_returncode": -15,
+  "host_source_on_pythonpath": false,
+  "runtime_imports": "runtime-imports.json",
+  "wheel_legacy_runtime_absent": true
+}

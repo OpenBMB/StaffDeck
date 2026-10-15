@@ -1,0 +1,18 @@
+services:
+  knowledge:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - knowledge-data:/data
+    environment:
+      KM_DATABASE_URL: sqlite:////data/knowledge.sqlite
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+volumes:
+  knowledge-data:

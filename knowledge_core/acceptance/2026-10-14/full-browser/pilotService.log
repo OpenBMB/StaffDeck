@@ -1,0 +1,172 @@
+[dev-launcher] resolved dev ports:
+  server (express/ws)  →  16126   (env-pinned)
+  gateway (pilotdeck)  →  16128   (env-pinned)
+  vite client         →  16127   (env-pinned)
+
+
+  VITE v7.3.3  ready in 174 ms
+
+  ➜  Local:   http://localhost:16127/
+  ➜  Network: http://192.168.6.215:16127/
+  ➜  Network: http://192.168.9.110:16127/
+  ➜  Network: http://192.168.40.44:16127/
+  ➜  Network: http://172.27.246.34:16127/
+(node:19396) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+1:30:14 PM [vite] http proxy error: /api/auth/status
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1135:18)
+    at afterConnectMultiple (node:net:1716:7)
+1:30:14 PM [vite] http proxy error: /api/auth/status
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1135:18)
+    at afterConnectMultiple (node:net:1716:7)
+1:30:14 PM [vite] http proxy error: /api/auth/status
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1135:18)
+    at afterConnectMultiple (node:net:1716:7)
+
+[2m════════════════════════════════════════════════════════════[0m
+[36m[INFO][0m App Installation: [1m/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui[0m
+[36m[INFO][0m Database: [2m../../../../../../../var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-Ut2wk9/pilot-home/auth.db[0m
+       [2m(Using custom DATABASE_PATH from environment)[0m
+[2m════════════════════════════════════════════════════════════[0m
+
+1:30:15 PM [vite] http proxy error: /api/auth/status
+AggregateError [ECONNREFUSED]: 
+    at internalConnectMultiple (node:net:1135:18)
+    at afterConnectMultiple (node:net:1716:7)
+SERVER_PORT from runtime config: 16126
+Database initialized successfully
+Database migrations completed successfully
+Web Push notifications configured
+[36m[INFO][0m Chat execution routed through PilotDeck gateway (src/gateway).
+
+[36m[INFO][0m Starting in production mode...
+
+[2m═══════════════════════════════════════════════════════════════[0m
+  [1mPilotDeck Server - Ready[0m
+[2m═══════════════════════════════════════════════════════════════[0m
+
+[36m[INFO][0m Server URL:  [1mhttp://localhost:16126[0m
+[36m[INFO][0m Installed at: [2m/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui[0m
+[34m[TIP][0m  Run "pilotdeck status" for full configuration details
+
+[pilotdeck-config-watcher] watching /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-Ut2wk9/pilotdeck.yaml, /private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-Ut2wk9/pilotdeck.yaml
+(node:19401) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+PilotDeck server listening: http://127.0.0.1:16128
+WebSocket: ws://127.0.0.1:16128/ws
+Token: /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/pilotdeck-g4-knowledge-cancel-discovery-Ut2wk9/pilot-home/server-token
+[runtime-supervisor] Gateway ready on 127.0.0.1:16128
+[pilotdeck-bridge] connected → ws://127.0.0.1:16128/ws
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+🔌 Chat client disconnected code=1005
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+🔌 Chat client disconnected code=1005
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+🔌 Chat client disconnected code=1005
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+🔌 Chat client disconnected code=1005
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+🔌 Chat client disconnected code=1005
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+🔌 Chat client disconnected code=1005
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+🔌 Chat client disconnected code=1005
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+🔌 Chat client disconnected code=1005
+WebSocket connection attempt to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[OK] WebSocket authenticated for user: g4-cancel-discovery-owner
+[INFO] Client connected to: /ws?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiZzQtY2FuY2VsLWRpc2NvdmVyeS1vd25lciIsImlhdCI6MTc5MTk1NTgyOCwiZXhwIjoxNzkyNTYwNjI4fQ.SJTYvypvPgHaRlkL5nyHXkN0-2ckFHMLFG0t-slPSuk
+[INFO] Chat WebSocket connected
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+[projects] failed to prepare General workspace: General workspace must be separate from PILOT_HOME.
+🔌 Chat client disconnected code=1001
+[BROWSER 2026-10-14T05:30:42.114Z] shutdownGlobalChrome called | caller: at shutdownGlobalChrome (file:///Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui/server/utils/globalChrome.js:301:76) <- at <anonymous> (/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/ui/server/index.js:3748:25)

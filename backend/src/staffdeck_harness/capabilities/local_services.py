@@ -13,8 +13,8 @@ def _knowledge_route_deps(host: Any):
 
     The normal Harness v3 turn already owns a provider request. Knowledge
     routing may make an optional second request; it must not hold the MCP tool
-    result forever when that nested request is stalled. KnowledgeService keeps
-    its existing lexical fallback when this bounded request raises.
+    result forever when that nested request is stalled. Independent KM keeps
+    its lexical fallback when this bounded request raises.
     """
 
     deps = host._deps()
@@ -51,6 +51,10 @@ def invoke_local(host: Any, inv: ModuleInvocation) -> ModuleResult:
         from app.agents.branching import visible_knowledge_base_versions
 
         ctx = inv.context
+        from app.knowledge.http_adapter import enabled
+        if enabled():
+            identity = host.security_context
+            host.db.info["staffdeck_actor_id"] = identity.actor_user_id or identity.principal_id
         aid = None if ctx.agent_id.endswith(":overall") else ctx.agent_id
         versions = visible_knowledge_base_versions(host.db, ctx.tenant_id, aid)
         return KnowledgeFacade(_knowledge_route_deps(host)).search(

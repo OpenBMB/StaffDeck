@@ -1,0 +1,16 @@
+{
+  "name": "minimal",
+  "status": "passed",
+  "command": [
+    "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/venv/bin/python",
+    "-m",
+    "knowledge_core.cli",
+    "--config",
+    "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/combinations/minimal/configuration.json",
+    "--database-url",
+    "sqlite:////Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/combinations/minimal/knowledge-f949e1d75ff24da8a32dd467e25f4641.sqlite",
+    "--port",
+    "58851"
+  ],
+  "shutdown_returncode": -15
+}

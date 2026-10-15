@@ -1,0 +1,1058 @@
+INFO:     Started server process [96762]
+INFO:     Waiting for application startup.
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:61948 (Press CTRL+C to quit)
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:16124 (Press CTRL+C to quit)
+INFO:     127.0.0.1:61959 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62079 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62084 - "GET /api/enterprise/agents?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62117 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62118 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62123 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62129 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62121 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62124 - "GET /km-ui/ui/v1/index.html HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62122 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62131 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62133 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62136 - "GET /km-ui/ui/v1/assets/index-CrCOm_e4.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62137 - "GET /km-ui/ui/v1/assets/index-t2UGDzAg.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62143 - "GET /api/km/v1/spaces HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62168 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62170 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62173 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62175 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62177 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62180 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62182 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62185 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62187 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62189 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62192 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62198 - "GET /km-ui/ui/v1/assets/download-Bi2cnuJR.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62196 - "GET /km-ui/ui/v1/assets/KnowledgePage-DoIkATbY.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62197 - "GET /km-ui/ui/v1/assets/KnowledgePage-CX89V0HW.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62120 - "GET /api/enterprise/agents?tenant_id=tenant_demo&view=summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62211 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62212 - "GET /api/km/v1/jobs?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62210 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62224 - "GET /api/km/v1/knowledge-bases/kb_9385fc47e27f484f8290220f0f545c81/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62227 - "GET /api/km/v1/knowledge-bases/kb_9385fc47e27f484f8290220f0f545c81/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62226 - "GET /api/km/v1/knowledge-bases/kb_9385fc47e27f484f8290220f0f545c81/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62225 - "GET /api/km/v1/knowledge-bases/kb_9385fc47e27f484f8290220f0f545c81/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62223 - "GET /api/km/v1/knowledge-bases/kb_9385fc47e27f484f8290220f0f545c81?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62242 - "POST /api/km/v1/knowledge-bases HTTP/1.1" 201 Created
+INFO:     127.0.0.1:62247 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62246 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62260 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62262 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62263 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62261 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62259 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62276 - "POST /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:62286 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62287 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62288 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62289 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62285 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62310 - "GET /api/km/v1/jobs/kjob_233d9540adff4ec78d1c0fedc81b8f76?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62309 - "GET /api/km/v1/jobs/kjob_529f8970c8b5449a91f661dc989ec5a7?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62324 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62326 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62323 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62325 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62322 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62339 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62347 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/chunks?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62346 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/buckets?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62355 - "PUT /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62370 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62369 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62368 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62367 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62366 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62371 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/buckets?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62385 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/chunks?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62392 - "PUT /api/km/v1/buckets/kbucket_993683c2933b45a89aed1ac97a4226d4?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62399 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/chunks?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62398 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/buckets?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py", line 422, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/middleware/proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/cors.py", line 88, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/src/staffdeck_harness/runtime/management.py", line 89, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2685, in app
+    await route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1766, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2740, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1786, in _handle_selected
+    await original_route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1265, in handle
+    await app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 151, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 137, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 185, in handle
+    return await filter_response(request, endpoint)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 154, in filter_response
+    response = await endpoint(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 691, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 345, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/api/knowledge_proxy.py", line 76, in proxy
+    body = await request.body()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 257, in body
+    async for chunk in self.stream():
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 251, in stream
+    raise ClientDisconnect()
+starlette.requests.ClientDisconnect
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py", line 422, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/middleware/proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/cors.py", line 88, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/src/staffdeck_harness/runtime/management.py", line 89, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2685, in app
+    await route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1766, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2740, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1786, in _handle_selected
+    await original_route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1265, in handle
+    await app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 151, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 137, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 185, in handle
+    return await filter_response(request, endpoint)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 154, in filter_response
+    response = await endpoint(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 691, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 345, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/api/knowledge_proxy.py", line 76, in proxy
+    body = await request.body()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 257, in body
+    async for chunk in self.stream():
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 251, in stream
+    raise ClientDisconnect()
+starlette.requests.ClientDisconnect
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py", line 422, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/middleware/proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/cors.py", line 88, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/src/staffdeck_harness/runtime/management.py", line 89, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2685, in app
+    await route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1766, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2740, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1786, in _handle_selected
+    await original_route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1265, in handle
+    await app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 151, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 137, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 185, in handle
+    return await filter_response(request, endpoint)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 154, in filter_response
+    response = await endpoint(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 691, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 345, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/api/knowledge_proxy.py", line 76, in proxy
+    body = await request.body()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 257, in body
+    async for chunk in self.stream():
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 251, in stream
+    raise ClientDisconnect()
+starlette.requests.ClientDisconnect
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py", line 422, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/middleware/proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/cors.py", line 88, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/src/staffdeck_harness/runtime/management.py", line 89, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2685, in app
+    await route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1766, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2740, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1786, in _handle_selected
+    await original_route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1265, in handle
+    await app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 151, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 137, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 185, in handle
+    return await filter_response(request, endpoint)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 154, in filter_response
+    response = await endpoint(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 691, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 345, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/api/knowledge_proxy.py", line 76, in proxy
+    body = await request.body()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 257, in body
+    async for chunk in self.stream():
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 251, in stream
+    raise ClientDisconnect()
+starlette.requests.ClientDisconnect
+INFO:     127.0.0.1:62428 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62429 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62434 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62435 - "GET /km-ui/ui/v1/index.html HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62438 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62432 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62433 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62441 - "GET /km-ui/ui/v1/assets/index-CrCOm_e4.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62442 - "GET /km-ui/ui/v1/assets/index-t2UGDzAg.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62447 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62449 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62452 - "GET /api/km/v1/spaces HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62477 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62479 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62482 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62484 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62486 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62489 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62491 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62493 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62496 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62498 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62500 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62505 - "GET /km-ui/ui/v1/assets/KnowledgePage-DoIkATbY.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62507 - "GET /km-ui/ui/v1/assets/download-Bi2cnuJR.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62506 - "GET /km-ui/ui/v1/assets/KnowledgePage-CX89V0HW.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62519 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62520 - "GET /api/km/v1/jobs?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62431 - "GET /api/enterprise/agents?tenant_id=tenant_demo&view=summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62518 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62537 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62538 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62539 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62536 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62535 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62552 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62558 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/buckets?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62559 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/chunks?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62567 - "PUT /api/km/v1/chunks/kchunk_2cd44f33044c4ef58d58439bf6f7021b?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62575 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/chunks?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62574 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/buckets?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py", line 422, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/middleware/proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/cors.py", line 88, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/src/staffdeck_harness/runtime/management.py", line 89, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2685, in app
+    await route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1766, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2740, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1786, in _handle_selected
+    await original_route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1265, in handle
+    await app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 151, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 137, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 185, in handle
+    return await filter_response(request, endpoint)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 154, in filter_response
+    response = await endpoint(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 691, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 345, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/api/knowledge_proxy.py", line 76, in proxy
+    body = await request.body()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 257, in body
+    async for chunk in self.stream():
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 251, in stream
+    raise ClientDisconnect()
+starlette.requests.ClientDisconnect
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py", line 422, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/middleware/proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/cors.py", line 88, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/src/staffdeck_harness/runtime/management.py", line 89, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2685, in app
+    await route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1766, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2740, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1786, in _handle_selected
+    await original_route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1265, in handle
+    await app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 151, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 137, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 185, in handle
+    return await filter_response(request, endpoint)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 154, in filter_response
+    response = await endpoint(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 691, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 345, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/api/knowledge_proxy.py", line 76, in proxy
+    body = await request.body()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 257, in body
+    async for chunk in self.stream():
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 251, in stream
+    raise ClientDisconnect()
+starlette.requests.ClientDisconnect
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py", line 422, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/middleware/proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/cors.py", line 88, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/src/staffdeck_harness/runtime/management.py", line 89, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2685, in app
+    await route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1766, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2740, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1786, in _handle_selected
+    await original_route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1265, in handle
+    await app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 151, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 137, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 185, in handle
+    return await filter_response(request, endpoint)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 154, in filter_response
+    response = await endpoint(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 691, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 345, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/api/knowledge_proxy.py", line 76, in proxy
+    body = await request.body()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 257, in body
+    async for chunk in self.stream():
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 251, in stream
+    raise ClientDisconnect()
+starlette.requests.ClientDisconnect
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py", line 422, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/middleware/proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/cors.py", line 88, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/src/staffdeck_harness/runtime/management.py", line 89, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2685, in app
+    await route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1766, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2740, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1786, in _handle_selected
+    await original_route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1265, in handle
+    await app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 151, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 137, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 185, in handle
+    return await filter_response(request, endpoint)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 154, in filter_response
+    response = await endpoint(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 691, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 345, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/api/knowledge_proxy.py", line 76, in proxy
+    body = await request.body()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 257, in body
+    async for chunk in self.stream():
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 251, in stream
+    raise ClientDisconnect()
+starlette.requests.ClientDisconnect
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py", line 422, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/uvicorn/middleware/proxy_headers.py", line 63, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/applications.py", line 1163, in __call__
+    await super().__call__(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/cors.py", line 88, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/src/staffdeck_harness/runtime/management.py", line 89, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2685, in app
+    await route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1766, in handle
+    await self.original_router.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 2740, in handle
+    await included_router._handle_selected(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1786, in _handle_selected
+    await original_route.handle(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 1265, in handle
+    await app(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 151, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 137, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 185, in handle
+    return await filter_response(request, endpoint)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/security/api_policy.py", line 154, in filter_response
+    response = await endpoint(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 691, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/fastapi/routing.py", line 345, in run_endpoint_function
+    return await dependant.call(**values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/api/knowledge_proxy.py", line 76, in proxy
+    body = await request.body()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 257, in body
+    async for chunk in self.stream():
+  File "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/lib/python3.12/site-packages/starlette/requests.py", line 251, in stream
+    raise ClientDisconnect()
+starlette.requests.ClientDisconnect
+INFO:     127.0.0.1:62599 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62600 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62606 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62604 - "GET /km-ui/ui/v1/index.html HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62609 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62603 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62605 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62611 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62614 - "GET /km-ui/ui/v1/assets/index-CrCOm_e4.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62615 - "GET /km-ui/ui/v1/assets/index-t2UGDzAg.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62620 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62623 - "GET /api/km/v1/spaces HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62648 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62650 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62653 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62655 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62657 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62660 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62662 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62664 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62667 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62669 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62671 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62676 - "GET /km-ui/ui/v1/assets/KnowledgePage-DoIkATbY.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62677 - "GET /km-ui/ui/v1/assets/KnowledgePage-CX89V0HW.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62678 - "GET /km-ui/ui/v1/assets/download-Bi2cnuJR.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62689 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62690 - "GET /api/km/v1/jobs?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62602 - "GET /api/enterprise/agents?tenant_id=tenant_demo&view=summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62688 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62706 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62709 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62707 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62708 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62705 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62722 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62728 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/buckets?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62729 - "GET /api/km/v1/documents/kdoc_68ffe2ee38984a9bbe5c69f435ad456d/chunks?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62737 - "PUT /api/km/v1/concepts/kconcept_310215abf98f4b9e9f21353853e8c031?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62747 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62750 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62749 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62748 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62746 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62764 - "POST /api/km/v1/query HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62770 - "GET /api/km/v1/citations/kchunk_2cd44f33044c4ef58d58439bf6f7021b?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62773 - "POST /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions/copy?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62786 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62783 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62784 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62785 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62782 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62799 - "POST /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions/publish?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62809 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62811 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62808 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62810 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62804 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62824 - "POST /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions/rollback?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62833 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62835 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62836 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62834 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62832 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62849 - "POST /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions/sync?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62860 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62861 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62858 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62859 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62857 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62874 - "PUT /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62882 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62881 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62895 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62896 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62897 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62898 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62894 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62911 - "DELETE /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?permanent=false&space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62917 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62916 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62928 - "GET /api/km/v1/knowledge-bases/kb_9385fc47e27f484f8290220f0f545c81/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62930 - "GET /api/km/v1/knowledge-bases/kb_9385fc47e27f484f8290220f0f545c81/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62929 - "GET /api/km/v1/knowledge-bases/kb_9385fc47e27f484f8290220f0f545c81/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62931 - "GET /api/km/v1/knowledge-bases/kb_9385fc47e27f484f8290220f0f545c81/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62927 - "GET /api/km/v1/knowledge-bases/kb_9385fc47e27f484f8290220f0f545c81?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62944 - "PUT /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/binding?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62950 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62949 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62963 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62966 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62964 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62965 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62962 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62979 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/okf?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62984 - "POST /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/okf/lint?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62985 - "POST /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/okf HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62999 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62998 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62996 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62997 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62995 - "GET /api/km/v1/knowledge-bases/kb_8ad5b19f94b74a2d923fbe067b9ac3db?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63013 - "POST /api/km/v1/knowledge-bases HTTP/1.1" 201 Created
+INFO:     127.0.0.1:63018 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63017 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63034 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63035 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63036 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63033 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63032 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63049 - "POST /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/documents HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:63058 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63059 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63060 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63061 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63057 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63074 - "POST /api/km/v1/jobs/kjob_72e9a42b6b4d4dc5adfe02120789a749/cancel?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63085 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63086 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63091 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63092 - "GET /km-ui/ui/v1/index.html HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63095 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63090 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63089 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63103 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63100 - "GET /km-ui/ui/v1/assets/index-CrCOm_e4.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63097 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63101 - "GET /km-ui/ui/v1/assets/index-t2UGDzAg.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63109 - "GET /api/km/v1/spaces HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63135 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63137 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63139 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63142 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63144 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63147 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63149 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63151 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63154 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63156 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63159 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63165 - "GET /km-ui/ui/v1/assets/download-Bi2cnuJR.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63164 - "GET /km-ui/ui/v1/assets/KnowledgePage-DoIkATbY.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63163 - "GET /km-ui/ui/v1/assets/KnowledgePage-CX89V0HW.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63088 - "GET /api/enterprise/agents?tenant_id=tenant_demo&view=summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63176 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63177 - "GET /api/km/v1/jobs?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63175 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63194 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63196 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63197 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63195 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63193 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63210 - "POST /api/km/v1/knowledge-bases HTTP/1.1" 201 Created
+INFO:     127.0.0.1:63215 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63214 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63232 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63233 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63234 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63235 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63231 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63248 - "POST /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/documents HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:63261 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63258 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63259 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63260 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63257 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63278 - "GET /api/km/v1/jobs/kjob_11bc11a9c940403aa9cce7b55e01cc08?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63279 - "GET /api/km/v1/jobs/kjob_72e9a42b6b4d4dc5adfe02120789a749?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63280 - "GET /api/km/v1/jobs/kjob_233d9540adff4ec78d1c0fedc81b8f76?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63299 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63297 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63298 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63296 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63295 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63312 - "POST /api/km/v1/suggestions/kdisc_f0bdea0e931f43daa078cbc9c4c31114/review?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63322 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63323 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63325 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63324 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63321 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63342 - "POST /api/internal/km/publications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63338 - "POST /api/km/v1/suggestions/kdisc_f0bdea0e931f43daa078cbc9c4c31114/publish?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63344 - "POST /api/km/v1/suggestions/kdisc_039ab6c0bf6242ba8209b35ce62bc047/review?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63355 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63354 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63352 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63353 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63350 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63372 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63373 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63375 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63371 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63378 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63395 - "POST /api/internal/km/publications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63391 - "POST /api/km/v1/suggestions/kdisc_039ab6c0bf6242ba8209b35ce62bc047/publish?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63404 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63405 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63403 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63402 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63401 - "GET /api/km/v1/knowledge-bases/kb_ea56540a88aa4a51b42871e650501cf7?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63432 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63433 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63438 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63439 - "GET /km-ui/ui/v1/index.html HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63442 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63435 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63436 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63447 - "GET /km-ui/ui/v1/assets/index-CrCOm_e4.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63444 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63448 - "GET /km-ui/ui/v1/assets/index-t2UGDzAg.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63450 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63456 - "GET /api/km/v1/spaces HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63481 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63483 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63486 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63488 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63490 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63493 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63495 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63497 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63500 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63502 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63504 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63510 - "GET /km-ui/ui/v1/assets/KnowledgePage-DoIkATbY.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63511 - "GET /km-ui/ui/v1/assets/download-Bi2cnuJR.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63509 - "GET /km-ui/ui/v1/assets/KnowledgePage-CX89V0HW.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63522 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63523 - "GET /api/km/v1/jobs?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63434 - "GET /api/enterprise/agents?tenant_id=tenant_demo&view=summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63521 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63543 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63546 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63545 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63544 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63542 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63559 - "POST /api/km/v1/knowledge-bases HTTP/1.1" 201 Created
+INFO:     127.0.0.1:63564 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63563 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63585 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63583 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63584 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63586 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63582 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63599 - "POST /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/documents HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:63609 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63612 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63610 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63611 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63608 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63626 - "POST /api/km/v1/suggestions/kdisc_71dfc370113249c084f9981a1ebfce9a/reject?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63638 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63639 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63637 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63636 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63635 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63656 - "GET /api/km/v1/jobs/kjob_11bc11a9c940403aa9cce7b55e01cc08?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63658 - "GET /api/km/v1/jobs/kjob_233d9540adff4ec78d1c0fedc81b8f76?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63657 - "GET /api/km/v1/jobs/kjob_72e9a42b6b4d4dc5adfe02120789a749?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63655 - "GET /api/km/v1/jobs/kjob_cd9a7fd2a75a48ecb7ba7a2fe4f3d41b?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63680 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63681 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63678 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63679 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63677 - "GET /api/km/v1/knowledge-bases/kb_253d110dc9e54510baf988d6426b351a?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63700 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63701 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63706 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63707 - "GET /km-ui/ui/v1/index.html HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63704 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63710 - "GET /api/app/version HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63705 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63712 - "GET /api/enterprise/teams?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63716 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63717 - "GET /km-ui/ui/v1/assets/index-CrCOm_e4.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63718 - "GET /km-ui/ui/v1/assets/index-t2UGDzAg.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63724 - "GET /api/km/v1/spaces HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63749 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63751 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63753 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63756 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63758 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63760 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63763 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63765 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63767 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63770 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63772 - "GET /api/enterprise/model-configs?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63779 - "GET /km-ui/ui/v1/assets/download-Bi2cnuJR.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63778 - "GET /km-ui/ui/v1/assets/KnowledgePage-DoIkATbY.css HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63777 - "GET /km-ui/ui/v1/assets/KnowledgePage-CX89V0HW.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63790 - "GET /api/km/v1/bindings?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63791 - "GET /api/km/v1/jobs?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63703 - "GET /api/enterprise/agents?tenant_id=tenant_demo&view=summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63789 - "GET /api/km/v1/knowledge-bases?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63825 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/documents?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63826 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/concepts?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63827 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/versions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63828 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4/suggestions?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63824 - "GET /api/km/v1/knowledge-bases/kb_0de01ce2e2eb40fcbae8a28a27d364d4?space_id=sd%3Atenant_demo%3Aagent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63797 - "GET /api/enterprise/knowledge/discoveries?tenant_id=tenant_demo&agent_id=agent_preset_procurement_001 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [96762]

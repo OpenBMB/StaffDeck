@@ -1,0 +1,57 @@
+
+[2m════════════════════════════════════════════════════════════[0m
+[36m[INFO][0m App Installation: [1m/private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-6b8zk2/pilotdeck-artifact/ui[0m
+[36m[INFO][0m Database: [2m../../../../../../../../../var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-6b8zk2/auth.sqlite[0m
+       [2m(Using custom DATABASE_PATH from environment)[0m
+[2m════════════════════════════════════════════════════════════[0m
+
+SERVER_PORT from runtime config: 18872
+Database initialized successfully
+Database migrations completed successfully
+Web Push notifications configured
+[36m[INFO][0m Chat execution routed through PilotDeck gateway (src/gateway).
+
+[36m[INFO][0m Starting in production mode...
+(node:38867) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+[2m═══════════════════════════════════════════════════════════════[0m
+  [1mPilotDeck Server - Ready[0m
+[2m═══════════════════════════════════════════════════════════════[0m
+
+[36m[INFO][0m Server URL:  [1mhttp://localhost:18872[0m
+[36m[INFO][0m Installed at: [2m/private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-6b8zk2/pilotdeck-artifact/ui[0m
+[34m[TIP][0m  Run "pilotdeck status" for full configuration details
+
+[pilotdeck-config-watcher] watching /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-6b8zk2/pd.yaml, /private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-6b8zk2/pd.yaml
+[pilotdeck-bridge] connected → ws://127.0.0.1:18874/ws
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: km-acceptance
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+KM_MODEL_RESULT {"call_id":"025bba19bf404deb96d1b22250061851","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["buckets"]}
+KM_MODEL_RESULT {"call_id":"416e54297d3d4157884aeec0fcdf7a51","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["discoveries"]}
+KM_MODEL_RESULT {"call_id":"84bbacddf486448484e2dd9d48b2fb4e","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["buckets"]}
+KM_MODEL_RESULT {"call_id":"8949d47dd4f6498eb6e4a17000269637","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["discoveries"]}
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: km-acceptance
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+🔌 Chat client disconnected code=1001
+WebSocket connection attempt to: /ws?token=[redacted]
+[OK] WebSocket authenticated for user: km-acceptance
+[INFO] Client connected to: /ws?token=[redacted]
+[INFO] Chat WebSocket connected
+KM_MODEL_RESULT {"call_id":"14ce58f0788c4715adaa50031b2be147","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["selected_document_ids"]}
+KM_MODEL_RESULT {"call_id":"ad99452c52da404dae146ab5a8165d4f","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["selected_bucket_ids"]}
+KM_MODEL_RESULT {"call_id":"04844274404d4423a9141c8b223a1ca5","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["buckets"]}
+KM_MODEL_RESULT {"call_id":"6bd584e89d134fbcbbae88ab5eced59f","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["discoveries"]}
+KM_MODEL_RESULT {"call_id":"37ee768fa6f34fe2a172746af3ea4695","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["buckets"]}
+KM_MODEL_RESULT {"call_id":"006ee648384546ff93ca32f81c0497a9","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["discoveries"]}
+KM_MODEL_RESULT {"call_id":"4ce482e194cd4449bdce77caacdced74","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["selected_document_ids"]}
+KM_MODEL_RESULT {"call_id":"0f5156e82e8344acb103712db70c4ff5","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["selected_bucket_ids"]}
+KM_MODEL_RESULT {"call_id":"8b3f1e98ae4e4f0fb76e78982e74671b","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["selected_document_ids"]}
+KM_MODEL_RESULT {"call_id":"145f0f8039534e67b5f127475417ed43","config_id":"provider1/deepseek-v4-flash-0731","provider":"provider1","model":"deepseek-v4-flash-0731","result_keys":["selected_bucket_ids"]}
+🔌 Chat client disconnected code=1001
+[BROWSER 2026-10-14T14:30:29.630Z] shutdownGlobalChrome called | caller: at shutdownGlobalChrome (file:///private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-6b8zk2/pilotdeck-artifact/ui/server/utils/globalChrome.js:301:76) <- at file:///private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-6b8zk2/pilotdeck-artifact/ui/server/index.js:3755:25

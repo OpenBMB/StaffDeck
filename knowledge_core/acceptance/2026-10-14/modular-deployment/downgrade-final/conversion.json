@@ -1,0 +1,91 @@
+{
+  "ok": true,
+  "errors": [],
+  "source": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/downgrade-final/knowledge.sqlite",
+  "target": {
+    "protocol": "knowledge-config/v1",
+    "preset": "minimal",
+    "modules": {
+      "authentication": false,
+      "spaces": false,
+      "catalog": false,
+      "versions": false,
+      "concepts": false,
+      "discovery": false,
+      "publication": false
+    }
+  },
+  "counts": {
+    "documents": 3,
+    "buckets": 3,
+    "chunks": 3,
+    "citations": 20
+  },
+  "source_tables": [
+    "km_branch_contents",
+    "km_branch_spaces",
+    "km_branches",
+    "km_buckets",
+    "km_catalog_contents",
+    "km_catalog_space_bindings",
+    "km_catalogs",
+    "km_chunks",
+    "km_citation_snapshots",
+    "km_concept_contexts",
+    "km_concepts",
+    "km_documents",
+    "km_ingest_jobs",
+    "km_schema_versions",
+    "km_space_contents",
+    "km_spaces",
+    "km_suggestion_contexts",
+    "km_suggestions",
+    "km_version_spaces",
+    "km_versions"
+  ],
+  "document_mapping": {
+    "original": "original",
+    "second-base": "second-base",
+    "kdoc_54ee595831424430841b76c756d322b6": "kdoc_54ee595831424430841b76c756d322b6",
+    "kdoc_5045684876cc4c769b21b0f9e345553e": "kdoc_54ee595831424430841b76c756d322b6"
+  },
+  "bucket_mapping": {
+    "kbucket_9adb53ec15994333a22d5481d7cac799": "kbucket_9adb53ec15994333a22d5481d7cac799",
+    "kbucket_f12b79acbf7a4ab88b1645f7813d406e": "kbucket_f12b79acbf7a4ab88b1645f7813d406e",
+    "kbucket_363c10ec784946128686503612c78b55": "kbucket_363c10ec784946128686503612c78b55",
+    "kbucket_93de70ded4314e418a419d4e7e9ee706": null
+  },
+  "chunk_mapping": {
+    "kchunk_5d5bade295bb47899d8768e3a27b05da": "kchunk_5d5bade295bb47899d8768e3a27b05da",
+    "kchunk_afbc9314bee646e197f1ab82c8da487b": "kchunk_afbc9314bee646e197f1ab82c8da487b",
+    "kchunk_1cee63d6427e4ca88933abe013cd5641": "kchunk_1cee63d6427e4ca88933abe013cd5641",
+    "kchunk_0165f429a020459bb1fbc231ed7dac66": null
+  },
+  "citation_mapping": {
+    "kchunk_5d5bade295bb47899d8768e3a27b05da": "kchunk_5d5bade295bb47899d8768e3a27b05da",
+    "kchunk_afbc9314bee646e197f1ab82c8da487b": "kchunk_afbc9314bee646e197f1ab82c8da487b",
+    "kchunk_1cee63d6427e4ca88933abe013cd5641": "kchunk_1cee63d6427e4ca88933abe013cd5641",
+    "kconcept_035a720a52a247d0aeabba2828b12b05:2026-10-14T14:06:11.369624": "kconcept_035a720a52a247d0aeabba2828b12b05:2026-10-14T14:06:11.369624",
+    "kconcept_991366a44ce24ab6a09c3a95d8a95e42:2026-10-14T14:06:11.370994": "kconcept_991366a44ce24ab6a09c3a95d8a95e42:2026-10-14T14:06:11.370994",
+    "kconcept_a713f0f113974f4cb7ee03a30ab6bfd5:2026-10-14T14:06:11.371668": "kconcept_a713f0f113974f4cb7ee03a30ab6bfd5:2026-10-14T14:06:11.371668",
+    "kconcept_fea366ce84d74645b41e1219c71781bd:2026-10-14T14:06:11.377210": "kconcept_fea366ce84d74645b41e1219c71781bd:2026-10-14T14:06:11.377210",
+    "kconcept_4767749e459a4d7fa0ba286d37e3081b:2026-10-14T14:06:11.377952": "kconcept_4767749e459a4d7fa0ba286d37e3081b:2026-10-14T14:06:11.377952",
+    "kconcept_df0db9bdd8204dc68e7cf441a1c37196:2026-10-14T14:06:11.378561": "kconcept_df0db9bdd8204dc68e7cf441a1c37196:2026-10-14T14:06:11.378561",
+    "kchunk_bb2ed1a607c84446adaf697d679aa58a": "kchunk_bb2ed1a607c84446adaf697d679aa58a",
+    "kconcept_4a2cb1159e934eb4a82d52be245ab0c4:2026-10-14T14:06:11.385554": "kconcept_4a2cb1159e934eb4a82d52be245ab0c4:2026-10-14T14:06:11.385554",
+    "kconcept_197bf38a8d344fd6953bb4b49a4d0441:2026-10-14T14:06:11.386405": "kconcept_197bf38a8d344fd6953bb4b49a4d0441:2026-10-14T14:06:11.386405",
+    "kconcept_e3fbf1ab1fe741e49af6d2b0015cbe0e:2026-10-14T14:06:11.387285": "kconcept_e3fbf1ab1fe741e49af6d2b0015cbe0e:2026-10-14T14:06:11.387285",
+    "kconcept_38c9e9fcf6c54761b59492f47c3b1c49:2026-10-14T14:06:11.392988": "kconcept_38c9e9fcf6c54761b59492f47c3b1c49:2026-10-14T14:06:11.392988",
+    "kconcept_0b7006033c744191a2add43f17793443:2026-10-14T14:06:11.393779": "kconcept_0b7006033c744191a2add43f17793443:2026-10-14T14:06:11.393779",
+    "kconcept_f0263666450944cc98c79dfadd77f6ec:2026-10-14T14:06:11.394824": "kconcept_f0263666450944cc98c79dfadd77f6ec:2026-10-14T14:06:11.394824",
+    "kchunk_0165f429a020459bb1fbc231ed7dac66": "kchunk_0165f429a020459bb1fbc231ed7dac66",
+    "kconcept_1aee5d532d5648d28f853789a7dbba42:2026-10-14T14:06:11.399724": "kconcept_1aee5d532d5648d28f853789a7dbba42:2026-10-14T14:06:11.399724",
+    "kconcept_0f632978774346728fb027dee160c824:2026-10-14T14:06:11.400487": "kconcept_0f632978774346728fb027dee160c824:2026-10-14T14:06:11.400487",
+    "kconcept_a2fb0558ba39492d87f240686557143d:2026-10-14T14:06:11.401093": "kconcept_a2fb0558ba39492d87f240686557143d:2026-10-14T14:06:11.401093"
+  },
+  "task_mapping": {},
+  "backup_id": "8e54c2025fb84b699586b52615afd525",
+  "backup": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/downgrade-final/backups/20261014T140611-daf1df74",
+  "active_database": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/downgrade-final/knowledge.sqlite",
+  "active_configuration": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/downgrade-final/configuration.json"
+}

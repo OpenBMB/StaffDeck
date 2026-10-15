@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     harness_v3_request_timeout_seconds: float = 600.0
     # Bound the optional nested model call used by knowledge routing inside a
     # Harness v3 capability invocation. A timeout preserves the configured
-    # route as the default and lets KnowledgeService use its existing lexical
+    # route as the default and lets the independent KM use its lexical
     # fallback when a provider cannot answer promptly.
     harness_v3_knowledge_route_timeout_seconds: float = 30.0
     # OSS_LOCAL or BUSINESS_BASE; one per deployment.

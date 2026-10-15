@@ -4,24 +4,21 @@ import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.api.auth import _ensure_account_api_client
-from app.db.models import KnowledgeBucket, KnowledgeChunk, KnowledgeDocument, KnowledgeIngestJob, User
-from app.knowledge.service import KnowledgeIngestCancelled, KnowledgeService
+from knowledge_core.models import KnowledgeModel, KnowledgeBucket, KnowledgeChunk, KnowledgeDocument, KnowledgeIngestJob
+from knowledge_core.service import KnowledgeIngestCancelled, KnowledgeService
 
 
-def test_chunk_build_allows_account_refresh_and_durable_cancel(tmp_path) -> None:
+def test_chunk_build_allows_concurrent_management_and_durable_cancel(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'ingest.sqlite'}", connect_args={"timeout": 0})
-    SQLModel.metadata.create_all(engine)
+    KnowledgeModel.metadata.create_all(engine)
     with Session(engine) as db:
-        user = User(id="actor", tenant_id="tenant", username="actor", display_name="Actor", password_hash="unused-fixture")
         document = KnowledgeDocument(tenant_id="tenant", knowledge_base_id="kb", filename="long.md", file_type="md")
         bucket = KnowledgeBucket(tenant_id="tenant", knowledge_base_id="kb", document_id=document.id,
                                  bucket_key="section", title="Section", summary="Section",
                                  metadata_json={"section_ids": ["section"]})
         job = KnowledgeIngestJob(tenant_id="tenant", knowledge_base_id="kb", filename="long.md",
                                  document_id=document.id, status="running")
-        db.add_all([user, document, bucket, job])
-        _ensure_account_api_client(db, "tenant", user)
+        db.add_all([document, bucket, job])
         db.commit()
         job_id, document_id, bucket_id = job.id, document.id, bucket.id
     refreshed = []
@@ -37,8 +34,6 @@ def test_chunk_build_allows_account_refresh_and_durable_cancel(tmp_path) -> None
                 return
             refreshed.append(True)
             with Session(engine) as management:
-                actor = management.get(User, "actor")
-                _ensure_account_api_client(management, "tenant", actor)
                 managed_job = management.get(KnowledgeIngestJob, job_id)
                 KnowledgeService(management).cancel_ingest_job(job_id, "tenant")
                 assert managed_job.status == "cancel_requested"

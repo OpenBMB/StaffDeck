@@ -22,7 +22,6 @@ from app.core.task_request_compiler import (
 from app.db.models import (
     AgentResourceBinding,
     GeneralSkill,
-    KnowledgeBase,
     MCPServer,
     Skill,
     Tool,
@@ -237,9 +236,7 @@ class CapabilityManifestBuilder:
         valid_knowledge_ids: set[str] = set()
         for kb_id, version in visible_knowledge.items():
             scope = _scope(version)
-            if scope == "general":
-                root = self.db.get(KnowledgeBase, kb_id)
-                scope = _scope(root) if root is not None else scope
+            from app.knowledge.http_adapter import enabled as km_enabled
             if scope is None:
                 if kb_id in refs["knowledge_base_ids"]:
                     unavailable.append(
@@ -321,6 +318,7 @@ class CapabilityManifestBuilder:
         tool_by_ref: dict[str, Tool],
         knowledge_ids: set[str],
     ) -> list[CapabilityDescriptor]:
+        from app.knowledge.http_adapter import enabled as km_enabled
         unavailable: list[CapabilityDescriptor] = []
         for ref in refs["general_skill_ids"]:
             if ref not in general_by_ref:
@@ -352,7 +350,7 @@ class CapabilityManifestBuilder:
                         ref,
                         "knowledge",
                         "sop_specific",
-                        _explicit_reason(self.db.get(KnowledgeBase, ref), tenant_id),
+                        "知识库不在当前空间的可用范围内。",
                     )
                 )
         return unavailable

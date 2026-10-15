@@ -1,0 +1,141 @@
+{
+  "status": "passed",
+  "model": "deepseek-v4-flash-0731",
+  "adapter": "OpenAI-compatible direct",
+  "fallback_allowed": false,
+  "job_id": "kjob_50283caecbd24909b2e76e29b9caf72c",
+  "task": {
+    "id": "kjob_50283caecbd24909b2e76e29b9caf72c",
+    "filename": "temporary-model-expense.md",
+    "status": "succeeded",
+    "stage": "done",
+    "progress": 1.0,
+    "error": null,
+    "document_id": "kdoc_51c66f2c45b04b03a329483cc2fc8982",
+    "finished_at": "2026-10-14T10:52:13.236400",
+    "created_at": "2026-10-14T10:52:05.384372",
+    "updated_at": "2026-10-14T10:52:13.236400"
+  },
+  "ingest_trace": [
+    {
+      "phase": "bucket_model",
+      "model": "deepseek-v4-flash-0731"
+    }
+  ],
+  "query": {
+    "chunks": [
+      {
+        "id": "kchunk_728afeda8b4c478c91f26ce25de07a41",
+        "document_id": "kdoc_cbe6624771f64756b2dbbfdb17e2a51e",
+        "bucket_id": "kbucket_7d6ff9a151a34bfd94a4251d9eaa6ec9",
+        "chunk_index": 0,
+        "content": "# Expense policy\n\nExpense reimbursement requires original receipts within 30 days.\n\n## Approval\n\nManagers approve expense claims.",
+        "summary": "# Expense policy\n\nExpense reimbursement requires original receipts within 30 days.\n\n## Approval\n\nManagers approve expense claims.",
+        "source_ref": "temporary-model-expense.md#0",
+        "metadata": {
+          "section_title": "Expense policy"
+        },
+        "created_at": "2026-10-14T10:51:01.918332",
+        "updated_at": "2026-10-14T10:51:01.918332"
+      },
+      {
+        "id": "kchunk_b14a91b5a65b4c2baae3e28566e00f4c",
+        "document_id": "kdoc_cbe6624771f64756b2dbbfdb17e2a51e",
+        "bucket_id": "kbucket_03db575a6a2c4ef48fac418bb99bfb70",
+        "chunk_index": 1,
+        "content": "# Expense policy\n\nExpense reimbursement requires original receipts within 30 days.",
+        "summary": "# Expense policy\n\nExpense reimbursement requires original receipts within 30 days.",
+        "source_ref": "temporary-model-expense.md#1",
+        "metadata": {
+          "section_title": "Expense Policy Rules"
+        },
+        "created_at": "2026-10-14T10:51:01.918332",
+        "updated_at": "2026-10-14T10:51:01.918332"
+      }
+    ],
+    "buckets": [
+      {
+        "id": "kbucket_7d6ff9a151a34bfd94a4251d9eaa6ec9",
+        "document_id": "kdoc_cbe6624771f64756b2dbbfdb17e2a51e",
+        "title": "Expense policy",
+        "summary": "# Expense policy Expense reimbursement requires original receipts within 30 days. ## Approval Managers approve expense claims.",
+        "content": "# Expense policy\n\nExpense reimbursement requires original receipts within 30 days.\n\n## Approval\n\nManagers approve expense claims.",
+        "metadata": {
+          "bucket_key": "expense_policy",
+          "title": "Expense policy",
+          "summary": "# Expense policy Expense reimbursement requires original receipts within 30 days. ## Approval Managers approve expense claims.",
+          "content": "# Expense policy\n\nExpense reimbursement requires original receipts within 30 days.\n\n## Approval\n\nManagers approve expense claims.",
+          "section_ids": [
+            "sec_1",
+            "sec_2"
+          ],
+          "section_paths": [
+            "Expense policy",
+            "Expense policy / Approval"
+          ],
+          "bucket_type": "structure",
+          "concept_type": "Topic",
+          "applicable_query_types": [
+            "answer",
+            "policy_check"
+          ]
+        },
+        "created_at": "2026-10-14T10:51:01.918332",
+        "updated_at": "2026-10-14T10:51:01.918332"
+      },
+      {
+        "id": "kbucket_03db575a6a2c4ef48fac418bb99bfb70",
+        "document_id": "kdoc_cbe6624771f64756b2dbbfdb17e2a51e",
+        "title": "Expense Policy Rules",
+        "summary": "This bucket captures the business rules for expense reimbursement, including the mandatory original receipts and the 30-day submission window, to answer policy-related queries about what is required for an expense claim to be valid.",
+        "content": "# Expense policy\n\nExpense reimbursement requires original receipts within 30 days.",
+        "metadata": {
+          "bucket_key": "expense_policy_rules",
+          "title": "Expense Policy Rules",
+          "summary": "This bucket captures the business rules for expense reimbursement, including the mandatory original receipts and the 30-day submission window, to answer policy-related queries about what is required for an expense claim to be valid.",
+          "content": "# Expense policy\n\nExpense reimbursement requires original receipts within 30 days.",
+          "section_ids": [
+            "sec_1"
+          ],
+          "section_paths": [
+            "Expense policy"
+          ],
+          "bucket_type": "task",
+          "concept_type": "Business Rule",
+          "applicable_query_types": [
+            "policy_check",
+            "answer"
+          ]
+        },
+        "created_at": "2026-10-14T10:51:01.918332",
+        "updated_at": "2026-10-14T10:51:01.918332"
+      }
+    ],
+    "evidence_pack": [
+      {
+        "chunk_id": "kchunk_728afeda8b4c478c91f26ce25de07a41",
+        "document_id": "kdoc_cbe6624771f64756b2dbbfdb17e2a51e",
+        "content": "# Expense policy\n\nExpense reimbursement requires original receipts within 30 days.\n\n## Approval\n\nManagers approve expense claims.",
+        "source_ref": "temporary-model-expense.md#0"
+      },
+      {
+        "chunk_id": "kchunk_b14a91b5a65b4c2baae3e28566e00f4c",
+        "document_id": "kdoc_cbe6624771f64756b2dbbfdb17e2a51e",
+        "content": "# Expense policy\n\nExpense reimbursement requires original receipts within 30 days.",
+        "source_ref": "temporary-model-expense.md#1"
+      }
+    ],
+    "route_trace": [
+      {
+        "phase": "document_route",
+        "candidate_count": 2
+      },
+      {
+        "phase": "document_route_model",
+        "model": "deepseek-v4-flash-0731"
+      }
+    ],
+    "selected_concepts": []
+  },
+  "shutdown_returncode": -15
+}

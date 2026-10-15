@@ -1,0 +1,7 @@
+ui/node_modules
+ui/dist
+dist
+acceptance
+tests
+*.sqlite*
+__pycache__

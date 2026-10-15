@@ -14,27 +14,7 @@ from app.agents.branching import (
     open_gallery_metadata,
 )
 from app.capability_scope import normalize_capability_scope
-from app.db.models import (
-    AgentKnowledgeBranch,
-    AgentProfile,
-    AgentResourceBinding,
-    AgentSkillBranch,
-    AgentSkillBranchVersion,
-    GeneralSkill,
-    KnowledgeBase,
-    KnowledgeBaseVersion,
-    KnowledgeBucket,
-    KnowledgeChunk,
-    KnowledgeConcept,
-    KnowledgeDiscoverySuggestion,
-    KnowledgeDocument,
-    KnowledgeIngestJob,
-    Skill,
-    SkillVersion,
-    Tool,
-    User,
-    utc_now,
-)
+from app.db.models import AgentProfile, AgentResourceBinding, AgentSkillBranch, AgentSkillBranchVersion, GeneralSkill, Skill, SkillVersion, Tool, User, utc_now
 
 TENANT_ID = "tenant_demo"
 ADMIN_USER_ID = "admin"
@@ -103,7 +83,9 @@ def seed_staffdeck_admin_gallery(session: Session) -> None:
     _seed_skills(session, data.get("skills", []), data.get("skill_versions", []), resource_ids, id_maps)
     _seed_general_skills(session, data.get("general_skills", []), resource_ids, id_maps)
     _seed_tools(session, data.get("tools", []), resource_ids, id_maps)
-    _seed_knowledge(session, data, resource_ids, id_maps)
+    from app.knowledge.http_adapter import enabled as km_enabled
+    if km_enabled():
+        _seed_knowledge_http(session, data, resource_ids, id_maps)
     session.flush()
     _seed_agent_resource_bindings(session, active_bindings, id_maps)
     _seed_skill_branches(
@@ -112,10 +94,62 @@ def seed_staffdeck_admin_gallery(session: Session) -> None:
         data.get("agent_skill_branch_versions", []),
         id_maps,
     )
-    _seed_knowledge_branches(session, active_bindings, id_maps)
     session.flush()
     _publish_gallery_resources(session, id_maps)
     _sync_seed_agents_to_current_admin(session, id_maps)
+
+
+def _seed_knowledge_http(session, data, resource_ids, id_maps):
+    import base64
+    import time
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter
+
+    admin = session.exec(select(User).where(
+        User.tenant_id == TENANT_ID, User.username == ADMIN_USERNAME,
+    )).one()
+    gallery = StaffDeckKnowledgeAdapter(session, TENANT_ID, None, admin, write=True)
+    gallery.ensure_space()
+    existing = {row["name"]: row for row in gallery.call("GET", "/knowledge-bases")}
+    for row in data.get("knowledge_bases", []):
+        if row["id"] not in resource_ids.get("knowledge_base", set()):
+            continue
+        base = existing.get(row["name"])
+        if base is None:
+            base = gallery.call("POST", "/knowledge-bases", {
+                "space_id": gallery.space_id, "name": row["name"],
+                "description": row.get("description"),
+                "capability_scope": normalize_capability_scope(row.get("capability_scope")),
+                "metadata": {"seed_source": SEED_SOURCE, "source_resource_id": row["id"]},
+            }, scoped=False)
+            existing[row["name"]] = base
+        id_maps["knowledge_base"][row["id"]] = base["id"]
+        docs = gallery.call("GET", f"/knowledge-bases/{base['id']}/documents")
+        jobs = gallery.call("GET", "/jobs?limit=200")
+        sources = {(item.get("metadata", {}).get("source_document_id")) for item in docs}
+        sources.update(item.get("metadata", {}).get("metadata", {}).get("source_document_id")
+                       for item in jobs if item["status"] not in {"failed", "cancelled"})
+        for document in data.get("knowledge_documents", []):
+            if document["knowledge_base_id"] != row["id"] or document["id"] in sources:
+                continue
+            content = (document.get("metadata_json") or {}).get("raw_text")
+            if not content:
+                content = "\n\n".join(item.get("content", "") for item in data.get("knowledge_chunks", [])
+                                     if item["document_id"] == document["id"])
+            if content:
+                job = gallery.call("POST", f"/knowledge-bases/{base['id']}/documents", {
+                    "space_id": gallery.space_id, "filename": document.get("filename") or "seed.md",
+                    "content_base64": base64.b64encode(content.encode()).decode(),
+                    "title": document.get("title"),
+                    "metadata": {"source_document_id": document["id"], "seed_source": SEED_SOURCE},
+                }, scoped=False)
+                for _ in range(1200):
+                    job = gallery.call("GET", f"/jobs/{job['id']}")
+                    if job["status"] in {"succeeded", "failed", "cancelled"}:
+                        break
+                    time.sleep(.1)
+                if job["status"] != "succeeded":
+                    raise ValueError(f"Knowledge seed ingestion failed: {job['id']}")
+        gallery.call("POST", f"/knowledge-bases/{base['id']}/versions/publish", {})
 
 
 def _load_seed_fixtures(paths: Iterable[Path]) -> JsonDict:
@@ -386,309 +420,20 @@ def _apply_curated_skill_runtime_defaults(skill_id: str, content: JsonDict) -> N
         node["knowledge_scope"] = scope
 
 
-def _seed_knowledge(
-    session: Session,
-    data: JsonDict,
-    resource_ids: dict[str, set[str]],
-    id_maps: dict[str, dict[str, str]],
-) -> None:
-    selected_ids = resource_ids.get("knowledge_base", set())
-    for row in data.get("knowledge_bases", []):
-        source_id = str(row.get("id") or "")
-        if source_id not in selected_ids:
-            continue
-        name = str(row.get("name") or "").strip()
-        if not name:
-            continue
-        existing_by_id = session.get(KnowledgeBase, source_id)
-        existing_by_name = session.exec(
-            select(KnowledgeBase).where(KnowledgeBase.tenant_id == TENANT_ID, KnowledgeBase.name == name)
-        ).first()
-        existing = _seed_update_target(existing_by_id, existing_by_name, source_id)
-        payload = {
-            "tenant_id": TENANT_ID,
-            "name": name,
-            "description": row.get("description"),
-            "status": row.get("status") or "active",
-            "capability_scope": normalize_capability_scope(
-                row.get("capability_scope")
-                if row.get("capability_scope") is not None
-                else getattr(existing, "capability_scope", None)
-            ),
-            "metadata_json": _open_gallery_seed_metadata(row.get("metadata_json")),
-        }
-        if existing:
-            _apply_payload(existing, payload)
-            existing.updated_at = utc_now()
-            session.add(existing)
-            id_maps["knowledge_base"][source_id] = existing.id
-        elif existing_by_id or existing_by_name:
-            continue
-        else:
-            session.add(KnowledgeBase(id=source_id, **payload))
-            id_maps["knowledge_base"][source_id] = source_id
-    session.flush()
-
-    _seed_knowledge_versions(session, data.get("knowledge_base_versions", []), id_maps)
-    _seed_knowledge_documents(session, data.get("knowledge_documents", []), id_maps)
-    _seed_knowledge_buckets(session, data.get("knowledge_buckets", []), id_maps)
-    _seed_knowledge_chunks(session, data.get("knowledge_chunks", []), id_maps)
-    _seed_knowledge_concepts(session, data.get("knowledge_concepts", []), id_maps)
-    _seed_knowledge_discovery(session, data.get("knowledge_discovery_suggestions", []), id_maps)
-    _seed_knowledge_jobs(session, data.get("knowledge_ingest_jobs", []), id_maps)
 
 
-def _seed_knowledge_versions(
-    session: Session, rows: Iterable[JsonDict], id_maps: dict[str, dict[str, str]]
-) -> None:
-    for row in rows:
-        kb_id = id_maps["knowledge_base"].get(str(row.get("knowledge_base_id") or ""))
-        if not kb_id:
-            continue
-        knowledge_base = session.get(KnowledgeBase, kb_id)
-        version = str(row.get("version") or "1.0.0")
-        source_id = str(row.get("id") or "")
-        existing_by_id = session.get(KnowledgeBaseVersion, source_id)
-        existing_by_version = session.exec(
-            select(KnowledgeBaseVersion).where(
-                KnowledgeBaseVersion.tenant_id == TENANT_ID,
-                KnowledgeBaseVersion.knowledge_base_id == kb_id,
-                KnowledgeBaseVersion.version == version,
-            )
-        ).first()
-        existing = _seed_update_target(existing_by_id, existing_by_version, source_id)
-        payload = {
-            "tenant_id": TENANT_ID,
-            "knowledge_base_id": kb_id,
-            "version": version,
-            "name": row.get("name") or version,
-            "description": row.get("description"),
-            "status": row.get("status") or "active",
-            "capability_scope": normalize_capability_scope(
-                row.get("capability_scope")
-                if row.get("capability_scope") is not None
-                else getattr(
-                    existing,
-                    "capability_scope",
-                    getattr(knowledge_base, "capability_scope", None),
-                )
-            ),
-            "metadata_json": _open_gallery_seed_metadata(row.get("metadata_json")),
-        }
-        if existing:
-            _apply_payload(existing, payload)
-            existing.updated_at = utc_now()
-            session.add(existing)
-            id_maps["knowledge_base_version"][source_id] = existing.id
-        elif existing_by_id or existing_by_version:
-            continue
-        else:
-            session.add(KnowledgeBaseVersion(id=source_id, **payload))
-            id_maps["knowledge_base_version"][source_id] = source_id
-    session.flush()
 
 
-def _seed_knowledge_documents(
-    session: Session, rows: Iterable[JsonDict], id_maps: dict[str, dict[str, str]]
-) -> None:
-    for row in rows:
-        kb_id = id_maps["knowledge_base"].get(str(row.get("knowledge_base_id") or ""))
-        kb_ver_id = id_maps["knowledge_base_version"].get(str(row.get("knowledge_base_version_id") or ""))
-        if not kb_id or not kb_ver_id:
-            continue
-        source_id = str(row.get("id") or "")
-        existing = session.get(KnowledgeDocument, source_id)
-        payload = {
-            "tenant_id": TENANT_ID,
-            "knowledge_base_id": kb_id,
-            "knowledge_base_version_id": kb_ver_id,
-            "filename": row.get("filename") or "document",
-            "file_type": row.get("file_type") or "text",
-            "title": row.get("title"),
-            "status": row.get("status") or "ready",
-            "bucket_count": int(row.get("bucket_count") or 0),
-            "chunk_count": int(row.get("chunk_count") or 0),
-            "metadata_json": _seed_metadata(row.get("metadata_json")),
-            "error": row.get("error"),
-        }
-        if existing:
-            _apply_payload(existing, payload)
-            existing.updated_at = utc_now()
-            session.add(existing)
-            id_maps["knowledge_document"][source_id] = existing.id
-        else:
-            session.add(KnowledgeDocument(id=source_id, **payload))
-            id_maps["knowledge_document"][source_id] = source_id
-    session.flush()
 
 
-def _seed_knowledge_buckets(
-    session: Session, rows: Iterable[JsonDict], id_maps: dict[str, dict[str, str]]
-) -> None:
-    for row in rows:
-        kb_id = id_maps["knowledge_base"].get(str(row.get("knowledge_base_id") or ""))
-        kb_ver_id = id_maps["knowledge_base_version"].get(str(row.get("knowledge_base_version_id") or ""))
-        doc_id = id_maps["knowledge_document"].get(str(row.get("document_id") or ""))
-        if not kb_id or not kb_ver_id or not doc_id:
-            continue
-        source_id = str(row.get("id") or "")
-        existing = session.get(KnowledgeBucket, source_id)
-        payload = {
-            "tenant_id": TENANT_ID,
-            "knowledge_base_id": kb_id,
-            "knowledge_base_version_id": kb_ver_id,
-            "document_id": doc_id,
-            "bucket_key": row.get("bucket_key") or source_id,
-            "title": row.get("title") or "Untitled",
-            "summary": row.get("summary") or "",
-            "token_estimate": int(row.get("token_estimate") or 0),
-            "metadata_json": _seed_metadata(row.get("metadata_json")),
-        }
-        if existing:
-            _apply_payload(existing, payload)
-            existing.updated_at = utc_now()
-            session.add(existing)
-            id_maps["knowledge_bucket"][source_id] = existing.id
-        else:
-            session.add(KnowledgeBucket(id=source_id, **payload))
-            id_maps["knowledge_bucket"][source_id] = source_id
-    session.flush()
 
 
-def _seed_knowledge_chunks(
-    session: Session, rows: Iterable[JsonDict], id_maps: dict[str, dict[str, str]]
-) -> None:
-    for row in rows:
-        kb_id = id_maps["knowledge_base"].get(str(row.get("knowledge_base_id") or ""))
-        kb_ver_id = id_maps["knowledge_base_version"].get(str(row.get("knowledge_base_version_id") or ""))
-        doc_id = id_maps["knowledge_document"].get(str(row.get("document_id") or ""))
-        bucket_id = id_maps["knowledge_bucket"].get(str(row.get("bucket_id") or ""))
-        if not kb_id or not kb_ver_id or not doc_id or not bucket_id:
-            continue
-        existing = session.get(KnowledgeChunk, str(row.get("id") or ""))
-        payload = {
-            "tenant_id": TENANT_ID,
-            "knowledge_base_id": kb_id,
-            "knowledge_base_version_id": kb_ver_id,
-            "document_id": doc_id,
-            "bucket_id": bucket_id,
-            "chunk_index": int(row.get("chunk_index") or 0),
-            "content": row.get("content") or "",
-            "summary": row.get("summary"),
-            "source_ref": row.get("source_ref"),
-            "metadata_json": _seed_metadata(row.get("metadata_json")),
-        }
-        if existing:
-            _apply_payload(existing, payload)
-            existing.updated_at = utc_now()
-            session.add(existing)
-        else:
-            session.add(KnowledgeChunk(id=str(row.get("id") or ""), **payload))
 
 
-def _seed_knowledge_concepts(
-    session: Session, rows: Iterable[JsonDict], id_maps: dict[str, dict[str, str]]
-) -> None:
-    for row in rows:
-        kb_id = id_maps["knowledge_base"].get(str(row.get("knowledge_base_id") or ""))
-        kb_ver_id = id_maps["knowledge_base_version"].get(str(row.get("knowledge_base_version_id") or ""))
-        if not kb_id or not kb_ver_id:
-            continue
-        doc_id = id_maps["knowledge_document"].get(str(row.get("document_id") or ""))
-        concept_id = row.get("concept_id") or str(row.get("id") or "")
-        existing = session.get(KnowledgeConcept, str(row.get("id") or "")) or session.exec(
-            select(KnowledgeConcept).where(
-                KnowledgeConcept.tenant_id == TENANT_ID,
-                KnowledgeConcept.knowledge_base_version_id == kb_ver_id,
-                KnowledgeConcept.concept_id == concept_id,
-            )
-        ).first()
-        payload = {
-            "tenant_id": TENANT_ID,
-            "knowledge_base_id": kb_id,
-            "knowledge_base_version_id": kb_ver_id,
-            "document_id": doc_id,
-            "concept_id": concept_id,
-            "concept_type": row.get("concept_type") or "Concept",
-            "title": row.get("title") or concept_id,
-            "description": row.get("description"),
-            "content_md": row.get("content_md") or "",
-            "frontmatter_json": _json_object(row.get("frontmatter_json")),
-            "links_json": _json_list(row.get("links_json")),
-            "citations_json": _json_list(row.get("citations_json")),
-            "source_refs_json": _json_list(row.get("source_refs_json")),
-            "status": row.get("status") or "active",
-        }
-        if existing:
-            _apply_payload(existing, payload)
-            existing.updated_at = utc_now()
-            session.add(existing)
-        else:
-            session.add(KnowledgeConcept(id=str(row.get("id") or ""), **payload))
 
 
-def _seed_knowledge_discovery(
-    session: Session, rows: Iterable[JsonDict], id_maps: dict[str, dict[str, str]]
-) -> None:
-    for row in rows:
-        kb_id = id_maps["knowledge_base"].get(str(row.get("knowledge_base_id") or ""))
-        kb_ver_id = id_maps["knowledge_base_version"].get(str(row.get("knowledge_base_version_id") or ""))
-        doc_id = id_maps["knowledge_document"].get(str(row.get("document_id") or ""))
-        bucket_id = id_maps["knowledge_bucket"].get(str(row.get("bucket_id") or ""))
-        if not kb_id or not kb_ver_id or not doc_id:
-            continue
-        existing = session.get(KnowledgeDiscoverySuggestion, str(row.get("id") or ""))
-        payload = {
-            "tenant_id": TENANT_ID,
-            "knowledge_base_id": kb_id,
-            "knowledge_base_version_id": kb_ver_id,
-            "document_id": doc_id,
-            "bucket_id": bucket_id,
-            "suggestion_type": row.get("suggestion_type") or "suggestion",
-            "title": row.get("title") or "Suggestion",
-            "status": row.get("status") or "pending",
-            "payload_json": _json_object(row.get("payload_json")),
-            "source_refs_json": _json_list(row.get("source_refs_json")),
-            "reason": row.get("reason"),
-        }
-        if existing:
-            _apply_payload(existing, payload)
-            existing.updated_at = utc_now()
-            session.add(existing)
-        else:
-            session.add(KnowledgeDiscoverySuggestion(id=str(row.get("id") or ""), **payload))
 
 
-def _seed_knowledge_jobs(
-    session: Session, rows: Iterable[JsonDict], id_maps: dict[str, dict[str, str]]
-) -> None:
-    for row in rows:
-        kb_id = id_maps["knowledge_base"].get(str(row.get("knowledge_base_id") or ""))
-        kb_ver_id = id_maps["knowledge_base_version"].get(str(row.get("knowledge_base_version_id") or ""))
-        doc_id = id_maps["knowledge_document"].get(str(row.get("document_id") or ""))
-        if not kb_id or not kb_ver_id:
-            continue
-        existing = session.get(KnowledgeIngestJob, str(row.get("id") or ""))
-        payload = {
-            "tenant_id": TENANT_ID,
-            "knowledge_base_id": kb_id,
-            "knowledge_base_version_id": kb_ver_id,
-            "document_id": doc_id,
-            "filename": row.get("filename") or "document",
-            "status": row.get("status") or "completed",
-            "stage": row.get("stage") or "completed",
-            "progress": float(row.get("progress") or 0),
-            "error": row.get("error"),
-            "metadata_json": _seed_metadata(row.get("metadata_json")),
-            "started_at": _parse_datetime(row.get("started_at")),
-            "finished_at": _parse_datetime(row.get("finished_at")),
-        }
-        if existing:
-            _apply_payload(existing, payload)
-            existing.updated_at = utc_now()
-            session.add(existing)
-        else:
-            session.add(KnowledgeIngestJob(id=str(row.get("id") or ""), **payload))
 
 
 def _seed_agent_resource_bindings(
@@ -699,6 +444,16 @@ def _seed_agent_resource_bindings(
         resource_type = str(row.get("resource_type") or "")
         resource_id = _mapped_resource_id(resource_type, str(row.get("resource_id") or ""), id_maps)
         if not agent_id or not resource_id:
+            continue
+        from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled as km_enabled
+        if resource_type == "knowledge_base" and km_enabled():
+            admin = session.exec(select(User).where(
+                User.tenant_id == TENANT_ID, User.username == ADMIN_USERNAME,
+            )).one()
+            source = StaffDeckKnowledgeAdapter(session, TENANT_ID, None, admin)
+            target = StaffDeckKnowledgeAdapter(session, TENANT_ID, agent_id, admin, write=True)
+            target.ensure_space()
+            source.call("POST", f"/knowledge-bases/{resource_id}/bindings", {"space_id": target.space_id})
             continue
         metadata = agent_private_metadata(agent_id, _seed_metadata(row.get("metadata_json")))
         existing = session.exec(
@@ -799,73 +554,8 @@ def _seed_skill_branches(
             session.add(AgentSkillBranchVersion(id=str(row.get("id") or ""), **payload))
 
 
-def _seed_knowledge_branches(
-    session: Session, binding_rows: Iterable[JsonDict], id_maps: dict[str, dict[str, str]]
-) -> None:
-    for row in binding_rows:
-        if row.get("resource_type") != "knowledge_base":
-            continue
-        agent_id = id_maps["agent"].get(str(row.get("agent_id") or ""))
-        kb_id = id_maps["knowledge_base"].get(str(row.get("resource_id") or ""))
-        if not agent_id or not kb_id:
-            continue
-        kb = session.get(KnowledgeBase, kb_id)
-        current_version = _knowledge_version_with_seed_content(session, kb_id, agent_id)
-        if kb:
-            kb_metadata = dict(kb.metadata_json or {})
-            kb_metadata["current_version"] = current_version
-            kb.metadata_json = kb_metadata
-            kb.updated_at = utc_now()
-            session.add(kb)
-        existing = session.exec(
-            select(AgentKnowledgeBranch).where(
-                AgentKnowledgeBranch.tenant_id == TENANT_ID,
-                AgentKnowledgeBranch.agent_id == agent_id,
-                AgentKnowledgeBranch.knowledge_base_id == kb_id,
-            )
-        ).first()
-        payload = {
-            "tenant_id": TENANT_ID,
-            "agent_id": agent_id,
-            "knowledge_base_id": kb_id,
-            "base_version": current_version,
-            "head_version": current_version,
-            "status": "active",
-            "sync_state": "synced",
-            "metadata_json": agent_private_metadata(agent_id, _seed_metadata(row.get("metadata_json"))),
-        }
-        if existing:
-            _apply_payload(existing, payload)
-            existing.updated_at = utc_now()
-            session.add(existing)
-        else:
-            session.add(AgentKnowledgeBranch(**payload))
 
 
-def _knowledge_version_with_seed_content(session: Session, kb_id: str, agent_id: str) -> str:
-    documents = session.exec(
-        select(KnowledgeDocument).where(
-            KnowledgeDocument.tenant_id == TENANT_ID,
-            KnowledgeDocument.knowledge_base_id == kb_id,
-            KnowledgeDocument.knowledge_base_version_id != None,  # noqa: E711
-        )
-    ).all()
-    fallback_version: str | None = None
-    for document in documents:
-        version = session.get(KnowledgeBaseVersion, document.knowledge_base_version_id)
-        if not version:
-            continue
-        fallback_version = fallback_version or version.version
-        if (version.metadata_json or {}).get("owner_agent_id") == agent_id:
-            return version.version
-        if f"branch.{agent_id}." in version.version:
-            return version.version
-    if fallback_version:
-        return fallback_version
-    kb = session.get(KnowledgeBase, kb_id)
-    if kb:
-        return str((kb.metadata_json or {}).get("current_version") or "1.0.0")
-    return "1.0.0"
 
 
 def _publish_gallery_resources(session: Session, id_maps: dict[str, dict[str, str]]) -> None:
@@ -874,8 +564,10 @@ def _publish_gallery_resources(session: Session, id_maps: dict[str, dict[str, st
         ("skill", Skill, "skill"),
         ("general_skill", GeneralSkill, "general_skill"),
         ("tool", Tool, "tool"),
-        ("knowledge_base", KnowledgeBase, "knowledge_base"),
     ):
+        from app.knowledge.http_adapter import enabled as km_enabled
+        if resource_type == "knowledge_base" and km_enabled():
+            continue
         for resource_id in set(id_maps[map_key].values()):
             resource = session.get(model, resource_id)
             if resource is None:

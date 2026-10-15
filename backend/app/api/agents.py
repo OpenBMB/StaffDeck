@@ -28,50 +28,9 @@ from app.agents.schema import (
     AgentWorkRecordRead,
     AgentWorkRecordReplyStatsRead,
 )
-from app.agents.branching import (
-    agent_private_metadata,
-    branch_versions,
-    copy_overall_scope_to_agent,
-    ensure_agent_skill_branch,
-    ensure_knowledge_base_version,
-    get_overall_agent,
-    is_bound_resource_visible_for_agent,
-    is_open_gallery_resource,
-    promote_branch_to_overall,
-    promote_knowledge_branch_to_overall,
-    rollback_branch,
-    sync_branch_from_overall,
-    visible_skill_rows,
-)
+from app.agents.branching import agent_private_metadata, branch_versions, copy_overall_scope_to_agent, ensure_agent_skill_branch, get_overall_agent, is_bound_resource_visible_for_agent, is_open_gallery_resource, promote_branch_to_overall, rollback_branch, sync_branch_from_overall, visible_skill_rows
 from app.db import get_session
-from app.db.models import (
-    APIClient,
-    APICredential,
-    AgentModelBinding,
-    AgentKnowledgeBranch,
-    AgentProfile,
-    AgentResourceBinding,
-    AgentSkillBranch,
-    AgentSkillBranchVersion,
-    AgentUsage,
-    ChannelBinding,
-    ChannelBindingAgent,
-    ChatSession,
-    GeneralSkill,
-    HumanHandoffRequest,
-    KnowledgeBase,
-    KnowledgeBucket,
-    KnowledgeChunk,
-    KnowledgeDocument,
-    Message,
-    ModelConfig,
-    ScheduledTask,
-    Skill,
-    TeamMember,
-    Tool,
-    utc_now,
-    User,
-)
+from app.db.models import APIClient, APICredential, AgentModelBinding, AgentProfile, AgentResourceBinding, AgentSkillBranch, AgentSkillBranchVersion, AgentUsage, ChannelBinding, ChannelBindingAgent, ChatSession, GeneralSkill, HumanHandoffRequest, Message, ModelConfig, ScheduledTask, Skill, TeamMember, Tool, utc_now, User
 from app.public_api.auth import generate_api_key, normalize_credential_expiry
 from app.public_api.credential_profiles import (
     AGENT_KEY_ALLOWED_SCOPES,
@@ -209,9 +168,10 @@ def create_agent(
             overall = get_overall_agent(db, request.tenant_id)
             if overall and not row.persona_prompt:
                 row.persona_prompt = overall.persona_prompt
-            copy_overall_scope_to_agent(db, request.tenant_id, row)
             if overall:
-                _copy_agent_models_from_source(db, request.tenant_id, overall, row)
+                _copy_agent_scope_from_source(db, request.tenant_id, overall, row)
+            else:
+                copy_overall_scope_to_agent(db, request.tenant_id, row)
     db.commit()
     db.refresh(row)
     return agent_read(row, _bindings_by_agent(db, request.tenant_id).get(row.id, []))
@@ -515,6 +475,13 @@ def delete_agent(
     _ensure_can_manage_agent(row, current_user)
     if row.is_overall:
         raise HTTPException(status_code=400, detail="Overall agent cannot be deleted")
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled as km_enabled
+    if km_enabled():
+        knowledge = StaffDeckKnowledgeAdapter(db, tenant_id, row.id, current_user, write=True)
+        for binding in knowledge.resource_bindings():
+            knowledge.call("PUT", f"/knowledge-bases/{binding.resource_id}/binding", {
+                "hidden": True, "status": "deleted",
+            })
     bindings = db.exec(
         select(AgentResourceBinding).where(AgentResourceBinding.agent_id == row.id)
     ).all()
@@ -606,7 +573,12 @@ def get_agent_resources(
         )
         .order_by(AgentResourceBinding.resource_type, AgentResourceBinding.created_at)
     ).all()
-    return [binding_read(row) for row in rows]
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled as km_enabled
+    result = [binding_read(row) for row in rows
+              if not km_enabled() or row.resource_type != "knowledge_base"]
+    if km_enabled():
+        result.extend(StaffDeckKnowledgeAdapter(db, tenant_id, agent_id, current_user).resource_bindings())
+    return result
 
 
 @enterprise_router.put("/{agent_id}/resources", response_model=list[AgentResourceBindingRead])
@@ -627,8 +599,15 @@ def update_agent_resources(
         )
     ).all()
     by_key = {(row.resource_type, row.resource_id): row for row in existing}
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled as km_enabled
+    if km_enabled():
+        StaffDeckKnowledgeAdapter(db, request.tenant_id, agent_id, current_user, write=True).update_resource_bindings(
+            [item for item in request.resources if item.resource_type == "knowledge_base"],
+        )
     desired_keys: set[tuple[str, str]] = set()
     for item in request.resources:
+        if km_enabled() and item.resource_type == "knowledge_base":
+            continue
         _ensure_resource_exists(db, request.tenant_id, item)
         key = (item.resource_type, item.resource_id)
         desired_keys.add(key)
@@ -674,76 +653,59 @@ def import_agent_resources(
     raise HTTPException(status_code=503, detail="Resource import is temporarily busy")
 
 
-def _import_agent_resources_once(
-    agent_id: str,
-    request: AgentResourceImportRequest,
-    db: Session,
-    current_user: User | object,
-) -> dict[str, object]:
+def _import_agent_resources_once(agent_id: str, request: AgentResourceImportRequest, db: Session, current_user: User | object) -> dict[str, object]:
     target_agent = _get_agent(db, request.tenant_id, agent_id)
     source_agent = _get_agent(db, request.tenant_id, request.source_agent_id)
     user = current_user
     _ensure_can_import_to_agent(target_agent, user)
     _ensure_can_copy_from_agent(source_agent, user)
     if source_agent.id == target_agent.id:
-        raise HTTPException(status_code=400, detail="Source and target agent cannot be the same")
+        raise HTTPException(status_code=400, detail='Source and target agent cannot be the same')
     resource_ids = _dedupe_ids(request.resource_ids)
     if not resource_ids:
-        raise HTTPException(status_code=400, detail="No resources selected")
+        raise HTTPException(status_code=400, detail='No resources selected')
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled as km_http_enabled
+    if request.resource_type == 'knowledge_base':
+        source = StaffDeckKnowledgeAdapter(db, request.tenant_id, source_agent.id, user)
+        target = StaffDeckKnowledgeAdapter(db, request.tenant_id, target_agent.id, user, write=True)
+        target.ensure_space()
+        imported, missing = ([], [])
+        for identifier in resource_ids:
+            try:
+                source.require_base(identifier, 'use')
+                resource = source.call('GET', f'/knowledge-bases/{identifier}')
+            except HTTPException as error:
+                if error.status_code != 404:
+                    raise
+                missing.append({'resource_id': identifier, 'reason': 'not_visible_in_source_agent'})
+                continue
+            if target_agent.is_overall:
+                source.call('POST', f'/knowledge-bases/{identifier}/versions/publish', {})
+            source.call('POST', f'/knowledge-bases/{identifier}/bindings?source_space_id={source.space_id}', {'space_id': target.space_id, 'hidden': False}, scoped=False)
+            imported.append({'resource_type': 'knowledge_base', 'resource_id': identifier, 'display_id': identifier, 'name': resource['name']})
+        return {'status': 'imported', 'target_agent_id': target_agent.id, 'source_agent_id': source_agent.id, 'imported': imported, 'missing': missing}
     imported: list[dict[str, object]] = []
     missing: list[dict[str, str]] = []
     for identifier in resource_ids:
         resolved = _resolve_resource(db, request.tenant_id, request.resource_type, identifier)
         if not resolved:
-            missing.append({"resource_id": identifier, "reason": "resource_not_found"})
+            missing.append({'resource_id': identifier, 'reason': 'resource_not_found'})
             continue
-        source_binding = _source_resource_binding(
-            db, request.tenant_id, source_agent, request.resource_type, resolved.id
-        )
-        if not source_agent.is_overall and not source_binding:
-            missing.append({"resource_id": identifier, "reason": "not_visible_in_source_agent"})
+        source_binding = _source_resource_binding(db, request.tenant_id, source_agent, request.resource_type, resolved.id)
+        if not source_agent.is_overall and (not source_binding):
+            missing.append({'resource_id': identifier, 'reason': 'not_visible_in_source_agent'})
             continue
-        block_reason = _blocked_learning_reason(
-            db,
-            request.tenant_id,
-            source_agent,
-            request.resource_type,
-            resolved,
-            source_binding,
-        )
+        block_reason = _blocked_learning_reason(db, request.tenant_id, source_agent, request.resource_type, resolved, source_binding)
         if block_reason:
-            missing.append({"resource_id": identifier, "reason": block_reason})
+            missing.append({'resource_id': identifier, 'reason': block_reason})
             continue
         if target_agent.is_overall:
-            _import_resource_to_overall(
-                db, request.tenant_id, source_agent, request.resource_type, resolved
-            )
+            _import_resource_to_overall(db, request.tenant_id, source_agent, request.resource_type, resolved)
         else:
-            resolved = _upsert_imported_resource_binding(
-                db,
-                request.tenant_id,
-                source_agent,
-                target_agent,
-                request.resource_type,
-                resolved,
-                source_binding,
-            )
-        imported.append(
-            {
-                "resource_type": request.resource_type,
-                "resource_id": resolved.id,
-                "display_id": _resource_display_id(request.resource_type, resolved),
-                "name": getattr(resolved, "name", getattr(resolved, "slug", resolved.id)),
-            }
-        )
+            resolved = _upsert_imported_resource_binding(db, request.tenant_id, source_agent, target_agent, request.resource_type, resolved, source_binding)
+        imported.append({'resource_type': request.resource_type, 'resource_id': resolved.id, 'display_id': _resource_display_id(request.resource_type, resolved), 'name': getattr(resolved, 'name', getattr(resolved, 'slug', resolved.id))})
     db.commit()
-    return {
-        "status": "imported",
-        "target_agent_id": target_agent.id,
-        "source_agent_id": source_agent.id,
-        "imported": imported,
-        "missing": missing,
-    }
+    return {'status': 'imported', 'target_agent_id': target_agent.id, 'source_agent_id': source_agent.id, 'imported': imported, 'missing': missing}
 
 
 @enterprise_router.get("/{agent_id}/skills")
@@ -931,118 +893,53 @@ def use_chat_agent(
     return agent_read(row, bindings.get(row.id, []), True)
 
 
-def _local_agent_resource_timeline_events(
-    db: Session,
-    tenant_id: str,
-    agent_id: str,
-) -> list[AgentWorkRecordEventRead]:
-    bindings = db.exec(
-        select(AgentResourceBinding).where(
-            AgentResourceBinding.tenant_id == tenant_id,
-            AgentResourceBinding.agent_id == agent_id,
-            AgentResourceBinding.status == "active",
-        )
-    ).all()
-    ids_by_type = {
-        resource_type: {
-            binding.resource_id
-            for binding in bindings
-            if binding.resource_type == resource_type
-        }
-        for resource_type in ("skill", "general_skill", "knowledge_base", "tool")
-    }
-    skills = {
-        row.id: row
-        for row in db.exec(
-            select(Skill).where(
-                Skill.tenant_id == tenant_id,
-                Skill.id.in_(ids_by_type["skill"]),
-            )
-        ).all()
-    } if ids_by_type["skill"] else {}
-    general_skills = {
-        row.id: row
-        for row in db.exec(
-            select(GeneralSkill).where(
-                GeneralSkill.tenant_id == tenant_id,
-                GeneralSkill.id.in_(ids_by_type["general_skill"]),
-            )
-        ).all()
-    } if ids_by_type["general_skill"] else {}
-    knowledge_bases = {
-        row.id: row
-        for row in db.exec(
-            select(KnowledgeBase).where(
-                KnowledgeBase.tenant_id == tenant_id,
-                KnowledgeBase.id.in_(ids_by_type["knowledge_base"]),
-            )
-        ).all()
-    } if ids_by_type["knowledge_base"] else {}
-    tools = {
-        row.id: row
-        for row in db.exec(
-            select(Tool).where(
-                Tool.tenant_id == tenant_id,
-                Tool.id.in_(ids_by_type["tool"]),
-            )
-        ).all()
-    } if ids_by_type["tool"] else {}
-    skill_branches = {
-        row.skill_id: row
-        for row in db.exec(
-            select(AgentSkillBranch).where(
-                AgentSkillBranch.tenant_id == tenant_id,
-                AgentSkillBranch.agent_id == agent_id,
-            )
-        ).all()
-    }
-    knowledge_branches = {
-        row.knowledge_base_id: row
-        for row in db.exec(
-            select(AgentKnowledgeBranch).where(
-                AgentKnowledgeBranch.tenant_id == tenant_id,
-                AgentKnowledgeBranch.agent_id == agent_id,
-            )
-        ).all()
-    }
-
+def _local_agent_resource_timeline_events(db: Session, tenant_id: str, agent_id: str) -> list[AgentWorkRecordEventRead]:
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled as km_enabled
+    bindings = db.exec(select(AgentResourceBinding).where(AgentResourceBinding.tenant_id == tenant_id, AgentResourceBinding.agent_id == agent_id, AgentResourceBinding.status == 'active')).all()
+    ids_by_type = {resource_type: {binding.resource_id for binding in bindings if binding.resource_type == resource_type} for resource_type in ('skill', 'general_skill', 'knowledge_base', 'tool')}
+    skills = {row.id: row for row in db.exec(select(Skill).where(Skill.tenant_id == tenant_id, Skill.id.in_(ids_by_type['skill']))).all()} if ids_by_type['skill'] else {}
+    general_skills = {row.id: row for row in db.exec(select(GeneralSkill).where(GeneralSkill.tenant_id == tenant_id, GeneralSkill.id.in_(ids_by_type['general_skill']))).all()} if ids_by_type['general_skill'] else {}
+    knowledge_bases = {}
+    tools = {row.id: row for row in db.exec(select(Tool).where(Tool.tenant_id == tenant_id, Tool.id.in_(ids_by_type['tool']))).all()} if ids_by_type['tool'] else {}
+    skill_branches = {row.skill_id: row for row in db.exec(select(AgentSkillBranch).where(AgentSkillBranch.tenant_id == tenant_id, AgentSkillBranch.agent_id == agent_id)).all()}
+    knowledge_branches = {}
     events: list[AgentWorkRecordEventRead] = []
     for binding in bindings:
         kind: str
         label: str
-        if binding.resource_type == "skill":
+        if binding.resource_type == 'skill':
             resource = skills.get(binding.resource_id)
             branch = skill_branches.get(resource.skill_id) if resource else None
-            if not resource or resource.status != "published" or (branch and branch.status != "active"):
+            if not resource or resource.status != 'published' or (branch and branch.status != 'active'):
                 continue
-            kind, label = "sop", resource.name
-        elif binding.resource_type == "general_skill":
+            kind, label = ('sop', resource.name)
+        elif binding.resource_type == 'general_skill':
             resource = general_skills.get(binding.resource_id)
-            if not resource or resource.status != "published":
+            if not resource or resource.status != 'published':
                 continue
-            kind, label = "skill", resource.name
-        elif binding.resource_type == "knowledge_base":
+            kind, label = ('skill', resource.name)
+        elif binding.resource_type == 'knowledge_base':
             resource = knowledge_bases.get(binding.resource_id)
             branch = knowledge_branches.get(binding.resource_id)
-            if not resource or resource.status != "active" or (branch and branch.status != "active"):
+            if not resource or resource.status != 'active' or (branch and branch.status != 'active'):
                 continue
-            kind, label = "knowledge", resource.name
-        elif binding.resource_type == "tool":
+            kind, label = ('knowledge', resource.name)
+        elif binding.resource_type == 'tool':
             resource = tools.get(binding.resource_id)
             if not resource or not resource.enabled:
                 continue
-            kind, label = "tool", resource.display_name or resource.name
+            kind, label = ('tool', resource.display_name or resource.name)
         else:
             continue
-        events.append(
-            AgentWorkRecordEventRead(
-                id=f"{binding.id}:assigned",
-                kind=kind,  # type: ignore[arg-type]
-                phase="assigned",
-                timestamp=_iso_utc(binding.created_at),
-                label=label,
-            )
-        )
+        events.append(AgentWorkRecordEventRead(id=f'{binding.id}:assigned', kind=kind, phase='assigned', timestamp=_iso_utc(binding.created_at), label=label))
+    if km_enabled():
+        adapter = StaffDeckKnowledgeAdapter(db, tenant_id, agent_id)
+        for item in adapter.resource_bindings():
+            if item.status != 'active':
+                continue
+            resource = adapter.call('GET', f'/knowledge-bases/{item.resource_id}')
+            if resource['status'] == 'active':
+                events.append(AgentWorkRecordEventRead(id=f'{item.id}:assigned', kind='knowledge', phase='assigned', timestamp=item.created_at, label=resource['name']))
     return events
 
 
@@ -1393,6 +1290,17 @@ def binding_read(row: AgentResourceBinding) -> AgentResourceBindingRead:
 def _copy_agent_scope_from_source(
     db: Session, tenant_id: str, source: AgentProfile, target: AgentProfile
 ) -> None:
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled as km_enabled
+    if km_enabled():
+        source_km = StaffDeckKnowledgeAdapter(db, tenant_id, source.id)
+        target_km = StaffDeckKnowledgeAdapter(db, tenant_id, target.id, write=True)
+        source_km.ensure_space()
+        target_km.ensure_space()
+        for resource in source_km.resource_bindings():
+            if resource.status == "active":
+                source_km.call("POST", f"/knowledge-bases/{resource.resource_id}/bindings", {
+                    "space_id": target_km.space_id,
+                })
     if source.is_overall:
         copy_overall_scope_to_agent(db, tenant_id, target)
     else:
@@ -1414,6 +1322,9 @@ def _copy_resource_binding(
     target_agent_id: str,
     binding: AgentResourceBinding,
 ) -> None:
+    from app.knowledge.http_adapter import enabled as km_enabled
+    if binding.resource_type == "knowledge_base" and km_enabled():
+        return
     if binding.status != "active":
         return
     resource_id = binding.resource_id
@@ -1446,10 +1357,6 @@ def _copy_resource_binding(
         skill = db.get(Skill, binding.resource_id)
         if skill and skill.tenant_id == tenant_id:
             _copy_skill_branch(db, tenant_id, source_agent_id, target_agent_id, skill)
-    elif binding.resource_type == "knowledge_base":
-        kb = db.get(KnowledgeBase, binding.resource_id)
-        if kb and kb.tenant_id == tenant_id:
-            _copy_knowledge_branch(db, tenant_id, source_agent_id, target_agent_id, kb)
 
 
 def _dedupe_ids(resource_ids: list[str]) -> list[str]:
@@ -1483,139 +1390,58 @@ def _source_resource_binding(
     ).first()
 
 
-AgentResource = Skill | GeneralSkill | KnowledgeBase | Tool
+AgentResource = Skill | GeneralSkill | Tool
 
 
-def _blocked_learning_reason(
-    db: Session,
-    tenant_id: str,
-    source_agent: AgentProfile,
-    resource_type: str,
-    resolved: AgentResource,
-    source_binding: AgentResourceBinding | None,
-) -> str | None:
+def _blocked_learning_reason(db: Session, tenant_id: str, source_agent: AgentProfile, resource_type: str, resolved: AgentResource, source_binding: AgentResourceBinding | None) -> str | None:
     if source_agent.is_overall:
-        return (
-            None
-            if _open_gallery_resource_enabled(db, tenant_id, resource_type, resolved)
-            else "disabled_in_open_gallery"
-        )
-    if not source_binding or source_binding.status != "active":
-        return "inactive_in_source_agent"
-    if resource_type == "skill" and isinstance(resolved, Skill):
-        branch = db.exec(
-            select(AgentSkillBranch).where(
-                AgentSkillBranch.tenant_id == tenant_id,
-                AgentSkillBranch.agent_id == source_agent.id,
-                AgentSkillBranch.skill_id == resolved.skill_id,
-            )
-        ).first()
-        if branch and branch.status != "active":
-            return "inactive_in_source_agent"
-    if resource_type == "knowledge_base" and isinstance(resolved, KnowledgeBase):
-        branch = db.exec(
-            select(AgentKnowledgeBranch).where(
-                AgentKnowledgeBranch.tenant_id == tenant_id,
-                AgentKnowledgeBranch.agent_id == source_agent.id,
-                AgentKnowledgeBranch.knowledge_base_id == resolved.id,
-            )
-        ).first()
-        if branch and branch.status != "active":
-            return "inactive_in_source_agent"
+        return None if _open_gallery_resource_enabled(db, tenant_id, resource_type, resolved) else 'disabled_in_open_gallery'
+    if not source_binding or source_binding.status != 'active':
+        return 'inactive_in_source_agent'
+    if resource_type == 'skill' and isinstance(resolved, Skill):
+        branch = db.exec(select(AgentSkillBranch).where(AgentSkillBranch.tenant_id == tenant_id, AgentSkillBranch.agent_id == source_agent.id, AgentSkillBranch.skill_id == resolved.skill_id)).first()
+        if branch and branch.status != 'active':
+            return 'inactive_in_source_agent'
     return None
 
 
-def _open_gallery_resource_enabled(
-    db: Session,
-    tenant_id: str,
-    resource_type: str,
-    resolved: AgentResource,
-) -> bool:
+def _open_gallery_resource_enabled(db: Session, tenant_id: str, resource_type: str, resolved: AgentResource) -> bool:
     if not is_open_gallery_resource(db, tenant_id, resource_type, resolved):
         return False
-    if resource_type == "skill" and isinstance(resolved, Skill):
-        return resolved.status == "published"
-    if resource_type == "general_skill" and isinstance(resolved, GeneralSkill):
-        return resolved.status == "published"
-    if resource_type == "knowledge_base" and isinstance(resolved, KnowledgeBase):
-        return resolved.status == "active"
-    if resource_type == "tool" and isinstance(resolved, Tool):
+    if resource_type == 'skill' and isinstance(resolved, Skill):
+        return resolved.status == 'published'
+    if resource_type == 'general_skill' and isinstance(resolved, GeneralSkill):
+        return resolved.status == 'published'
+    if resource_type == 'tool' and isinstance(resolved, Tool):
         return resolved.enabled
     return False
 
 
-def _import_resource_to_overall(
-    db: Session,
-    tenant_id: str,
-    source_agent: AgentProfile,
-    resource_type: str,
-    resolved: AgentResource,
-) -> None:
+def _import_resource_to_overall(db: Session, tenant_id: str, source_agent: AgentProfile, resource_type: str, resolved: AgentResource) -> None:
     if source_agent.is_overall:
         return
-    if resource_type == "skill" and isinstance(resolved, Skill):
-        branch = db.exec(
-            select(AgentSkillBranch).where(
-                AgentSkillBranch.tenant_id == tenant_id,
-                AgentSkillBranch.agent_id == source_agent.id,
-                AgentSkillBranch.skill_id == resolved.skill_id,
-            )
-        ).first()
+    if resource_type == 'skill' and isinstance(resolved, Skill):
+        branch = db.exec(select(AgentSkillBranch).where(AgentSkillBranch.tenant_id == tenant_id, AgentSkillBranch.agent_id == source_agent.id, AgentSkillBranch.skill_id == resolved.skill_id)).first()
         if branch:
             promote_branch_to_overall(db, tenant_id, branch)
         return
-    if resource_type == "knowledge_base" and isinstance(resolved, KnowledgeBase):
-        promote_knowledge_branch_to_overall(db, tenant_id, source_agent.id, resolved.id)
 
 
-def _upsert_imported_resource_binding(
-    db: Session,
-    tenant_id: str,
-    source_agent: AgentProfile,
-    target_agent: AgentProfile,
-    resource_type: str,
-    resolved: AgentResource,
-    source_binding: AgentResourceBinding | None,
-) -> AgentResource:
-    if (
-        resource_type == "general_skill"
-        and isinstance(resolved, GeneralSkill)
-        and not is_open_gallery_resource(db, tenant_id, resource_type, resolved)
-    ):
+def _upsert_imported_resource_binding(db: Session, tenant_id: str, source_agent: AgentProfile, target_agent: AgentProfile, resource_type: str, resolved: AgentResource, source_binding: AgentResourceBinding | None) -> AgentResource:
+    if resource_type == 'general_skill' and isinstance(resolved, GeneralSkill) and (not is_open_gallery_resource(db, tenant_id, resource_type, resolved)):
         resolved = _copy_private_general_skill(db, tenant_id, resolved, target_agent.id)
-    status = source_binding.status if source_binding else "active"
-    metadata = agent_private_metadata(
-        target_agent.id,
-        dict(source_binding.metadata_json or {}) if source_binding else {},
-    )
-    existing = db.exec(
-        select(AgentResourceBinding).where(
-            AgentResourceBinding.tenant_id == tenant_id,
-            AgentResourceBinding.agent_id == target_agent.id,
-            AgentResourceBinding.resource_type == resource_type,
-            AgentResourceBinding.resource_id == resolved.id,
-        )
-    ).first()
+    status = source_binding.status if source_binding else 'active'
+    metadata = agent_private_metadata(target_agent.id, dict(source_binding.metadata_json or {}) if source_binding else {})
+    existing = db.exec(select(AgentResourceBinding).where(AgentResourceBinding.tenant_id == tenant_id, AgentResourceBinding.agent_id == target_agent.id, AgentResourceBinding.resource_type == resource_type, AgentResourceBinding.resource_id == resolved.id)).first()
     if existing:
         existing.status = status
         existing.metadata_json = metadata
         existing.updated_at = utc_now()
         db.add(existing)
     else:
-        db.add(
-            AgentResourceBinding(
-                tenant_id=tenant_id,
-                agent_id=target_agent.id,
-                resource_type=resource_type,
-                resource_id=resolved.id,
-                status=status,
-                metadata_json=metadata,
-            )
-        )
-    if resource_type == "skill" and isinstance(resolved, Skill):
+        db.add(AgentResourceBinding(tenant_id=tenant_id, agent_id=target_agent.id, resource_type=resource_type, resource_id=resolved.id, status=status, metadata_json=metadata))
+    if resource_type == 'skill' and isinstance(resolved, Skill):
         _copy_or_update_skill_branch(db, tenant_id, source_agent.id, target_agent.id, resolved)
-    elif resource_type == "knowledge_base" and isinstance(resolved, KnowledgeBase):
-        _copy_or_update_knowledge_branch(db, tenant_id, source_agent.id, target_agent.id, resolved)
     return resolved
 
 
@@ -1755,54 +1581,6 @@ def _ensure_copied_skill_branch_version(
     )
 
 
-def _copy_or_update_knowledge_branch(
-    db: Session,
-    tenant_id: str,
-    source_agent_id: str,
-    target_agent_id: str,
-    kb: KnowledgeBase,
-) -> None:
-    with db.no_autoflush:
-        source_branch = db.exec(
-            select(AgentKnowledgeBranch).where(
-                AgentKnowledgeBranch.tenant_id == tenant_id,
-                AgentKnowledgeBranch.agent_id == source_agent_id,
-                AgentKnowledgeBranch.knowledge_base_id == kb.id,
-            )
-        ).first()
-        target_branch = db.exec(
-            select(AgentKnowledgeBranch).where(
-                AgentKnowledgeBranch.tenant_id == tenant_id,
-                AgentKnowledgeBranch.agent_id == target_agent_id,
-                AgentKnowledgeBranch.knowledge_base_id == kb.id,
-            )
-        ).first()
-    if source_branch:
-        base_version = source_branch.base_version
-        head_version = source_branch.head_version
-        status = source_branch.status
-        sync_state = source_branch.sync_state
-        metadata = dict(source_branch.metadata_json or {})
-    else:
-        version = ensure_knowledge_base_version(db, kb).version
-        base_version = version
-        head_version = version
-        status = "active"
-        sync_state = "synced"
-        metadata = {}
-    if not target_branch:
-        target_branch = AgentKnowledgeBranch(
-            tenant_id=tenant_id,
-            agent_id=target_agent_id,
-            knowledge_base_id=kb.id,
-        )
-    target_branch.base_version = base_version
-    target_branch.head_version = head_version
-    target_branch.status = status
-    target_branch.sync_state = sync_state
-    target_branch.metadata_json = metadata
-    target_branch.updated_at = utc_now()
-    db.add(target_branch)
 
 
 def _resource_display_id(resource_type: str, resolved: AgentResource) -> str:
@@ -1877,30 +1655,6 @@ def _copy_skill_branch(
     )
 
 
-def _copy_knowledge_branch(
-    db: Session, tenant_id: str, source_agent_id: str, target_agent_id: str, kb: KnowledgeBase
-) -> None:
-    source_branch = db.exec(
-        select(AgentKnowledgeBranch).where(
-            AgentKnowledgeBranch.tenant_id == tenant_id,
-            AgentKnowledgeBranch.agent_id == source_agent_id,
-            AgentKnowledgeBranch.knowledge_base_id == kb.id,
-        )
-    ).first()
-    if not source_branch:
-        return
-    db.add(
-        AgentKnowledgeBranch(
-            tenant_id=tenant_id,
-            agent_id=target_agent_id,
-            knowledge_base_id=source_branch.knowledge_base_id,
-            base_version=source_branch.base_version,
-            head_version=source_branch.head_version,
-            status=source_branch.status,
-            sync_state=source_branch.sync_state,
-            metadata_json=dict(source_branch.metadata_json or {}),
-        )
-    )
 
 
 def _resolve_resource(
@@ -1923,14 +1677,7 @@ def _resolve_resource(
             ).first()
         )
     if resource_type == "knowledge_base":
-        return (
-            db.get(KnowledgeBase, identifier)
-            or db.exec(
-                select(KnowledgeBase).where(
-                    KnowledgeBase.tenant_id == tenant_id, KnowledgeBase.name == identifier
-                )
-            ).first()
-        )
+        raise HTTPException(503, "Knowledge resources must be resolved through KM")
     if resource_type == "tool":
         return (
             db.get(Tool, identifier)
@@ -1950,11 +1697,14 @@ def _get_agent(db: Session, tenant_id: str, agent_id: str) -> AgentProfile:
 
 
 def _bindings_by_agent(db: Session, tenant_id: str) -> dict[str, list[AgentResourceBinding]]:
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled as km_enabled
     rows = db.exec(
         select(AgentResourceBinding)
         .where(AgentResourceBinding.tenant_id == tenant_id)
         .order_by(AgentResourceBinding.created_at.asc())
     ).all()
+    if km_enabled():
+        rows = [row for row in rows if row.resource_type != "knowledge_base"]
     agent_ids = {row.agent_id for row in rows}
     agents_by_id = {
         row.id: row
@@ -1974,119 +1724,66 @@ def _bindings_by_agent(db: Session, tenant_id: str) -> dict[str, list[AgentResou
         ):
             continue
         grouped.setdefault(row.agent_id, []).append(row)
+    if km_enabled():
+        for agent in db.exec(select(AgentProfile).where(AgentProfile.tenant_id == tenant_id)):
+            try:
+                knowledge = StaffDeckKnowledgeAdapter(db, tenant_id, agent.id).resource_bindings()
+            except HTTPException as exc:
+                if exc.status_code in {403, 404}:
+                    continue
+                raise
+            for item in knowledge:
+                if item.status != "deleted":
+                    grouped.setdefault(agent.id, []).append(AgentResourceBinding(
+                        id=item.id, tenant_id=tenant_id, agent_id=agent.id,
+                        resource_type="knowledge_base", resource_id=item.resource_id,
+                        status=item.status, metadata_json=item.metadata,
+                        created_at=datetime.fromisoformat(item.created_at),
+                        updated_at=datetime.fromisoformat(item.updated_at),
+                    ))
     return grouped
 
 
-def _resource_binding_visible_in_agent_summary(
-    db: Session,
-    tenant_id: str,
-    agent: AgentProfile | None,
-    binding: AgentResourceBinding,
-    *, facts=None,
-) -> bool:
-    if not agent or binding.status == "deleted":
+def _resource_binding_visible_in_agent_summary(db: Session, tenant_id: str, agent: AgentProfile | None, binding: AgentResourceBinding, *, facts=None) -> bool:
+    if not agent or binding.status == 'deleted':
         return False
-
-    model_by_type = {
-        "skill": Skill,
-        "general_skill": GeneralSkill,
-        "knowledge_base": KnowledgeBase,
-        "tool": Tool,
-    }
+    model_by_type = {'skill': Skill, 'general_skill': GeneralSkill, 'tool': Tool}
     model = model_by_type.get(binding.resource_type)
     if model is None:
         return False
     resource = facts['resources'].get((binding.resource_type, binding.resource_id)) if facts is not None else db.get(model, binding.resource_id)
     if not resource or resource.tenant_id != tenant_id:
         return False
-    if isinstance(resource, KnowledgeBase):
-        meta = resource.metadata_json or {}
-        empty = (resource.id not in facts['populated'] and (
-            meta.get('created_from_document_upload') and not meta.get('source_document_id') or resource.name == '默认知识库')
-        ) if facts is not None else _is_empty_default_knowledge_base(db, tenant_id, resource)
-        if empty:
-            return False
-
     if agent.is_overall:
         if not ((binding.resource_type, resource.id) in facts['public'] if facts is not None else is_open_gallery_resource(db, tenant_id, binding.resource_type, resource)):
             return False
-    elif not is_bound_resource_visible_for_agent(
-        db, tenant_id, binding.resource_type, resource, binding,
-        gallery_visibility=(binding.resource_type, resource.id) in facts['public'] if facts is not None else None,
-    ):
+    elif not is_bound_resource_visible_for_agent(db, tenant_id, binding.resource_type, resource, binding, gallery_visibility=(binding.resource_type, resource.id) in facts['public'] if facts is not None else None):
         return False
-
-    if isinstance(resource, Skill) and not agent.is_overall:
-        branch = facts['skill_branches'].get((agent.id, resource.skill_id)) if facts is not None else db.exec(
-            select(AgentSkillBranch).where(
-                AgentSkillBranch.tenant_id == tenant_id,
-                AgentSkillBranch.agent_id == agent.id,
-                AgentSkillBranch.skill_id == resource.skill_id,
-            )
-        ).first()
-        if branch and branch.status == "deleted":
+    if isinstance(resource, Skill) and (not agent.is_overall):
+        branch = facts['skill_branches'].get((agent.id, resource.skill_id)) if facts is not None else db.exec(select(AgentSkillBranch).where(AgentSkillBranch.tenant_id == tenant_id, AgentSkillBranch.agent_id == agent.id, AgentSkillBranch.skill_id == resource.skill_id)).first()
+        if branch and branch.status == 'deleted':
             return False
         skill_status = branch.status if branch else resource.status
-        if binding.status == "active" and skill_status not in {"active", "published"}:
+        if binding.status == 'active' and skill_status not in {'active', 'published'}:
             return False
-
-    if isinstance(resource, KnowledgeBase) and not agent.is_overall:
-        branch = facts['kb_branches'].get((agent.id, resource.id)) if facts is not None else db.exec(
-            select(AgentKnowledgeBranch).where(
-                AgentKnowledgeBranch.tenant_id == tenant_id,
-                AgentKnowledgeBranch.agent_id == agent.id,
-                AgentKnowledgeBranch.knowledge_base_id == resource.id,
-                AgentKnowledgeBranch.status != "deleted",
-            )
-        ).first()
-        if not branch:
-            return False
-        if binding.status == "active" and branch.status != "active":
-            return False
-
-    if binding.status != "active":
+    if binding.status != 'active':
         return True
     if isinstance(resource, Skill):
-        return agent.is_overall is False or resource.status == "published"
+        return agent.is_overall is False or resource.status == 'published'
     if isinstance(resource, GeneralSkill):
-        return resource.status == "published"
-    if isinstance(resource, KnowledgeBase):
-        return resource.status == "active"
+        return resource.status == 'published'
     if isinstance(resource, Tool):
         return resource.enabled
     return False
 
 
-def _is_empty_default_knowledge_base(db: Session, tenant_id: str, kb: KnowledgeBase) -> bool:
-    metadata = kb.metadata_json or {}
-    has_runtime_rows = any(
-        db.exec(
-            select(model.id).where(
-                model.tenant_id == tenant_id,
-                model.knowledge_base_id == kb.id,
-            )
-        ).first()
-        for model in (KnowledgeDocument, KnowledgeBucket, KnowledgeChunk)
-    )
-    if has_runtime_rows:
-        return False
-    if metadata.get("created_from_document_upload") and not metadata.get("source_document_id"):
-        return True
-    return kb.name == "默认知识库"
 
 
 def _ensure_resource_exists(db: Session, tenant_id: str, item: AgentResourceBindingInput) -> None:
-    model = {
-        "skill": Skill,
-        "general_skill": GeneralSkill,
-        "knowledge_base": KnowledgeBase,
-        "tool": Tool,
-    }[item.resource_type]
+    model = {'skill': Skill, 'general_skill': GeneralSkill, 'tool': Tool}[item.resource_type]
     row = db.get(model, item.resource_id)
     if not row or row.tenant_id != tenant_id:
-        raise HTTPException(
-            status_code=404, detail=f"Resource not found: {item.resource_type}:{item.resource_id}"
-        )
+        raise HTTPException(status_code=404, detail=f'Resource not found: {item.resource_type}:{item.resource_id}')
 
 
 def _get_global_skill(db: Session, tenant_id: str, skill_id: str) -> Skill:

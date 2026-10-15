@@ -1,0 +1,75 @@
+{
+  "protocol": "knowledge-recovery-export/v1",
+  "backup_id": "6c103ed38c434772a3a59630969f0e2e",
+  "documents": [
+    "original"
+  ],
+  "removed_document_ids": [],
+  "tables": {
+    "km_documents": [
+      {
+        "id": "original",
+        "filename": "same.md",
+        "file_type": "md",
+        "title": "New write",
+        "status": "ready",
+        "content": "# Expenses\n\nExpense receipts from revision one.",
+        "metadata": "{\"raw_text\": \"# Expenses\\n\\nExpense receipts from revision one.\", \"document_card\": {\"title\": \"Same title\", \"filename\": \"same.md\", \"file_type\": \"md\", \"summary\": \"# Expenses Expense receipts from revision one.\", \"outline\": [{\"section_id\": \"sec_1\", \"title\": \"Expenses\", \"path\": \"Expenses\", \"level\": 1, \"summary\": \"# Expenses Expense receipts from revision one.\"}], \"applicable_scenarios\": [\"Expenses\"], \"key_entities\": [\"Expenses\", \"Expense\", \"receipts\", \"from\", \"revision\", \"one\"], \"char_count\": 47, \"section_count\": 1}, \"section_tree\": [{\"section_id\": \"sec_1\", \"related_section_id\": \"sec_1\", \"node_type\": \"section\", \"level\": 1, \"title\": \"Expenses\", \"parent_id\": null, \"path\": \"Expenses\", \"section_order\": 1, \"summary\": \"# Expenses Expense receipts from revision one.\", \"content\": \"# Expenses\\n\\nExpense receipts from revision one.\", \"source_span\": {\"start_paragraph\": 0, \"end_paragraph\": 1}, \"anchor_entities\": [\"Expenses\", \"Expense\", \"receipts\", \"from\", \"revision\", \"one\"]}], \"route_trace\": [], \"ingest_schema_version\": 2, \"char_count\": 47, \"section_stats\": {\"section_count\": 1, \"paragraph_count\": 2}, \"chunk_stats\": {\"total_chunks\": 1, \"chunk_count\": 1, \"target_chars\": 900, \"section_target_chars\": 1400}, \"bucket_quality\": [{\"bucket_id\": \"kbucket_9adb53ec15994333a22d5481d7cac799\", \"title\": \"Expenses\", \"quality\": {\"status\": \"ready\", \"warnings\": [], \"has_source_sections\": true, \"has_summary\": true, \"content_chars\": 47}}], \"okf\": {\"version\": \"0.1\", \"concept_count\": 3, \"concept_types\": [\"Source Document\", \"Source Section\", \"Topic\"]}}",
+        "bucket_count": 1,
+        "chunk_count": 1,
+        "created_at": "2026-10-14 14:06:11.349693",
+        "updated_at": "2026-10-14 14:06:11.520457"
+      }
+    ],
+    "km_buckets": [
+      {
+        "id": "kbucket_9adb53ec15994333a22d5481d7cac799",
+        "document_id": "original",
+        "title": "Expenses",
+        "summary": "# Expenses Expense receipts from revision one.",
+        "content": "# Expenses\n\nExpense receipts from revision one.",
+        "metadata": "{\"ingest_schema_version\": 2, \"bucket_key\": \"expenses\", \"content\": \"# Expenses\\n\\nExpense receipts from revision one.\", \"bucket_type\": \"structure\", \"concept_type\": \"Topic\", \"section_ids\": [\"sec_1\"], \"section_paths\": [\"Expenses\"], \"applicable_query_types\": [\"answer\", \"policy_check\"], \"quality\": {\"status\": \"ready\", \"warnings\": [], \"has_source_sections\": true, \"has_summary\": true, \"content_chars\": 47}, \"document_card\": {\"title\": \"Same title\", \"summary\": \"# Expenses Expense receipts from revision one.\"}, \"representative_chunk_ids\": [\"kchunk_5d5bade295bb47899d8768e3a27b05da\"], \"chunk_count\": 1}",
+        "created_at": "2026-10-14 14:06:11.349693",
+        "updated_at": "2026-10-14 14:06:11.349693"
+      }
+    ],
+    "km_chunks": [
+      {
+        "id": "kchunk_5d5bade295bb47899d8768e3a27b05da",
+        "document_id": "original",
+        "bucket_id": "kbucket_9adb53ec15994333a22d5481d7cac799",
+        "chunk_index": 0,
+        "content": "Expense receipts from revision one.",
+        "summary": "Expense receipts from revision one.",
+        "source_ref": "same.md / Expenses / evidence 1",
+        "metadata": "{\"ingest_schema_version\": 2, \"node_type\": \"evidence_chunk\", \"related_group_id\": null, \"related_chunk_index\": 0, \"section_id\": \"sec_1\", \"section_path\": \"Expenses\", \"section_title\": \"Expenses\", \"bucket_title\": \"Expenses\", \"source_span\": {\"start_paragraph\": 0, \"end_paragraph\": 1}, \"context_window\": \"# Expenses Expense receipts from revision one.\", \"related_chunk_ids\": [], \"related_chunk_count\": 0, \"related_previous_chunk_id\": null, \"related_next_chunk_id\": null}",
+        "created_at": "2026-10-14 14:06:11.349693",
+        "updated_at": "2026-10-14 14:06:11.349693"
+      }
+    ],
+    "km_citation_snapshots": [
+      {
+        "id": "kchunk_5d5bade295bb47899d8768e3a27b05da",
+        "document_id": "original",
+        "payload": "{\"id\": \"kchunk_5d5bade295bb47899d8768e3a27b05da\", \"document_id\": \"original\", \"bucket_id\": \"kbucket_9adb53ec15994333a22d5481d7cac799\", \"chunk_index\": 0, \"content\": \"Expense receipts from revision one.\", \"summary\": \"Expense receipts from revision one.\", \"source_ref\": \"same.md / Expenses / evidence 1\", \"metadata\": {\"ingest_schema_version\": 2, \"node_type\": \"evidence_chunk\", \"related_group_id\": null, \"related_chunk_index\": 0, \"section_id\": \"sec_1\", \"section_path\": \"Expenses\", \"section_title\": \"Expenses\", \"bucket_title\": \"Expenses\", \"source_span\": {\"start_paragraph\": 0, \"end_paragraph\": 1}, \"context_window\": \"# Expenses Expense receipts from revision one.\", \"related_chunk_ids\": [], \"related_chunk_count\": 0, \"related_previous_chunk_id\": null, \"related_next_chunk_id\": null}, \"created_at\": \"2026-10-14T14:06:11.349693\", \"updated_at\": \"2026-10-14T14:06:11.349693\"}"
+      },
+      {
+        "id": "kconcept_035a720a52a247d0aeabba2828b12b05:2026-10-14T14:06:11.369624",
+        "document_id": "original",
+        "payload": "{\"id\": \"kconcept_035a720a52a247d0aeabba2828b12b05:2026-10-14T14:06:11.369624\", \"concept_id\": \"sources/same-title\", \"document_id\": \"original\", \"content\": \"---\\ntype: \\\"Source Document\\\"\\ntitle: \\\"Same title\\\"\\ndescription: \\\"# Expenses Expense receipts from revision one.\\\"\\nresource: \\\"ultrarag://knowledge/documents/original\\\"\\ntags: [\\\"source\\\", \\\"business-knowledge\\\"]\\ntimestamp: \\\"2026-10-14T14:06:11.349693\\\"\\n---\\n\\n# Summary\\n\\n# Expenses Expense receipts from revision one.\\n\\n# Outline\\n\\n- [Expenses](/sources/same-title/sections/sec-1.md) - # Expenses Expense receipts from revision one.\\n\\n# Knowledge Buckets\\n\\n- [Expenses](/topics/expenses.md) - # Expenses Expense receipts from revision one.\\n\\n# Citations\\n\\n[1] [Original document](ultrarag://knowledge/documents/original)\\n\", \"source_ref\": \"sources/same-title.md\", \"recovery_contexts\": [{}]}"
+      },
+      {
+        "id": "kconcept_991366a44ce24ab6a09c3a95d8a95e42:2026-10-14T14:06:11.370994",
+        "document_id": "original",
+        "payload": "{\"id\": \"kconcept_991366a44ce24ab6a09c3a95d8a95e42:2026-10-14T14:06:11.370994\", \"concept_id\": \"sources/same-title/sections/sec-1\", \"document_id\": \"original\", \"content\": \"---\\ntype: \\\"Source Section\\\"\\ntitle: \\\"Expenses\\\"\\ndescription: \\\"# Expenses Expense receipts from revision one.\\\"\\nresource: \\\"ultrarag://knowledge/documents/original#section=sec_1\\\"\\ntags: [\\\"source-section\\\"]\\ntimestamp: \\\"2026-10-14T14:06:11.349693\\\"\\nsource_document: \\\"sources/same-title\\\"\\nsection_path: \\\"Expenses\\\"\\n---\\n\\n# Summary\\n\\n# Expenses Expense receipts from revision one.\\n\\n# Content\\n\\n# Expenses\\n\\nExpense receipts from revision one.\\n\\n# Citations\\n\\n[1] [Original document](ultrarag://knowledge/documents/original)\\n\", \"source_ref\": \"sources/same-title/sections/sec-1.md\", \"recovery_contexts\": [{}]}"
+      },
+      {
+        "id": "kconcept_a713f0f113974f4cb7ee03a30ab6bfd5:2026-10-14T14:06:11.371668",
+        "document_id": "original",
+        "payload": "{\"id\": \"kconcept_a713f0f113974f4cb7ee03a30ab6bfd5:2026-10-14T14:06:11.371668\", \"concept_id\": \"topics/expenses\", \"document_id\": \"original\", \"content\": \"---\\ntype: \\\"Topic\\\"\\ntitle: \\\"Expenses\\\"\\ndescription: \\\"# Expenses Expense receipts from revision one.\\\"\\nresource: \\\"ultrarag://knowledge/buckets/kbucket_9adb53ec15994333a22d5481d7cac799\\\"\\ntags: [\\\"knowledge-bucket\\\", \\\"structure\\\"]\\ntimestamp: \\\"2026-10-14T14:06:11.349693\\\"\\nsource_document: \\\"sources/same-title\\\"\\n---\\n\\n# Summary\\n\\n# Expenses Expense receipts from revision one.\\n\\n# Source Sections\\n\\n- [Expenses](/sources/same-title/sections/sec-1.md)\\n\\n# Notes\\n\\n# Expenses\\n\\nExpense receipts from revision one.\\n\\n# Citations\\n\\n[1] [Original document](ultrarag://knowledge/documents/original)\\n\", \"source_ref\": \"topics/expenses.md\", \"recovery_contexts\": [{}]}"
+      }
+    ],
+    "km_ingest_jobs": []
+  },
+  "optional_tables": {}
+}

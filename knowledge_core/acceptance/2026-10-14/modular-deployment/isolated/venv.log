@@ -1,0 +1,4 @@
+Using CPython 3.14.7
+Creating virtual environment at: /Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated/venv
+error: Failed to create virtual environment
+  Caused by: A virtual environment already exists at `/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated/venv`. Use `--clear` to replace it

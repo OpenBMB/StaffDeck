@@ -33,7 +33,6 @@ from app.db.models import (
     ChatSession,
     GeneralSkill,
     HumanHandoffRequest,
-    KnowledgeBase,
     MCPServer,
     ModelConfig,
     Skill,
@@ -48,7 +47,6 @@ _RESOURCE_MODEL: dict[str, type] = {
     "general_skill": GeneralSkill,
     "tool": Tool,
     "mcp_server": MCPServer,
-    "knowledge_base": KnowledgeBase,
 }
 
 # Legacy binding rows use these resource_type strings.
@@ -168,6 +166,9 @@ def binding_for(db: Session, tenant_id: str, agent_id: str | None, resource_type
 def live_resource_ref(db: Session, tenant_id: str, resource_type: str, resource: Any, *, agent: AgentProfile | None) -> ResourceRef:
     """Project a live row as seen from the acting agent, resolving its binding row."""
 
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+    if resource_type == "knowledge_base":
+        return StaffDeckKnowledgeAdapter(db, tenant_id, agent.id if agent else None).resource_projection(str(resource.id))[2]
     binding = binding_for(db, tenant_id, agent.id if agent is not None else None, resource_type, str(resource.id))
     return bound_resource_ref(db, tenant_id, resource_type, resource, agent=agent, binding=binding)
 
@@ -186,6 +187,12 @@ def agent_bindings(db: Session, tenant_id: str, agent_id: str, resource_type: st
 def bound_resources(db: Session, tenant_id: str, agent_id: str | None, resource_type: str) -> list[tuple[Any, AgentResourceBinding | None, ResourceRef]]:
     """All resources of one type visible to an agent (overall agent sees the open gallery)."""
 
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+    if resource_type == "knowledge_base":
+        adapter = StaffDeckKnowledgeAdapter(db, tenant_id, agent_id)
+        adapter.ensure_space()
+        return [adapter.resource_projection(row["id"]) for row in adapter.call("GET", "/knowledge-bases")
+                if row["status"] == "active"]
     model = _RESOURCE_MODEL[resource_type]
     agent = get_agent(db, tenant_id, agent_id) if agent_id else None
     out: list[tuple[Any, AgentResourceBinding | None, ResourceRef]] = []
