@@ -1105,6 +1105,17 @@
     });
   }
 
+  /** 调试开关：默认关。打开方式（任一）：地址带 ?sddebug 或 #sddebug，
+   *  或在 OA 页面控制台执行 localStorage.setItem('staffdeck_oa_debug','1') 后刷新。
+   *  开着时才显示「录制排查」「清空 附件/明细」这两个调试按钮。 */
+  function debugEnabled() {
+    try {
+      if (/[?&#]sddebug/i.test(String(location.href))) return true;
+      if (window.localStorage && String(localStorage.getItem('staffdeck_oa_debug') || '') === '1') return true;
+    } catch (e) {}
+    return false;
+  }
+
   // ───────────────────────── 登录检测 ─────────────────────────
 
   function isLoginPage() {
@@ -1811,19 +1822,26 @@
   runBtn.type = 'button';
   footer.appendChild(runBtn);
 
-  // 一键清理（只清不填）：验证 / 补救「附件 ×→确认」「勾选 → - →确认」这两步
+  // 一键清理（只清不填）：验证 / 补救「附件 ×→确认」「勾选 → - →确认」这两步。
+  // 调试用 → 默认隐藏，只有开了调试开关（见 debugEnabled）才显示。
   var clearOaBtn = el('button', 'border:1px solid #e3e7f1;background:#fff;color:#5b6274;font-size:12px;'
     + 'cursor:pointer;font-family:inherit;padding:6px 10px;border-radius:8px;white-space:nowrap;', '清空 附件/明细');
   clearOaBtn.type = 'button';
   clearOaBtn.title = '只做两件事：点掉相关票据里每个附件的「×」（含二次确认）、'
     + '勾选明细行后点「-」（含二次确认）——不填任何字段。用来验证这两步在真实 OA 上通不通。';
   clearOaBtn.addEventListener('click', function () { clearOaOnly(); });
+  if (debugEnabled()) {
+    clearOaBtn.style.display = '';
+  } else {
+    clearOaBtn.style.display = 'none';
+  }
   footer.appendChild(clearOaBtn);
 
   // 定位器对不上真实 OA 时的排查入口：一键注入录制器，把点「X / -」这些操作录下来
   var recordBtn = el('button', 'border:0;background:transparent;color:#858b9c;font-size:11px;cursor:pointer;font-family:inherit;padding:4px;text-decoration:underline;', '录制排查');
   recordBtn.type = 'button';
   recordBtn.title = '记录一次你的操作（点附件的 ×、点明细行的 - 等），导出 JSON 发回即可';
+  if (!debugEnabled()) recordBtn.style.display = 'none';
   recordBtn.addEventListener('click', function () {
     try {
       var sc = document.createElement('script');
