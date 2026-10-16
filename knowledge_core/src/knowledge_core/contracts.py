@@ -99,6 +99,7 @@ class LayerEdit(Payload):
 
 class ConceptEdit(Payload):
     expected_updated_at: str | None = None
+    create_only: bool = False
     content_md: str
     document_id: str | None = None
     status: Literal["active", "archived", "deleted"] = "active"

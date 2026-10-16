@@ -74,7 +74,10 @@ export async function runKnowledgeAcceptance(page, { screenshotPrefix = '/tmp/km
   await page.locator('.job').filter({ hasText: 'expenses.md' }).getByText('完成', { exact: true }).waitFor({ timeout: 180000 });
   await page.locator('.document-list button').first().click();
   await page.getByLabel('文档正文').fill('# Expense policy\n\nExpense reimbursement requires original receipts within 30 days.');
+  const saved = page.waitForResponse(response => response.request().method() === 'PUT' && /\/documents\//.test(response.url()), { timeout: 180000 });
   await page.getByLabel('保存正文', { exact: true }).click();
+  const savedResponse = await saved;
+  assert.ok(savedResponse.ok(), `Document edit failed (${savedResponse.status()}): ${await savedResponse.text()}`);
   await page.locator('.document-structure summary').click();
   await page.getByLabel('编辑主题', { exact: true }).first().click();
   await page.getByLabel('结构正文').fill('Expense reimbursement requires original receipts within 30 days. Topic edited.');

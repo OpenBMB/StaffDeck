@@ -1,0 +1,17 @@
+{
+  "status": "complete",
+  "gates": {
+    "source_deployment_and_model": {
+      "status": "passed"
+    },
+    "real_agents_and_authorization": {
+      "status": "passed"
+    },
+    "host_browser_publication_upgrade": {
+      "status": "passed"
+    },
+    "regression_compatibility_artifact_lifecycle": {
+      "status": "passed"
+    }
+  }
+}

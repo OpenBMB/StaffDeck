@@ -1,0 +1,27 @@
+
+[2m════════════════════════════════════════════════════════════[0m
+[36m[INFO][0m App Installation: [1m/private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-fXr4AB/pilotdeck-artifact/ui[0m
+[36m[INFO][0m Database: [2m../../../../../../../../../var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-fXr4AB/auth.sqlite[0m
+       [2m(Using custom DATABASE_PATH from environment)[0m
+[2m════════════════════════════════════════════════════════════[0m
+
+SERVER_PORT from runtime config: 18872
+Database initialized successfully
+Database migrations completed successfully
+Web Push notifications configured
+[36m[INFO][0m Chat execution routed through PilotDeck gateway (src/gateway).
+
+[36m[INFO][0m Starting in production mode...
+(node:63276) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+[2m═══════════════════════════════════════════════════════════════[0m
+  [1mPilotDeck Server - Ready[0m
+[2m═══════════════════════════════════════════════════════════════[0m
+
+[36m[INFO][0m Server URL:  [1mhttp://localhost:18872[0m
+[36m[INFO][0m Installed at: [2m/private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-fXr4AB/pilotdeck-artifact/ui[0m
+[34m[TIP][0m  Run "pilotdeck status" for full configuration details
+
+[pilotdeck-config-watcher] watching /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-fXr4AB/pd.yaml, /private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-fXr4AB/pd.yaml
+[BROWSER 2026-10-15T14:14:01.646Z] shutdownGlobalChrome called | caller: at shutdownGlobalChrome (file:///private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-fXr4AB/pilotdeck-artifact/ui/server/utils/globalChrome.js:301:76) <- at file:///private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-fXr4AB/pilotdeck-artifact/ui/server/index.js:3755:25

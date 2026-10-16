@@ -35,6 +35,7 @@ export default function MinimalPage({ client, capabilities }: { client: Knowledg
     ...(capabilities.modules.catalog && base ? { knowledge_base_id: base } : {}) };
   const suffix = Object.keys(scope).length ? '?' + new URLSearchParams(scope).toString() : '';
   const writable = permissions.includes('write');
+  const scopeReady = !capabilities.modules.spaces || Boolean(space);
   function fail(error: unknown) { setError(error instanceof Error ? error.message : String(error)); }
   async function refresh() {
     if (capabilities.modules.spaces && !space) return;
@@ -110,10 +111,10 @@ export default function MinimalPage({ client, capabilities }: { client: Knowledg
       </section></div>
     {layer && <div className="km-source-overlay"><section role="dialog" aria-modal="true" aria-label={layer.kind === 'buckets' ? 'Edit bucket' : 'Edit chunk'}><header><h2>{layer.kind === 'buckets' ? 'Bucket' : 'Chunk'}</h2><div className="km-actions"><button title="Save content" aria-label="Save content" onClick={() => void saveLayer().catch(fail)}><Save size={18} /></button><button title="Close editor" aria-label="Close editor" onClick={() => setLayer(undefined)}><X size={18} /></button></div></header><textarea aria-label="Layer content" value={layer.text} onChange={event => setLayer({ ...layer, text: event.target.value })} /></section></div>}
     {citation && <div className="km-source-overlay" onClick={() => setCitation(undefined)}><section role="dialog" aria-modal="true" aria-label="Citation source" onClick={event => event.stopPropagation()}><header><h2>Citation source</h2><button title="Close source" aria-label="Close source" autoFocus onClick={() => setCitation(undefined)}><X size={18} /></button></header><small>{citation.source_ref}</small><p>{citation.content}</p></section></div>}
-    <Suspense fallback={<div role="status">Loading</div>}>
+    {scopeReady && <Suspense fallback={<div role="status">Loading</div>}>
       {capabilities.modules.versions && base && <VersionsPanel client={client} suffix={suffix} scope={scope} writable={writable} report={fail} revision={contentRevision} onChange={async () => { await refresh(); setContentRevision(value => value + 1); }} />}
       {capabilities.modules.concepts && <ConceptsPanel client={client} suffix={suffix} scope={{ ...scope, ...(selected ? { document_id: selected.id } : {}) }} writable={writable} report={fail} revision={contentRevision} onChange={async () => setContentRevision(value => value + 1)} />}
       {capabilities.modules.discovery && <DiscoveryPanel client={client} suffix={suffix} scope={scope} writable={writable} report={fail} revision={contentRevision} publication={Boolean(capabilities.operations.publish_discovery)} />}
-    </Suspense>
+    </Suspense>}
   </main>;
 }

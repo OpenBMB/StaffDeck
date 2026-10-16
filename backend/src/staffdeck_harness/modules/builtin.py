@@ -242,11 +242,20 @@ def register(registry: ModuleRegistry, ctx: Mapping[str, Any]) -> None:
 
     # L3 capability providers (attach to staff.capability; SOP slots reuse them through the compiler)
     registry.install(manifest("knowledge.local", "知识库检索", summary="在员工绑定的知识库中检索资料，并把引用来源带回回答。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_KNOWLEDGE], provides=["knowledge.search/v1"], policy_actions=["knowledge.search/v1"]), KnowledgeProvider(), slot=SlotName.STAFF_CAPABILITY)
+    from app.knowledge.agent_tools import SPECS, operation, schemas, configured_methods
+    from staffdeck_harness.contracts.operations import OperationContract
+    configured_methods()
+    for name, spec in SPECS.items():
+        contract = operation(name)
+        registry.register_operation(OperationContract(contract, 'knowledge_base', 'edit' if spec[4] else 'view',
+            parameters=schemas()['knowledge_' + name]['parameters'], description=schemas()['knowledge_' + name]['description'], side_effecting=spec[4]))
+        registry.install(manifest('knowledge.agent.' + name, '知识管理 ' + name, kind=ModuleKind.CODE,
+            slots=[SlotName.STAFF_CAPABILITY], provides=[contract], policy_actions=[contract]), LocalCapabilityProvider(), slot=SlotName.STAFF_CAPABILITY)
     registry.install(manifest("general_skill.local", "通用技能", summary="读取员工绑定的技能包，让员工按技能说明行事。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_SKILL], provides=["general_skill.consume/v1"], policy_actions=["general_skill.consume/v1"]), GeneralSkillProvider(), slot=SlotName.STAFF_CAPABILITY)
     registry.install(manifest("tool.local", "业务工具调用", summary="调用 HTTP 接口、MCP 服务或其他智能体，完成查询与操作。", kind=ModuleKind.CODE, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_ACTION], provides=["tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"], policy_actions=["tool.invoke/v1", "mcp.invoke/v1", "a2a.invoke/v1"]), ToolProvider(), slot=SlotName.STAFF_CAPABILITY)
     registry.install(manifest("sandbox.local", "受控执行环境", summary="在隔离环境中执行命令、读写文件并输出工作产物。", kind=ModuleKind.TRUSTED, slots=[SlotName.STAFF_CAPABILITY, SlotName.SOP_SLOT_ACTION], provides=["sandbox.execute/v1", "artifact.publish/v1"], policy_actions=["sandbox.execute/v1"], metadata={"switchable": True, "resource_free": True}), SandboxProvider(), slot=SlotName.STAFF_CAPABILITY)
     registry.mark_guarded(SlotName.STAFF_CAPABILITY)
-    for module_id in ('knowledge.local', 'general_skill.local', 'tool.local'):
+    for module_id in ('knowledge.local', 'general_skill.local', 'tool.local', *('knowledge.agent.' + name for name in SPECS)):
         item = registry.get(module_id)
         registry.replace_provider(module_id, item.provider, metadata={
             'catalog_contract': 'catalog.descriptor.local/v1',

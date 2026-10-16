@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from zipfile import BadZipFile, ZipFile, ZIP_DEFLATED
 from fastapi import Depends, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import Column, DateTime, JSON, String, Table, Text, delete, select, update
+from sqlalchemy import Column, DateTime, JSON, String, Table, Text, delete, select, update, literal, exists
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from .base import Plugin
 from . import okf_rules as rules
@@ -15,7 +15,7 @@ from ..kernel.algorithms import _build_section_nodes
 
 class Concepts(Plugin):
     schema_version = 2
-    operations = {"list_concepts": ("GET", "/concepts"), "upsert_concept": ("PUT", "/concepts/{concept_id:path}"),
+    operations = {"list_concepts": ("GET", "/concepts"), "get_concept": ("GET", "/concepts/{concept_id:path}"), "upsert_concept": ("PUT", "/concepts/{concept_id:path}"),
                   "export_okf": ("GET", "/okf"), "import_okf": ("POST", "/okf"), "lint_okf": ("POST", "/okf/lint")}
 
     def __init__(self, runtime):
@@ -31,14 +31,24 @@ class Concepts(Plugin):
         parsed = rules.parse_okf_markdown(value["concept_id"], value["content_md"])
         before = db.execute(select(self.concepts).where(self.concepts.c.concept_id == value["concept_id"],
             self.concepts.c.document_id == document_id)).mappings().first()
+        if before and value.get('create_only'): raise HTTPException(409, "Concept already exists")
+        if not before and expected: raise HTTPException(409, "Concept no longer exists at the expected revision")
         if before and (not expected or before["updated_at"].isoformat() != expected): raise HTTPException(409, "Concurrent concept edit")
         row = {"id": before["id"] if before else s.identifier("kconcept"), "document_id": document_id,
             "concept_id": parsed.concept_id, "concept_type": parsed.frontmatter.get("type", "Topic"),
             "title": parsed.frontmatter.get("title", parsed.concept_id), "content_md": parsed.content_md,
             "links": rules.extract_links(parsed.body), "citations": rules.extract_citations(parsed.body),
             "source_refs": value.get("source_refs", []), "created_at": before["created_at"] if before else s.now(), "updated_at": s.now()}
-        if before: db.execute(update(self.concepts).where(self.concepts.c.id == before["id"]).values(**row))
-        else: db.execute(self.concepts.insert().values(**row))
+        if before:
+            changed = db.execute(update(self.concepts).where(self.concepts.c.id == before["id"],
+                self.concepts.c.updated_at == before['updated_at']).values(**row))
+            if changed.rowcount != 1: raise HTTPException(409, "Concurrent concept edit")
+        else:
+            absent = ~exists(select(self.concepts.c.id).where(self.concepts.c.concept_id == row['concept_id'],
+                self.concepts.c.document_id == document_id))
+            changed = db.execute(self.concepts.insert().from_select(list(row),
+                select(*(literal(value, type_=self.concepts.c[key].type) for key, value in row.items())).where(absent)))
+            if changed.rowcount != 1: raise HTTPException(409, 'Concept already exists')
         citation_id = row["id"] + ":" + row["updated_at"].isoformat()
         payload = {"id": citation_id, "concept_id": row["concept_id"], "document_id": document_id,
                    "content": row["content_md"], "source_ref": row["concept_id"] + ".md",
@@ -60,7 +70,7 @@ class Concepts(Plugin):
         db.execute(delete(self.concepts).where(self.concepts.c.document_id == document_id))
         for value in rules.build_okf_for_document(document, _build_section_nodes(text), items): self.upsert(db, value, document_id)
 
-    def rows(self, context):
+    def rows(self, context, active_only=False):
         versions = self.runtime.plugins.get("versions")
         if versions and (context.get("version_id") or context.get("version_ids")):
             ids = context.get("version_ids", []) or [context["version_id"]]
@@ -71,11 +81,12 @@ class Concepts(Plugin):
         with self.runtime.engine.connect() as db: rows = [dict(row) for row in db.execute(select(self.concepts)).mappings()]
         with self.runtime.engine.connect() as db:
             contexts = {row['concept_id']: row['context'] for row in db.execute(select(self.contexts)).mappings()}
+            ready = set(db.execute(select(s.documents.c.id).where(s.documents.c.status == 'ready')).scalars())
             head = versions.branch(db, context)['head_version_id'] if versions and context.get('knowledge_base_id') else None
         result = []
         for row in rows:
             if row['document_id']:
-                if self.runtime.visible(row['document_id'], context): result.append(row)
+                if (not active_only or row['document_id'] in ready) and self.runtime.visible(row['document_id'], context): result.append(row)
                 continue
             scope = contexts.get(row['id'], {})
             if head and scope.get('version_id') != head: continue
@@ -96,7 +107,7 @@ class Concepts(Plugin):
 
     def retrieve(self, result, value, context):
         if self.runtime.configuration.full_contract:
-            rows = self.rows(context)
+            rows = self.rows(context, active_only=True)
             items = []
             for row in rows:
                 parsed = rules.parse_okf_markdown(row['concept_id'], row['content_md'])
@@ -109,7 +120,7 @@ class Concepts(Plugin):
                 'candidate_count': len(rows), 'selected_count': len(selected)})
             return
         tokens = rules._query_tokens(value["query"])
-        rows = self.rows(context)
+        rows = self.rows(context, active_only=True)
         rows.sort(key=lambda row: sum(token in (row["title"] + row["content_md"]).lower() for token in tokens), reverse=True)
         result["selected_concepts"] = [row for row in rows if any(token in (row["title"] + row["content_md"]).lower() for token in tokens)][:8]
         for row in result["selected_concepts"]:
@@ -129,12 +140,20 @@ class Concepts(Plugin):
         @app.put("/api/km/v1/concepts/{concept_id:path}")
         async def upsert(concept_id: str, request: Request, actor=Depends(principal)):
             body = await value(request); scope = context(request, body, actor); self.runtime.authorize(actor, scope, "write")
-            validate(body, {"content_md", "document_id", "expected_updated_at"}, ("content_md",))
+            validate(body, {"content_md", "document_id", "expected_updated_at", "create_only"}, ("content_md",))
+            if 'create_only' in body and type(body['create_only']) is not bool: raise HTTPException(422, 'create_only must be boolean')
             if self.runtime.configuration.enabled("spaces") and not body.get("document_id"):
                 raise HTTPException(422, "document_id required for a scoped concept")
             if body.get("document_id"): self.runtime.content.get(s.documents, body["document_id"], scope, actor, "write")
             with self.runtime.engine.begin() as db:
                 return jsonable_encoder(self.upsert(db, {**body, "concept_id": concept_id}, body.get("document_id"), body.get("expected_updated_at")))
+
+        @app.get("/api/km/v1/concepts/{concept_id:path}")
+        def get_concept(concept_id: str, request: Request, actor=Depends(principal)):
+            scope = context(request, {}, actor); self.runtime.authorize(actor, scope, "read")
+            row = next((row for row in self.rows(scope) if row['concept_id'] == concept_id), None)
+            if row is None: raise HTTPException(404, 'Concept not found')
+            return jsonable_encoder(row)
 
         @app.get("/api/km/v1/okf")
         def export(request: Request, actor=Depends(principal)):

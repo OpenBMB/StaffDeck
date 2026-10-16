@@ -155,7 +155,8 @@ class CapabilityMcpServer:
         act = self._activation(ctx)
         if act is None or act.host is None or not callable(getattr(act.host, "tool_schemas", None)):
             return mt.ListToolsResult(tools=[])
-        tools = [mt.Tool(name=s["name"], description=s["description"], inputSchema=s["parameters"]) for s in act.host.tool_schemas()]
+        tools = [mt.Tool(name=s["name"], description=s["description"], inputSchema=s["parameters"],
+                        annotations=mt.ToolAnnotations(**s['annotations']) if s.get('annotations') else None) for s in act.host.tool_schemas()]
         return mt.ListToolsResult(tools=tools)
 
     async def _call_tool(self, ctx: ServerRequestContext, params: mt.CallToolRequestParams) -> mt.CallToolResult:

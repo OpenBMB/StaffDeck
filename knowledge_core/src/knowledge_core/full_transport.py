@@ -127,9 +127,9 @@ def register(app, runtime, principal):
     def edit_document(document_id: str, body: Edit, space_id='local', actor=Depends(principal)): return content.edit(s.documents, document_id, body, actor, space_id)
 
     @app.delete(prefix + '/documents/{document_id}')
-    def archive(document_id: str, space_id='local', actor=Depends(principal)):
+    def archive(document_id: str, space_id='local', expected_updated_at: str | None=None, actor=Depends(principal)):
         row, context = content.locate(s.documents, document_id, actor, space_id, 'write')
-        return runtime.content.archive(document_id, context, actor)
+        return runtime.content.archive(document_id, context, actor, expected_updated_at)
 
     @app.post(prefix + '/query')
     def query(body: QueryRequest, actor=Depends(principal)): return jsonable_encoder(content.query(body, actor))
@@ -182,14 +182,17 @@ def register(app, runtime, principal):
         catalog.scope(actor, space_id, kb_id, 'write')
         if not body.content_md.strip(): raise HTTPException(422, 'Concept ID and content cannot be empty')
         before = next((row for row in rows if row['concept_id'] == concept_id.removesuffix('.md')), None)
+        if before and body.create_only: raise HTTPException(409, 'Concept already exists')
         if before and not body.expected_updated_at: raise HTTPException(422, 'expected_updated_at is required')
         if before: catalog.check_revision(before, body.expected_updated_at)
         if not before and body.expected_updated_at: raise HTTPException(409, 'Concept no longer exists at the expected revision')
         document_id = body.document_id if 'document_id' in body.model_fields_set else (before['document_id'] if before else None)
+        if document_id: runtime.content.get(s.documents, document_id, context, actor, 'write')
         with runtime.engine.begin() as db:
             if before and document_id != before['document_id']:
                 db.execute(update(concepts.concepts).where(concepts.concepts.c.id == before['id']).values(document_id=document_id))
             row = concepts.upsert(db, {'concept_id': concept_id, 'content_md': body.content_md,
+                'create_only': body.create_only,
                 'source_refs': before['source_refs'] if before else []}, document_id, body.expected_updated_at)
             from sqlalchemy.dialects.sqlite import insert as sqlite_insert
             scope = {**context, 'version_id': catalog.versions.branch(db, context)['head_version_id']}

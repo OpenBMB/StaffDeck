@@ -16,10 +16,15 @@ class Content:
     def __init__(self, runtime):
         self.runtime = runtime
 
-    def archive(self, document_id, context, actor):
+    def archive(self, document_id, context, actor, expected=None):
         row = self.get(s.documents, document_id, context, actor, "write")
         with self.runtime.engine.begin() as db:
-            db.execute(update(s.documents).where(s.documents.c.id == row["id"]).values(status="archived", updated_at=s.now()))
+            statement = update(s.documents).where(s.documents.c.id == row["id"])
+            if expected is not None:
+                if row['updated_at'].isoformat() != expected: raise HTTPException(409, "Concurrent delete")
+                statement = statement.where(s.documents.c.updated_at == row['updated_at'])
+            changed = db.execute(statement.values(status="archived", updated_at=s.now()))
+            if changed.rowcount != 1: raise HTTPException(409, "Concurrent delete")
             for plugin in self.runtime.plugins.values(): plugin.content_changed(db, document_id)
         return {"status": "archived"}
 

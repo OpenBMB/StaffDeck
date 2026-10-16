@@ -182,7 +182,7 @@ def create_app(runtime, *, ui_directory=None, transport=None):
 
     @app.delete(prefix + "/documents/{document_id}")
     def archive(document_id: str, request: Request, actor=Depends(principal)):
-        return runtime.content.archive(document_id, context(request, {}, actor), actor)
+        return runtime.content.archive(document_id, context(request, {}, actor), actor, request.query_params.get('expected_updated_at'))
 
     @app.get(prefix + "/citations/{chunk_id}")
     def citation(chunk_id: str, request: Request, actor=Depends(principal)):

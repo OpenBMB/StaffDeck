@@ -1,0 +1,26 @@
+{
+  "scope": "Additional pre-existing Harness fixtures; excluded from required KM counts",
+  "runs": {
+    "head": {
+      "command": [
+        "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/bin/python",
+        "-m",
+        "pytest",
+        "backend/tests_harness/test_capability_host_hardening.py",
+        "-q"
+      ],
+      "exit_code": 1
+    },
+    "current": {
+      "command": [
+        "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/bin/python",
+        "-m",
+        "pytest",
+        "backend/tests_harness/test_capability_host_hardening.py",
+        "-q"
+      ],
+      "exit_code": 1
+    }
+  },
+  "same_failures": true
+}

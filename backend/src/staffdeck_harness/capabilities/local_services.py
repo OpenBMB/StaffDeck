@@ -47,6 +47,9 @@ def invoke_local(host: Any, inv: ModuleInvocation) -> ModuleResult:
 
     grants = host.slot.grants() if callable(getattr(host.slot, "grants", None)) else ()
     digest = next((g.resource_digest for g in grants if g.resource_id == inv.binding_id), None)
+    from app.knowledge.agent_tools import SPECS, operation, invoke as invoke_knowledge
+    if inv.operation in {operation(method) for method in SPECS}:
+        return invoke_knowledge(host, inv)
     if inv.operation == "knowledge.search/v1":
         from app.agents.branching import visible_knowledge_base_versions
 

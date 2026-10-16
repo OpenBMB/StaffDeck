@@ -117,6 +117,7 @@ class Settings(BaseSettings):
     # route as the default and lets the independent KM use its lexical
     # fallback when a provider cannot answer promptly.
     harness_v3_knowledge_route_timeout_seconds: float = 30.0
+    knowledge_agent_methods: str = 'query'
     # OSS_LOCAL or BUSINESS_BASE; one per deployment.
     security_profile: str = "OSS_LOCAL"
     harness_module_selections: dict[str, str] = {}
