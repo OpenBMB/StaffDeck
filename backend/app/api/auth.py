@@ -17,7 +17,7 @@ from app.public_api.auth import generate_api_key
 from app.public_api.credential_profiles import USER_FULL_ACCESS_SCOPES
 from app.security import ldap_client
 from app.security.auth import (
-    create_access_token,
+    create_login_token,
     ensure_current_user_tenant,
     get_current_user,
     hash_password,
@@ -36,6 +36,9 @@ class LoginRequest(BaseModel):
     tenant_id: str
     username: str
     password: str
+    # 登录页「记住账号」：勾选后签发 30 天长效凭证（30 天内免登）。
+    # 缺省 False = 维持既有 14 天行为，老客户端不传该字段也不受影响。
+    remember: bool = False
 
 
 class UserUpdateRequest(BaseModel):
@@ -88,6 +91,9 @@ class AvatarRead(BaseModel):
 class LoginResponse(BaseModel):
     token: str
     user: UserRead
+    # token 绝对过期时间（Unix 秒）：勾选「记住账号」时刻为「登录 + 30 天」。
+    # 前端据此在当前浏览器里判断免登窗口是否还在，过期直接回登录页。
+    expires_at: Optional[int] = None
 
 
 class AccountAPICredentialCreateRequest(BaseModel):
@@ -134,9 +140,11 @@ def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
         else:
             if profile is not None:
                 user = _upsert_ldap_user(db, request.tenant_id, profile)
+                token, expires_at = create_login_token(user, remember=request.remember)
                 return LoginResponse(
-                    token=create_access_token(user),
+                    token=token,
                     user=_user_read(user, _avatar_pointer_for(db, user.id)),
+                    expires_at=expires_at,
                 )
             if not get_settings().ldap_local_fallback:
                 raise HTTPException(status_code=401, detail="域账号或密码不正确")
@@ -147,9 +155,11 @@ def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
     if not user or not verify_password(request.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
+    token, expires_at = create_login_token(user, remember=request.remember)
     return LoginResponse(
-        token=create_access_token(user),
+        token=token,
         user=_user_read(user, _avatar_pointer_for(db, user.id)),
+        expires_at=expires_at,
     )
 
 

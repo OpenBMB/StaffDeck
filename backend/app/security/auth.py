@@ -20,6 +20,12 @@ from app.object_cache import cached_model, invalidate_key, store_model
 
 
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 14
+
+# 登录页「记住账号」勾选后的长效凭证：30 天内免登。
+# 免登窗口 = token 有效期，服务端是唯一权威（前端只负责按 expires_at 提前回登录页），
+# 所以时长只在这里改一处。
+REMEMBER_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
+
 security = HTTPBearer(auto_error=False)
 
 # 用户对象 Redis 缓存 TTL（秒）：写路径（改资料/角色/密码/删除/LDAP 同步）
@@ -43,15 +49,31 @@ def verify_password(password: str, stored_hash: str) -> bool:
     return hmac.compare_digest(candidate, stored_hash)
 
 
-def create_access_token(user: User) -> str:
+def create_access_token(user: User, *, ttl_seconds: int | None = None) -> str:
+    """签发站内登录凭证。ttl_seconds 缺省走默认 14 天（既有行为不变）。"""
     return _encode_token(
         {
             "tenant_id": user.tenant_id,
             "user_id": user.id,
             "username": user.username,
-            "exp": int(time.time()) + TOKEN_TTL_SECONDS,
+            "exp": int(time.time()) + (TOKEN_TTL_SECONDS if ttl_seconds is None else ttl_seconds),
         }
     )
+
+
+def access_token_ttl_seconds(*, remember: bool = False) -> int:
+    """登录凭证有效期：「记住账号」= 30 天，否则默认 14 天。"""
+    return REMEMBER_TOKEN_TTL_SECONDS if remember else TOKEN_TTL_SECONDS
+
+
+def create_login_token(user: User, *, remember: bool = False) -> tuple[str, int]:
+    """签发登录凭证，返回 (token, 绝对过期时间戳)。
+
+    过期时间一并回给前端：前端据此在窗口内直接免登、过期后无需先发一次注定 401
+    的 /api/auth/me 就能回到登录页。
+    """
+    ttl_seconds = access_token_ttl_seconds(remember=remember)
+    return create_access_token(user, ttl_seconds=ttl_seconds), int(time.time()) + ttl_seconds
 
 
 # 分享访客 token 的最长存活时间:即使分享本身永久有效,单次浏览器会话也不会拿到超长凭证

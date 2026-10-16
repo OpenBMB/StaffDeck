@@ -3,7 +3,14 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } f
 import { animate, createTimeline, stagger, text, utils } from 'animejs';
 
 import { api, TENANT_ID, ApiError } from '../api/client';
-import { setEnterpriseAuthSession, type EnterpriseAuthSession } from '../auth';
+import {
+  readRememberedUsername,
+  readRememberLoginPreference,
+  setEnterpriseAuthSession,
+  writeRememberedUsername,
+  writeRememberLoginPreference,
+  type EnterpriseAuthSession,
+} from '../auth';
 import AppHeader from '../components/AppHeader';
 import BrandLogo from '../components/BrandLogo';
 import EmployeeAvatar from '../components/EmployeeAvatar';
@@ -59,9 +66,11 @@ function avatarProfile(preset: string) {
  * 背景只放几团缓慢漂移的光斑和一层淡网格：留白不空，但不抢内容。
  */
 export default function LoginPage({ onLogin }: LoginPageProps) {
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = useState(() => readRememberedUsername());
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  // 「记住账号」：勾选后服务端签发 30 天长效凭证，本机 30 天内免登
+  const [remember, setRemember] = useState(() => readRememberLoginPreference());
   const [usernameError, setUsernameError] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -85,7 +94,11 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         tenant_id: TENANT_ID,
         username: trimmedUsername,
         password: trimmedPassword,
+        remember,
       });
+      // 勾选态与账号名先落盘再进应用：登录成功就算数，不依赖组件是否还被挂着
+      writeRememberLoginPreference(remember);
+      writeRememberedUsername(remember ? trimmedUsername : null);
       setEnterpriseAuthSession(session);
       onLogin(session);
     } catch (error) {
@@ -369,6 +382,41 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                   {passwordError}
                 </p>
               )}
+
+              {/* 「记住账号」：勾选后 30 天内免登（凭证有效期由服务端签发）。
+                  复选框自绘，不用浏览器原生控件——原生勾选框在这套版式里太糙。 */}
+              <div className="mt-[2px] flex items-center justify-between gap-[10px]">
+                <label className="flex cursor-pointer select-none items-center gap-[8px]">
+                  <input
+                    type="checkbox"
+                    checked={remember}
+                    onChange={(event) => setRemember(event.target.checked)}
+                    aria-label="记住账号"
+                    className="peer sr-only"
+                  />
+                  <span
+                    aria-hidden
+                    className="grid size-[16px] shrink-0 place-items-center rounded-[5px] border border-[#dfe3ec] bg-white text-white transition-colors peer-checked:border-[#18181a] peer-checked:bg-[#18181a] peer-focus-visible:ring-2 peer-focus-visible:ring-[#18181a]/25 peer-focus-visible:ring-offset-1"
+                  >
+                    {remember && (
+                      <svg viewBox="0 0 12 12" className="size-[10px]">
+                        <path
+                          d="M1.6 6.3 4.3 9 10.4 3"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.9"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    )}
+                  </span>
+                  <span className="text-[13px] leading-none text-[#5b6274]">记住账号</span>
+                </label>
+                <span className="shrink-0 text-[12px] leading-none text-[#757f9c]">
+                  30 天内免登录
+                </span>
+              </div>
 
               <button
                 type="submit"

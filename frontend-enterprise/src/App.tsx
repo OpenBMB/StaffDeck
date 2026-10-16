@@ -13,6 +13,7 @@ import {
   getEnterpriseAuthSession,
   isEnterpriseAdmin,
   isGalleryEmployee,
+  mergeEnterpriseAuthSessionUser,
   setEnterpriseAuthSession,
   type EnterpriseAuthSession,
   type EnterpriseAuthUser,
@@ -1116,7 +1117,8 @@ export default function App() {
     void api.get<EnterpriseAuthUser>("/api/auth/me")
       .then((user) => {
         if (cancelled) return;
-        const refreshed = { token: auth.token, user };
+        // 保留 expires_at：直接拼 { token, user } 会把「记住账号」的 30 天窗口抹掉
+        const refreshed = mergeEnterpriseAuthSessionUser(auth, user);
         setEnterpriseAuthSession(refreshed);
         setAuth(refreshed);
         setAuthChecked(true);

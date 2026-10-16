@@ -407,7 +407,7 @@
           "clear_first": true
         }
       },
-      "summary": "交通费报销：报销场景在「飞机 / 火车·汽车·船」二选一，其余同通讯报销。"
+      "summary": "交通费报销：报销场景同通讯报销。"
     },
     {
       "id": "business_trip",

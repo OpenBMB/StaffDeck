@@ -17,6 +17,7 @@ import IconLogout from '../assets/icons/logout.svg?react';
 import { api } from '../api/client';
 import {
   getEnterpriseAuthSession,
+  mergeEnterpriseAuthSessionUser,
   setEnterpriseAuthSession,
   type EnterpriseAuthUser,
 } from '../auth';
@@ -161,7 +162,7 @@ export default function AppHeader({
     if (!session?.token) return;
     try {
       const fresh = await api.get<EnterpriseAuthUser>('/api/auth/me');
-      setEnterpriseAuthSession({ token: session.token, user: fresh });
+      setEnterpriseAuthSession(mergeEnterpriseAuthSessionUser(session, fresh));
       setUser(fresh);
     } catch {
       // 头像操作已成功时会话刷新失败不阻断,下次登录/刷新自然同步

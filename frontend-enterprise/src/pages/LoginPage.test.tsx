@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ENTERPRISE_AUTH_STORAGE_KEY,
+  ENTERPRISE_REMEMBERED_USERNAME_STORAGE_KEY,
+  ENTERPRISE_REMEMBER_LOGIN_STORAGE_KEY,
   type EnterpriseAuthSession,
 } from '../auth';
 import { I18nProvider } from '../i18n';
@@ -134,8 +136,57 @@ describe('LoginPage', () => {
         tenant_id: 'tenant_demo',
         username: 'admin',
         password: 'secret',
+        // 「记住账号」默认不勾选 → 维持现状（14 天窗口，服务端缺省值）
+        remember: false,
       }),
     }));
+  });
+
+  it('asks the backend for the 30-day window when 记住账号 is checked', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(session),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    renderLogin();
+
+    await user.click(screen.getByRole('checkbox', { name: '记住账号' }));
+    await enterCredentials(user, 'chenjl5', 'secret');
+    await user.click(screen.getByRole('button', { name: '登录' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      tenant_id: 'tenant_demo',
+      username: 'chenjl5',
+      password: 'secret',
+      remember: true,
+    });
+    // 勾选态与账号一起记住：下次进登录页预填、并保持勾选
+    expect(window.localStorage.getItem(ENTERPRISE_REMEMBER_LOGIN_STORAGE_KEY)).toBe('1');
+    expect(window.localStorage.getItem(ENTERPRISE_REMEMBERED_USERNAME_STORAGE_KEY)).toBe('chenjl5');
+  });
+
+  it('does not store the account when 记住账号 stays unchecked', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(session)));
+    renderLogin();
+
+    await enterCredentials(user);
+    await user.click(screen.getByRole('button', { name: '登录' }));
+
+    await waitFor(() => expect(window.localStorage.getItem(ENTERPRISE_AUTH_STORAGE_KEY)).toBeTruthy());
+    expect(window.localStorage.getItem(ENTERPRISE_REMEMBER_LOGIN_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(ENTERPRISE_REMEMBERED_USERNAME_STORAGE_KEY)).toBeNull();
+  });
+
+  it('prefills the remembered account and keeps the checkbox checked', () => {
+    window.localStorage.setItem(ENTERPRISE_REMEMBERED_USERNAME_STORAGE_KEY, 'chenjl5');
+    window.localStorage.setItem(ENTERPRISE_REMEMBER_LOGIN_STORAGE_KEY, '1');
+    renderLogin();
+
+    expect((screen.getByLabelText('账号') as HTMLInputElement).value).toBe('chenjl5');
+    expect((screen.getByRole('checkbox', { name: '记住账号' }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText('30 天内免登录')).toBeTruthy();
   });
 
   it('stores the session and notifies the caller after a successful login', async () => {
