@@ -81,13 +81,104 @@
     return (node && node.ownerDocument && node.ownerDocument.defaultView) || window;
   }
 
-  function clickEl(node) {
-    if (!node) return;
+  /** 本次面板点击期间被拦下的跳转目标（每次点击清空，只为日志）。 */
+  var lastBlockedNav = [];
+
+  /** 「导航护栏」：面板派发的合成点击只应该触发**就地**行为（展开下拉 / 选中 / 清空）。
+   *  真实 OA 里「费用承担部门」这类字段会把**值本身**做成可点链接（点一下打开部门页/详情页），
+   *  而且 chip 的「×」和值的点击处理器常挂在同一棵子树上 → 合成点击一冒泡就把用户带走。
+   *  用户看到的现象就是「值改对了，但它又点了一下那个值，然后跳到别的页面」。
+   *  这里只拦**跳转**（a[href] 的默认行为 + window.open），不拦组件自己的选中/清空逻辑；
+   *  被拦下的会写进面板日志，方便下次一眼定位是哪个元素想跳。 */
+  function withNavGuard(node, fn) {
+    var docs = [];
+    function add(d) { if (d && docs.indexOf(d) < 0) docs.push(d); }
     var W = winOf(node);
-    var opts = { bubbles: true, cancelable: true, view: W, button: 0 };
-    try { node.dispatchEvent(new W.MouseEvent('mousedown', opts)); } catch (e) {}
-    try { node.dispatchEvent(new W.MouseEvent('mouseup', opts)); } catch (e) {}
-    try { node.dispatchEvent(new W.MouseEvent('click', opts)); } catch (e) {}
+    try { add(node.ownerDocument); } catch (e) {}
+    try { add(W.top.document); } catch (e) {}
+    try { collectDocs().forEach(add); } catch (e) {}
+    var blocked = [];
+    function onNav(e) {
+      var path = [];
+      try { path = e.composedPath ? e.composedPath() : [e.target]; } catch (err) { path = [e.target]; }
+      for (var i = 0; i < path.length && i < 12; i++) {
+        var el = path[i];
+        if (!el || !el.tagName) continue;
+        var tag = String(el.tagName).toUpperCase();
+        if (tag !== 'A' && tag !== 'AREA') continue;
+        var href = String((el.getAttribute && el.getAttribute('href')) || '');
+        // 纯锚点（#tab）没有跳转副作用，放行；其余一律拦（含 javascript: —— 它同样会执行脚本跳走）
+        if (!href || href.charAt(0) === '#') continue;
+        try { e.preventDefault(); } catch (err2) {}
+        if (blocked.indexOf(el) < 0) blocked.push(el);
+        break;
+      }
+    }
+    var origOpen = null;
+    try { origOpen = W.open; W.open = function () { return null; }; } catch (e) {}
+    for (var d = 0; d < docs.length; d++) {
+      try { docs[d].addEventListener('click', onNav, true); } catch (e) {}
+    }
+    var ended = false;
+    function end() {
+      if (ended) return;
+      ended = true;
+      for (var i = 0; i < docs.length; i++) {
+        try { docs[i].removeEventListener('click', onNav, true); } catch (e) {}
+      }
+      try { if (origOpen) W.open = origOpen; } catch (e) {}
+      if (blocked.length) {
+        lastBlockedNav = blocked.slice();
+        logLine('! 已拦下页面跳转 × ' + blocked.length + '：' + blocked.map(nodeBrief).join('、')
+          + '（面板点击不应该把页面带走，已忽略）', 'warn');
+      }
+    }
+    try { fn(); } finally {
+      // 组件的跳转常写在 handler 里的 setTimeout 中，护栏多留一会儿再撤
+      try { W.setTimeout(end, 800); } catch (e) { end(); }
+    }
+  }
+
+  /** 暂时摘掉祖先上的**内联** onclick（只动 el.onclick 属性，React 的委托监听不受影响），
+   *  点完立刻恢复。用于「清掉值 / 点 ×」这类绝对不该触发外层跳转的点击：
+   *  e-cology 的老组件常把「打开部门页」写成 chip 上的内联 onclick。 */
+  function withAncestorInlineHandlersMuted(node, fn) {
+    var chain = [];
+    try {
+      var el = node.parentElement;
+      for (var i = 0; i < 6 && el; i++) {
+        if (el.onclick) { chain.push([el, el.onclick]); el.onclick = null; }
+        el = el.parentElement;
+      }
+    } catch (e) {}
+    try { fn(); } finally {
+      for (var j = 0; j < chain.length; j++) {
+        try { chain[j][0].onclick = chain[j][1]; } catch (e) {}
+      }
+    }
+  }
+
+  /** 合成点击。opts.muteAncestors=true 时先临时屏蔽祖先的内联 onclick（清值/删除专用）；
+   *  opts.allowNav=true 时不做导航护栏（默认都做）。
+   *  注意：**不能**用非冒泡点击来防冒泡 —— antd/React 的处理器走事件委托，
+   *  不冒泡的事件到不了 React 根节点，会变成「点了没反应（值清不掉）」。 */
+  function clickEl(node, opts) {
+    if (!node) return;
+    var options = opts || {};
+    var W = winOf(node);
+    var evOpts = { bubbles: true, cancelable: true, view: W, button: 0 };
+    var dispatch = function () {
+      try { node.dispatchEvent(new W.MouseEvent('mousedown', evOpts)); } catch (e) {}
+      try { node.dispatchEvent(new W.MouseEvent('mouseup', evOpts)); } catch (e) {}
+      try { node.dispatchEvent(new W.MouseEvent('click', evOpts)); } catch (e) {}
+    };
+    var run = function () {
+      if (options.muteAncestors) withAncestorInlineHandlersMuted(node, dispatch);
+      else dispatch();
+    };
+    logLine('－ 点击：' + nodeBrief(node), 'dim');
+    if (options.allowNav) { run(); return; }
+    withNavGuard(node, run);
   }
 
   /** 用元素自身原型上的 value setter 赋值，React 受控输入才会读到新值。
@@ -632,12 +723,37 @@
   }
 
   /** 提交判据：容器内 hidden input 有值（渲染区文本会镜像搜索词，不能作依据）。 */
+  /** 组件「已经有值」就当已选好（宽松）。**点完选项后的判定必须用它**：
+   *  真实 OA 的多选/联想字段（报销类型、公司名称、费用承担部门、报销场景…）
+   *  点开-选中本身有副作用，判定太严就会「选了又删、删了又选」地一直下拉。
+   *  需要严格比值的字段（配置里 clear_first 的，如费用承担部门预填 AI+）见 selectValueMatches。 */
   function selectCommitted(container, value) {
     var hidden = container.querySelector("input[type='hidden']");
     if (hidden && (hidden.value || '').trim()) return true;
     if (!visibleIn(container, '.ant-select-search__field')) {
       var rendered = container.querySelector('.ant-select-selection__rendered');
       if (rendered && value && (rendered.innerText || '').indexOf(value) >= 0) return true;
+    }
+    return false;
+  }
+
+  /** 当前值是否**真的是**目标值（严格）：只给「配置要求改写」的字段在**动手之前**把关。
+   *  如费用承担部门：OA 预填「AI+」（hidden 非空），宽松判断会直接跳过 → 永远是 AI+。
+   *  渲染被截断成前缀（「核定费用承…」）也算已选好，别动本来就对的值。 */
+  function selectValueMatches(container, value) {
+    var want = normText(value);
+    if (!want) return false;
+    function same(got) {
+      var g = String(got || '').replace(/[.．…]+$/, '');
+      if (!g) return false;
+      if (g === want || g.indexOf(want) >= 0) return true;
+      return g.length >= 4 && want.indexOf(g) >= 0;
+    }
+    var hidden = container.querySelector("input[type='hidden']");
+    if (same(normText(hidden ? hidden.value : ''))) return true;
+    if (!visibleIn(container, '.ant-select-search__field')) {
+      var rendered = container.querySelector('.ant-select-selection__rendered');
+      if (same(normText(rendered ? (rendered.innerText || rendered.textContent) : ''))) return true;
     }
     return false;
   }
@@ -653,23 +769,32 @@
   function clearSelection(container, search) {
     fireHover(container);
     // ① 清除图标 / 每个 chip 的 ×
+    //    必须保持冒泡（antd 的删除处理器走 React 委托，不冒泡就到不了它）；
+    //    但要点在「×/清除图标」自己身上，并临时屏蔽祖先的内联 onclick ——
+    //    真实 OA 里 chip 就是「值」，它的内联 onclick 往往是「打开部门页」，冒泡上去就把用户带走。
+    //    万一没清掉，下面的退格 + hidden 清空仍是兜底。
     var clearIcon = visibleIn(container, '.ant-select-selection__clear');
-    if (clearIcon) clickEl(clearIcon);
+    if (clearIcon) clickEl(clearIcon, { muteAncestors: true });
     var chipRemoves = container.querySelectorAll('.ant-select-selection__choice__remove');
-    for (var c = 0; c < chipRemoves.length; c++) clickEl(chipRemoves[c]);
+    for (var c = 0; c < chipRemoves.length; c++) clickEl(chipRemoves[c], { muteAncestors: true });
     // ② 复刻原 Playwright 的「退格清空」：搜索框清空后连按退格，
     //    antd/wea 在输入为空时会用 Backspace 取消已选项（合成 keydown 会走 React onKeyDown）
     if (search) { try { search.focus(); } catch (e) {} }
-    var target = search || container;
-    // 至少按一次退格（空组件也一样）：守「所有字段先退格」这条规则，
-    // 也让组件把自己的内部选中状态放掉。
-    fireKey(target, 'keydown', 'Backspace');
-    fireKey(target, 'keyup', 'Backspace');
+    // 「先退格」只按在**搜索输入框**上（空输入框退格无副作用）。
+    // 不要往容器上按：真实 OA 的字段组件对容器级 Backspace 有别的语义（收起下拉、
+    // 清掉已输入的搜索词…），会让后面的联想搜索失效 → 选项找不到 → 字段被清空又填不上
+    //（费用承担部门就踩过：预填 AI+ 被清掉、核定费用承担部门没搜到）。
+    if (search) {
+      setNative(search, '');
+      fireEvent(search, 'input');
+      fireKey(search, 'keydown', 'Backspace');
+      fireKey(search, 'keyup', 'Backspace');
+    }
     for (var i = 0; i < 8; i++) {
       if (selectionEmpty(container)) break;
       if (search) { setNative(search, ''); fireEvent(search, 'input'); }
-      fireKey(target, 'keydown', 'Backspace');
-      fireKey(target, 'keyup', 'Backspace');
+      fireKey(search || container, 'keydown', 'Backspace');
+      fireKey(search || container, 'keyup', 'Backspace');
     }
     // ③ 兼底：直接把 hidden 值清掉
     var hidden = container.querySelector("input[type='hidden']");
@@ -681,16 +806,52 @@
   }
 
   /** 联想下拉（ant-select / wea-select / wea-browser）：沿用原 Playwright 版验证过的实录操作序列。 */
-  async function fillSelect(container, spec, value, prefer) {
+  /** 下拉当前渲染出来的文案（chip / 已选值）；清空前记下来，填不上就放回去。 */
+  function selectionText(container) {
+    if (!container || !container.querySelector) return '';
+    var rendered = container.querySelector('.ant-select-selection__rendered');
+    var txt = rendered ? (rendered.innerText || rendered.textContent || '') : '';
+    // 去掉 chip 上「删除 ×」的文字（有的实现把 × 写成文字节点，会混进 innerText）
+    txt = String(txt || '').replace(/[×✕✖]\s*$/, '').trim();
+    if (txt) return txt;
+    var choice = container.querySelector('.ant-select-selection__choice__content');
+    return choice ? String(choice.innerText || choice.textContent || '').trim() : '';
+  }
+
+  async function fillSelect(container, spec, value, prefer, noRestore) {
     var doc = container.ownerDocument || document;
     var keyword = spec.search_value || value;
     var attempts = [];
+    var oldText = selectionText(container);   // 清空前的值（失败时恢复用）
+
+    // ⓪ 值已经是目标值 → 不动它。重新代填时这是最常见的情况（字段没变），
+    //    而每多点一次字段就多一次「点到值上」的机会 —— 真实 OA 的值是可点链接。
+    var mustRewrite = !!spec.clear_first;   // 配置明确要求「改写这个字段」→ 动手前严格把比值
+    if (mustRewrite ? selectValueMatches(container, value) : selectCommitted(container, value)) {
+      // 带 prefer（发票税率）时，值对还不够：得看到税率也对得上，否则跳过会留下错误税率
+      var committedOk = true;
+      if (prefer) {
+        var shown = normText(container.innerText || container.textContent || '');
+        committedOk = shown.indexOf(normText(prefer)) >= 0;
+      }
+      if (committedOk) {
+        logLine('－ 下拉：已是「' + value + '」，跳过（不再点开）', 'dim');
+        return value;
+      }
+    }
 
     for (var attempt = 0; attempt < 3; attempt++) {
-      // ① 打开下拉，等搜索框或选项出现
+      // ① 打开下拉，等搜索框或选项出现。
+      //    点击目标按「离值越远越安全」排序：搜索框 → 箭头 → 渲染区 → 整个选区 → 容器。
+      //    不要直接点 .ant-select-selection：它的几何中心可能正好落在已选的 chip（值）上，
+      //    而 chip 在真实 OA 里挂了「打开部门页」的处理器。
       var search = visibleIn(container, '.ant-select-search__field');
       if (!search) {
-        var clickTarget = visibleIn(container, '.ant-select-selection, .wea-select-selection, .wea-browser-input') || container;
+        var clickTarget = visibleIn(container, '.ant-select-search__field')
+          || visibleIn(container, '.ant-select-arrow, .ant-select-selection__arrow, .wea-select-arrow')
+          || visibleIn(container, '.ant-select-selection__rendered')
+          || visibleIn(container, '.ant-select-selection, .wea-select-selection, .wea-browser-input')
+          || container;
         clickEl(clickTarget);
         for (var w = 0; w < 8; w++) {
           search = visibleIn(container, '.ant-select-search__field');
@@ -700,11 +861,14 @@
         }
       }
 
-      // ② 先清掉已选项：OA 会给「费用承担部门」之类预填默认值，重新代填时也会残留上次的选值。
-      //    clearSelection 对空组件是 no-op（先找清除图标/chip，再按退格），无条件调用是安全的。
-      clearSelection(container, search);
-      await sleep(150);
-      search = visibleIn(container, '.ant-select-search__field');
+      // ② 清预填值 / 上次的选值：**只按配置来**（spec.clear_first，如费用承担部门的 AI+）。
+      //    不能对所有下拉无条件清：真实 OA 的多选/联想字段被「清掉→重选」几轮会乱
+      //    （点了 chip 的 × 把刚选上的值删掉、又去点选项 → 一直下拉不停地选）。
+      if (spec.clear_first) {
+        clearSelection(container, search);
+        await sleep(150);
+        search = visibleIn(container, '.ant-select-search__field');
+      }
 
       // ③ 写入搜索词：读该组件实测，必须走「填值 + input 事件」，逐字键入不触发联想过滤
       if (search) {
@@ -758,36 +922,89 @@
       await sleep(400);
       if (selectCommitted(container, value)) {
         try { if (search) fireKey(search, 'keydown', 'Escape'); } catch (e) {}
-        try { document.body.click(); } catch (e) {}
+        // 点空白收起下拉：用字段自己所在的那份文档（OA 表单在 iframe 里）
+        try { doc.body.click(); } catch (e) {}
         return optionText(option).trim() || String(value);
       }
       attempts.push('not_committed');
+    }
+    // 没选上：把清空前的值放回去，别让「清掉了又没填上」把字段搞空（费用承担部门这种必填项尤其致命）
+    if (oldText && !noRestore) {
+      var restored = false;
+      try {
+        await fillSelect(container, spec, oldText, '', true);   // 只恢复一次（noRestore 防递归互打）
+        restored = true;
+      } catch (e2) {}
+      logLine('! ' + (spec.label || '下拉') + '：没选上「' + value + '」，'
+        + (restored ? '已恢复原值「' + oldText + '」' : '原值「' + oldText + '」也没恢复，请手动选')
+        + '（该字段 HTML：' + String(container.outerHTML || '').replace(/\s+/g, ' ').slice(0, 160) + '）', 'warn');
+    } else {
+      logLine('! ' + (spec.label || '下拉') + '：没选上「' + value + '」，请手动选', 'warn');
     }
     throw new Error('下拉选项中未找到「' + value + '」（' + attempts.join(' | ') + '）'
       + ' 可选项：' + (lastAvail.length ? lastAvail.slice(0, 16).join('/') : '（空）'));
   }
 
-  async function fillFile(container, files) {
-    // 容器可能是上传区 div（真实 input 在内部），也可能直接就是 input；组件异步渲染，稍等重试
-    function resolveInput() {
+  async function fillFile(container, files, selector) {
+    // 容器可能是上传区 div（真实 input 在内部），也可能直接就是 input；组件异步渲染，稍等重试。
+    // 关键：**每次写文件前都重新解析**。点掉「×」删旧附件后组件会重渲染（换 input 节点），
+    // 往脱离文档的旧节点里写 files 是「静默失败」——用户看到的就是「删掉了旧附件，但新附件没上去」。
+    function resolveInput(original) {
+      if (selector && selector !== TODO) {
+        var doc = (container && container.ownerDocument) || document;
+        var box = null;
+        try { box = doc.querySelector(selector); } catch (e) { box = null; }
+        if (!box && container && container.ownerDocument) {
+          try { box = container.ownerDocument.querySelector(selector); } catch (e) { box = null; }
+        }
+        if (box && box.querySelector) {
+          var inBox = box.querySelector("input[type='file']");
+          if (inBox) return inBox;
+          if (box.parentElement) {
+            var near = box.parentElement.querySelector("input[type='file']");
+            if (near) return near;
+          }
+        }
+      }
+      // 兜底：原来那个容器 / 它自己就是 input
+      if (original && original.isConnected !== false) {
+        if (original.matches && original.matches("input[type='file']")) return original;
+        var inner = original.querySelector ? original.querySelector("input[type='file']") : null;
+        if (!inner && original.parentElement) inner = original.parentElement.querySelector("input[type='file']");
+        if (inner) return inner;
+      }
       if (container.matches && container.matches("input[type='file']")) return container;
-      var inner = container.querySelector ? container.querySelector("input[type='file']") : null;
-      if (!inner && container.parentElement) inner = container.parentElement.querySelector("input[type='file']");
-      return inner;
+      var node = container.querySelector ? container.querySelector("input[type='file']") : null;
+      if (!node && container.parentElement) node = container.parentElement.querySelector("input[type='file']");
+      return node;
     }
-    var input = resolveInput();
+    var input = resolveInput(null);
     for (var i = 0; i < 10 && !input; i++) {
       await sleep(200);
-      input = resolveInput();
+      input = resolveInput(null);
     }
     if (!input) throw new Error('未找到文件输入框（selector 是否指向上传区？）');
     // 重新代填时 OA 上会留着上次挂的附件 → 先清空，避免新旧附件叠在一起
     await clearFileInput(container, input);
-    await sleep(200);
+    await sleep(300);
+    // 清空（点 × + 二次确认）之后上传组件往往已经重渲染 → 必须重新解析再写
+    input = resolveInput(input);
+    for (var j = 0; j < 10 && !input; j++) {
+      await sleep(200);
+      input = resolveInput(null);
+    }
+    if (!input) throw new Error('清空附件后没找到文件输入框（上传组件可能重渲染了，请重试）');
     var W = winOf(input);
     var dt = new W.DataTransfer();
     for (var k = 0; k < files.length; k++) dt.items.add(files[k]);
     input.files = dt.files;
+    // 写进去就要能原样读出来，否则说明这个 input 不是组件正在用的那个
+    var landed = 0;
+    try { landed = (input.files || []).length; } catch (e) {}
+    if (landed !== files.length) {
+      throw new Error('文件没写进上传组件（写入 ' + files.length + ' 个，回读 ' + landed
+        + ' 个）—— 组件可能拦了直写，请在 OA 页手动上传这几个文件');
+    }
     fireEvent(input, 'change');
     await sleep(400);
     // 真实 OA 是异步上传（plupload）→ 等一下再核对「OA 列表里到底有几个」
@@ -840,13 +1057,18 @@
       clickEl(target);
       clicked++;
       await sleep(400);
-      await confirmDeleteDialog();
+      await confirmDeleteDialog(target);
       await sleep(300);
     }
     if (clicked) logLine('－ 已清掉 ' + clicked + ' 个旧附件', 'dim');
-    try { setNative(input, ''); } catch (e) { try { input.value = ''; } catch (e2) {} }
-    try { input.files = new (winOf(input).DataTransfer)().files; } catch (e) {}
-    fireEvent(input, 'change');
+    // × 点完后组件可能已重渲染（input 被换掉）→ 用当前还挂在文档里的那个清原生值
+    var live = input;
+    if (!live || live.isConnected === false) {
+      live = (uploadWidgetOf(input || container) || container).querySelector("input[type='file']") || input;
+    }
+    try { setNative(live, ''); } catch (e) { try { live.value = ''; } catch (e2) {} }
+    try { live.files = new (winOf(live).DataTransfer)().files; } catch (e) {}
+    fireEvent(live, 'change');
   }
 
   /** 第一个「还挂着的文件项」（真实：div.wea-upload-list-item，里面有文件名）。 */
@@ -989,26 +1211,106 @@
     return hits;
   }
 
-  /** 删除附件时 OA 有时弹二次确认：出现就点「确定」，别让弹窗挡住后面的字段。
-   *  只在确认框里点「确定/确认/是」，避免误触表单的「保存」。 */
-  async function confirmDeleteDialog() {
-    await sleep(300);
-    var docs = collectDocs();
-    var hit = false;
+  var DIALOG_SEL = '.ant-modal-confirm, .ant-modal-wrap, .ant-modal, .wea-dialog, [role="dialog"]';
+  var CONFIRM_BUTTON_TEXT = /^(确定|确认|是|ok|yes)$/i;
+
+  /** 「从 seed 出发能摸到的所有 document」：向上找 parent/top（e-cology 常把弹窗挂顶层），
+   *  再向下递归扫 iframe。只扫面板自己那份 document 会漏掉一半弹窗。 */
+  function reachableDocs(seed) {
+    var out = [];
+    function add(d) { if (d && out.indexOf(d) < 0) out.push(d); }
+    var W = null;
+    try { W = seed ? winOf(seed) : window; } catch (e) { W = window; }
+    for (var up = 0; up < 6 && W; up++) {
+      try { add(W.document); } catch (e) {}
+      var next = null;
+      try { next = W.parent; } catch (e) { next = null; }
+      if (!next || next === W) break;
+      W = next;
+    }
+    for (var i = 0; i < out.length; i++) {
+      var frames = [];
+      try { frames = out[i].querySelectorAll('iframe, frame'); } catch (e) { frames = []; }
+      for (var j = 0; j < frames.length; j++) {
+        var child = null;
+        try { child = frames[j].contentDocument; } catch (e) { child = null; }
+        add(child);
+      }
+    }
+    return out;
+  }
+
+  /** 还有可见的确认弹窗吗（只看「有可见按钮的可见弹窗」）。 */
+  function confirmationDialogOpen(seed) {
+    var docs = reachableDocs(seed);
     for (var d = 0; d < docs.length; d++) {
       var modals;
-      try { modals = docs[d].querySelectorAll('.ant-modal-confirm, .ant-modal-wrap, .wea-dialog, [role="dialog"]'); } catch (e) { continue; }
+      try { modals = docs[d].querySelectorAll(DIALOG_SEL); } catch (e) { continue; }
       for (var m = 0; m < modals.length; m++) {
         if (!isVisible(modals[m])) continue;
         var btns;
         try { btns = modals[m].querySelectorAll('button, .ant-btn'); } catch (e) { continue; }
         for (var i = 0; i < btns.length; i++) {
-          if (!isVisible(btns[i])) continue;
-          // 真实按钮文案是「确 定」「确 认」（带空格）→ 归一化后再比
-          var txt = normText(btns[i].innerText || btns[i].textContent || '');
-          if (/^(确定|确认|是|ok|yes)$/i.test(txt)) { clickEl(btns[i]); hit = true; await sleep(400); }
+          if (isVisible(btns[i])) return true;
         }
       }
+    }
+    return false;
+  }
+
+  /** 删除附件/明细行时 OA 会弹二次确认（「信息确认 … 确 认 / 确 定」）。
+   *  两个坑：① 弹窗比点击慢半拍（动画/异步渲染）；② 可能渲染在面板没在的那份 document。
+   *  以前只扫一次（+300ms）→ 用户实测到的现象是「弹窗了，但没点确认」。
+   *  现在：轮询最多 ~4 秒，跨 document 扫，点到「确认」且弹窗真的关掉才收手；
+   *  文案匹配不上时兜底点主按钮（antd confirm 的 primary 就是 OK）；有弹窗但没按钮时打日志。 */
+  async function confirmDeleteDialog(seed) {
+    var hit = false;
+    var clickedButtons = [];
+    for (var round = 0; round < 10; round++) {
+      await sleep(round === 0 ? 300 : 400);
+      var docs = reachableDocs(seed);
+      var clicked = 0;
+      var noButtonModal = null;
+      for (var d = 0; d < docs.length; d++) {
+        var modals;
+        try { modals = docs[d].querySelectorAll(DIALOG_SEL); } catch (e) { continue; }
+        for (var m = 0; m < modals.length; m++) {
+          var modal = modals[m];
+          if (!isVisible(modal)) continue;
+          var btns;
+          try { btns = modal.querySelectorAll('button, .ant-btn, input[type=button], input[type=submit]'); } catch (e) { continue; }
+          var pick = null;
+          var fallback = null;
+          for (var i = 0; i < btns.length; i++) {
+            var b = btns[i];
+            // 同一个按钮会同时出现在 wrap 和 modal 两层容器里 → 全程去重，别点两下
+            if (!isVisible(b) || clickedButtons.indexOf(b) >= 0) continue;
+            var txt = normText(b.innerText || b.textContent || b.value || '');
+            if (CONFIRM_BUTTON_TEXT.test(txt)) { pick = b; break; }
+            if (!fallback && /ant-btn-primary|btn-primary/i.test(String(b.className || ''))) fallback = b;
+          }
+          if (!pick) pick = fallback;
+          if (!pick) { if (!noButtonModal) noButtonModal = modal; continue; }
+          logLine('－ 确认弹窗：点「' + normText(pick.innerText || pick.textContent || pick.value || '') + '」', 'dim');
+          clickedButtons.push(pick);
+          clickEl(pick);
+          clicked++;
+          hit = true;
+          await sleep(400);
+        }
+      }
+      if (clicked) {
+        await sleep(400);
+        if (!confirmationDialogOpen(seed)) break;   // 弹窗真的关了
+        continue;
+      }
+      if (hit) break;                                 // 点过，且已看不到弹窗
+      if (noButtonModal) {
+        logLine('! 确认弹窗已出现但没找到可点的确认按钮：' + nodeBrief(noButtonModal)
+          + '（把这条日志 + 截图发我，按它加选择器）', 'warn');
+        break;
+      }
+      if (round >= 4) break;                          // 五轮都没有弹窗（OA 可能是静默删除）
     }
     return hit;
   }
@@ -1065,7 +1367,7 @@
       // 按字段的 from 取对应附件（相关票据/其他参考资料各自一份）
       var picked = ((filesByField && filesByField[spec.from]) || []).slice();
       if (!picked.length) return { field: label, status: 'skipped', detail: '未选择附件' };
-      var fileDetail = await fillFile(node, picked);
+      var fileDetail = await fillFile(node, picked, spec.selector);
       return {
         field: label,
         status: 'filled',
@@ -2395,7 +2697,7 @@
       removed++;
       await sleep(400);
       // 真实 OA 点「-」会弹「确定要删除吗？」→ 必须点掉，否则行不会消失、弹窗还会挡住后面字段
-      var confirmed = await confirmDeleteDialog();
+      var confirmed = await confirmDeleteDialog(btn);
       await sleep(400);
       var after = lineItemRowIndexes(li);
       if (!after || after.length >= idxs.length) {

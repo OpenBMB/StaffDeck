@@ -41,6 +41,13 @@ async function injectPanel(page) {
   return host;
 }
 
+async function readPanelLog(host) {
+  return host.evaluate((el) => {
+    const box = [...el.shadowRoot.querySelectorAll('div')].find((d) => (d.style.fontFamily || '').includes('monospace'));
+    return box ? box.textContent.replace(/\s+/g, ' ') : '';
+  });
+}
+
 async function readOa(page) {
   const frame = page.frames().find((f) => f.url().includes('/oa-form'));
   return frame.evaluate(() => {
@@ -298,7 +305,9 @@ if (MAC) {
   const { oa, summary } = await runScenario(page, host, 'communication', { files: HOTEL ? [HOTEL] : [] });
   const keys = (oa.trace && oa.trace.backspace) || {};
   check('先清空再填 报销事由收到退格键', (keys['field6946'] || 0) >= 1, JSON.stringify(keys));
-  check('先清空再填 下拉搜索框收到退格键', (keys['ant-select-search__field'] || 0) >= 1, JSON.stringify(keys));
+  // 下拉的「先清空」只按配置来（clear_first，如费用承担部门的预填 AI+）：
+  // 清 chip 时面板会拦掉 chip 上的页面跳转（真实 OA 的 chip 是链接），据此断言清理确实发生过
+  check('先清空再填 有预填的下拉先清 chip（拦下 chip 跳转）', oa.trace && oa.trace.navPrevented >= 1, oa.trace && oa.trace.navPrevented);
   check('先清空再填 附件已挂上（change 触发）', oa.trace && oa.trace.fileChanges >= 1, oa.trace && oa.trace.fileChanges);
   check('先清空再填 附件最终仍=1', oa.relTickets === 1, oa.relTickets);
   check('先清空再填 报销场景=通讯费用', oa.scene0 === '通讯费用', oa.scene0);
@@ -400,6 +409,37 @@ if (HOTEL && TRAIN) {
   check('其他参考资料 文件名正确', oa.otherName === 'dzfp_2632200', String(oa.otherName));
   check('两次附件都报了「OA 列表 N 个」核对', /相关票据[^－]{0,60}OA 列表 2 个/.test(log) && /其他参考资料[^－]{0,60}OA 列表 1 个/.test(log), (log.match(/已提交 [^－]{0,90}/g) || []).join(' | '));
   check('明细 2 行（也没被误删）', oa.cpRows === 2, oa.cpRows);
+}
+
+// 16) 费用承担部门：真实 OA 里「值」是可点链接（chip 上还有内联跳转处理器，删除图标也是链接）
+//     —— 面板清旧值/改值只能点到「×」上，绝不能把页面点走（用户实测的误跳转）
+{
+  const host = await injectPanel(page);
+  const first = await runScenario(page, host, 'communication', { files: HOTEL ? [HOTEL] : [] });
+  const fr = page.frames().find((f) => f.url().includes('/oa-form'));
+  const urlAfter = fr ? fr.url() : '';
+  const chips = fr
+    ? await fr.evaluate(() => document.querySelectorAll('[data-fieldmark="field7012"] .ant-select-selection__choice').length).catch(() => -1)
+    : -1;
+  const t1 = (first.oa && first.oa.trace) || {};
+  check('费用承担部门 预填 AI+ 被改写为 核定费用承担部门', first.oa.costDept === '核定费用承担部门', first.oa.costDept);
+  check('费用承担部门 点到值/删除图标（链接）', (t1.linkClicks || 0) >= 1, JSON.stringify(t1));
+  check('费用承担部门 链接默认跳转已被拦（navPrevented≥1）', (t1.navPrevented || 0) >= 1, JSON.stringify(t1));
+  check('费用承担部门 没有漏拦的跳转（navAllowed=0）', (t1.navAllowed || 0) === 0, JSON.stringify(t1));
+  check('费用承担部门 没有跳走（仍停留在表单页）', /\/oa-form/.test(urlAfter), urlAfter);
+  check('费用承担部门 旧值 chip 已清掉，只剩 1 个', chips === 1, 'chips=' + chips);
+  check('费用承担部门 面板日志有拦截记录', /已拦下页面跳转/.test(first.log), (first.log.match(/已拦下[^－]{0,60}/) || [''])[0]);
+
+  // 重新代填：值已经对了 → 这个字段不该再被点开（少一次误点的机会）
+  if (fr) await fr.evaluate(() => window.__sdResetTrace && window.__sdResetTrace()).catch(() => {});
+  await host.locator('button:has-text("代填")').first().click();
+  await page.waitForTimeout(10000);
+  const log2 = await readPanelLog(host);
+  const t2 = fr ? await fr.evaluate(() => window.__sdTrace).catch(() => null) : null;
+  const url2 = fr ? fr.url() : '';
+  check('费用承担部门 重新代填：值已正确则跳过（不再点开）', /下拉：已是「核定费用承担部门」，跳过/.test(log2), log2.slice(-220));
+  check('费用承担部门 重新代填：一次值链接都没点到', ((t2 && t2.linkClicks) || 0) === 0, JSON.stringify(t2));
+  check('费用承担部门 重新代填后仍在表单页', /\/oa-form/.test(url2), url2);
 }
 
 await browser.close();

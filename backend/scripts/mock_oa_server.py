@@ -75,7 +75,7 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
       <div class="wea-upload-list"></div>
       <div class="wea-upload-container"><input type="file" multiple></div></div></td></tr>
   <tr><td class="lb">是否全电子发票</td><td><div class="ant-select" data-fieldmark="field29328" data-options="是|否"></div></td><td></td><td></td></tr>
-  <tr><td class="lb">费用承担部门</td><td><div class="ant-select" data-fieldmark="field7012" data-options="核定费用承担部门|核定"></div></td><td></td><td></td></tr>
+  <tr><td class="lb">费用承担部门</td><td><div class="ant-select" data-fieldmark="field7012" data-prefill="AI+" data-options="AI+|核定费用承担部门|核定"></div></td><td></td><td></td></tr>
   <tr><td class="lb">收款单位名称</td><td><div class="ant-select" data-options="上海测试科技有限公司|某某网络有限公司|上海测试"></div></td><td></td><td></td></tr>
   <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_0" data-options="通讯费用|交通费用|飞机|火车汽车船|IT服务外包|相关票据|境内住宿|境内机票|境内火车票"></div></td>
       <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td></tr>
@@ -145,19 +145,51 @@ document.addEventListener('click', function (e) {
 });
 function setupSelect(root){
   var options = (root.getAttribute('data-options')||'').split('|').filter(Boolean);
+  var prefill = root.getAttribute('data-prefill') || '';
   var selection = document.createElement('div'); selection.className='ant-select-selection';
   var rendered = document.createElement('div'); rendered.className='ant-select-selection__rendered';
   var hidden = document.createElement('input'); hidden.type='hidden';
   var search = document.createElement('input'); search.className='ant-select-search__field';
+  // 预填（真实 OA 会给「费用承担部门」预填当前部门，如 AI+）
+  var preset = root.getAttribute('data-prefill') || root.getAttribute('data-value') || '';
+  if (preset) { hidden.value = preset; rendered.textContent = preset; }
   selection.appendChild(rendered); root.appendChild(selection); root.appendChild(hidden); root.appendChild(search);
   var dd=null;
+  // 选中值渲染成 chip —— 真实 OA（费用承担部门）就是这样：值本身是可点链接，
+  // chip 上还挂着内联的跳转处理器，删除图标也是链接。面板点它就会把页面带走。
+  function render(){
+    rendered.innerHTML = '';
+    if (!hidden.value) { search.style.display=''; return; }
+    search.style.display='none';
+    var chip = document.createElement('span');
+    chip.className = 'ant-select-selection__choice';
+    chip.setAttribute('onclick', "window.__sdTrace.valueChipClicks=(window.__sdTrace.valueChipClicks||0)+1;"
+      + "window.__sdTrace.chipInlineNav=(window.__sdTrace.chipInlineNav||0)+1;");
+    var link = document.createElement('a');
+    link.className = 'wea-field-link';
+    link.setAttribute('href', '/dept-page');
+    link.setAttribute('title', hidden.value);
+    link.textContent = hidden.value;
+    var rm = document.createElement('a');
+    rm.className = 'ant-select-selection__choice__remove';
+    rm.setAttribute('href', '/dept-page');
+    rm.setAttribute('title', '删除');
+    rm.textContent = '×';
+    rm.addEventListener('click', function(e){
+      // 删除处理器挂在图标自身（antd 同款）；外部跳转必须已被面板拦掉，否则这里记录
+      if (e.defaultPrevented) window.__sdTrace.navPrevented = (window.__sdTrace.navPrevented||0)+1;
+      else window.__sdTrace.navAllowed = (window.__sdTrace.navAllowed||0)+1;
+      hidden.value=''; render();
+    });
+    chip.appendChild(link); chip.appendChild(rm); rendered.appendChild(chip);
+  }
   function ensure(){
     if(dd) return dd;
     dd=document.createElement('div'); dd.className='ant-select-dropdown ant-select-dropdown-hidden';
     var ul=document.createElement('ul');
     options.forEach(function(o){
       var li=document.createElement('li'); li.className='ant-select-dropdown-menu-item'; li.textContent=o;
-      li.addEventListener('click', function(){ hidden.value=o; rendered.textContent=o; hide(); });
+      li.addEventListener('click', function(){ hidden.value=o; render(); hide(); });
       ul.appendChild(li);
     });
     dd.appendChild(ul); document.body.appendChild(dd);
@@ -175,7 +207,20 @@ function setupSelect(root){
   search.addEventListener('focus', function(){ show(search.value); });
   search.addEventListener('click', function(){ show(search.value); });
   search.addEventListener('input', function(){ show(search.value); });
+  // 真实 OA：点选值区（含 chip 一带）也会展开下拉
+  selection.addEventListener('click', function(){ show(search.value); });
+  if (prefill) hidden.value = prefill;
+  render();
 }
+// 值链接/删除图标被点到时的统一埋点（含「默认跳转是否被拦」）；# 锚点不算跳转
+document.addEventListener('click', function (e) {
+  var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+  if (!a) return;
+  if (String(a.getAttribute('href') || '').charAt(0) === '#') return;
+  window.__sdTrace.linkClicks = (window.__sdTrace.linkClicks||0)+1;
+  if (e.defaultPrevented) window.__sdTrace.navPrevented = (window.__sdTrace.navPrevented||0)+1;
+  else window.__sdTrace.navAllowed = (window.__sdTrace.navAllowed||0)+1;
+}, false);
 Array.prototype.forEach.call(document.querySelectorAll('.ant-select'), setupSelect);
 
 var rowCount = 1;
