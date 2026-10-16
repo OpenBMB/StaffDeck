@@ -223,6 +223,19 @@ def _prepare_sop_resume(db: Session, task: ExternalBusinessTask) -> None:
         # completion must not resume the node currently waiting on another task.
         return
     result = dict(task.result_json or {})
+    import os
+    if frame.kind == "sop" and os.environ.get("SOP_RUNTIME_ENDPOINT"):
+        from staffdeck_harness.sop.runtime_client import RuntimeClient
+        from staffdeck_harness.sop.http_runtime import HttpSopRuntime
+        from types import SimpleNamespace
+        client = RuntimeClient(os.environ["SOP_RUNTIME_ENDPOINT"])
+        runtime_id = HttpSopRuntime._id(SimpleNamespace(tenant_id=task.tenant_id, id=task.session_id), task.task_frame_id)
+        state = client.session(runtime_id)["state"]
+        wait = state.get("pending_wait")
+        if wait and wait.get("kind") == "external_task":
+            client.operation(runtime_id, "resume", request_id=f"external:{task.id}:{task.status}",
+                turn_id=task.id, revision=state["revision"], waitId=wait["wait_id"], slotUpdates=result,
+                response={"source": "external_task", "task_id": task.id, "status": task.status})
     frame.result_json = {
         **dict(frame.result_json or {}),
         "external_task_id": task.external_task_id,
@@ -235,7 +248,7 @@ def _prepare_sop_resume(db: Session, task: ExternalBusinessTask) -> None:
     update_external_task_checkpoint(db, frame, task)
     if frame.kind == "sop":
         frame.status = "ready_to_resume"
-        if task.status == "completed" and task.resume_step_id:
+        if task.status == "completed" and task.resume_step_id and not os.environ.get("SOP_RUNTIME_ENDPOINT"):
             frame.step_id = task.resume_step_id
     else:
         frame.status = "completed" if task.status == "completed" else "failed"

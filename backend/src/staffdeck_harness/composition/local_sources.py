@@ -182,6 +182,11 @@ class LocalResourceCatalog:
 
         model = {"tool": Tool, "mcp_server": MCPServer, "general_skill": GeneralSkill,
                  "knowledge_base": KnowledgeBase, "sop": Skill, "skill": Skill}.get(resource_type)
+        if resource_type in {"sop", "skill"}:
+            from app.skills.sop_management import legacy_sop_writes_disabled
+            if legacy_sop_writes_disabled():
+                from app.db.models import SopDefinitionRecord
+                model = SopDefinitionRecord
         row = self.db.get(model, resource_id) if model else None
         if row is None or row.tenant_id != context.tenant_id:
             raise ModuleSdkError("资源不存在或不属于当前租户", code="RESOURCE_UNAVAILABLE")

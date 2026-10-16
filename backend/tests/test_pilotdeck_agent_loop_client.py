@@ -536,6 +536,7 @@ for line in sys.stdin:
     assert result.action_count == 2
     assert result.capability_results == [{
         "tool_name": "lookup",
+        "operation_id": "module-request",
         "success": True,
         "data": {"value": "found"},
         "error": None,

@@ -546,10 +546,11 @@ class TurnCoordinator:
             ),
             None,
         )
-        if ready_frame is not None and plan.decision not in {
+        runtime_resume = bool((session.awaiting_input_json or {}).get("runtime_session_id"))
+        if ready_frame is not None and (runtime_resume or plan.decision not in {
             "complete_task",
             "handoff_human",
-        }:
+        }):
             resume = planned_frame_from_record(
                 self.db.exec(
                     select(HarnessTaskFrameRecord).where(
@@ -2631,6 +2632,24 @@ def _pilotdeck_context_messages(
                     ],
                 },
             )
+        else:
+            current_text = json.dumps(requirement.model_dump(mode="json"), ensure_ascii=False)
+            prior_boundary = next(
+                item for item in reversed(messages)
+                if _canonical_requirement_boundary(item)
+                == (requirement.task_frame_id, current_step_id)
+            )
+            if not any(
+                isinstance(part, dict) and part.get("text") == current_text
+                for part in prior_boundary["content"]
+            ):
+                messages.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": current_text,
+                    }],
+                })
     else:
         messages = [
             {

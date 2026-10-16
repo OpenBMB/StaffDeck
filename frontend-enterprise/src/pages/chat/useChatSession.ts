@@ -381,7 +381,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const [isComposing, setIsComposing] = useState(false);
   const [runningTurn, setRunningTurn] = useState<{ sessionId: string; turnId: string } | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => (
-    window.localStorage.getItem(ENTERPRISE_SIDEBAR_STORAGE_KEY) === '0'
+    window.matchMedia('(max-width: 767px)').matches
+      || window.localStorage.getItem(ENTERPRISE_SIDEBAR_STORAGE_KEY) === '0'
   ));
   const [uiConfig, setUiConfig] = useState<UIConfigRead>({
     tenant_id: tenantId,

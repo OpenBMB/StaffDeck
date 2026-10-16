@@ -688,6 +688,7 @@ def _capability_result_from_module_exchange(
         error.setdefault("code", str(response.get("code") or "TOOL_EXECUTION_FAILED"))
         return {
             "tool_name": name,
+            "operation_id": str(request.get("requestId") or request.get("operationId") or ""),
             "success": False,
             "data": None,
             "error": error,
@@ -698,6 +699,7 @@ def _capability_result_from_module_exchange(
     raw_error = response_payload.get("error")
     return {
         "tool_name": name,
+        "operation_id": str(request.get("requestId") or request.get("operationId") or ""),
         "success": not failure,
         "data": response_payload.get("data"),
         "error": dict(raw_error) if isinstance(raw_error, Mapping) else None,

@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
-from staffdeck_sop_runtime.api import create_app
-from staffdeck_sop_runtime.original_runtime import prepare, submit
+from staffdeck_harness.sop.legacy_api import create_app
+from staffdeck_harness.sop.legacy_http import prepare, submit
 
 
 CLIENT = TestClient(create_app())

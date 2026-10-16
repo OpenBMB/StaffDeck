@@ -558,6 +558,7 @@ class HarnessTaskAgent:
                     if _is_non_retryable_failure(result):
                         non_retryable_action_signatures.add(action_signature)
             bounded_result = _bounded_capability_result(tool_name, result)
+            bounded_result["operation_id"] = f"{requirement.execution_loop_id}:{iteration}:{tool_name}"
             if _is_loaded_general_skill_result(tool_name, result):
                 loaded_general_skill_names.append(tool_name)
             transcript.extend(

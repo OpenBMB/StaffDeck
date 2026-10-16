@@ -78,6 +78,10 @@ from app.skills.skill_schema import (
 )
 from app.skills.stream_jobs import SkillStreamEvent, SkillStreamJob, stream_jobs
 from app.skills.step_ids import skill_card_with_unique_step_ids
+from app.skills.sop_management import (
+    normalize_sop_write, ensure_legacy_sop_writes_enabled,
+    legacy_sop_writes_disabled, SopManagementService,
+)
 from app.skills.nesting import (
     SopNestingError,
     nested_sop_ids,
@@ -94,6 +98,20 @@ router = APIRouter(
 )
 
 
+def _managed_write(db, tenant_id, agent_id, user, content=None, *, sop_id=None, status=None, create=False):
+    agent = ensure_agent_scope_manager(db, tenant_id, agent_id, user)
+    if agent is None or agent.is_overall:
+        ensure_open_gallery_admin(tenant_id, user)
+    if content is None:
+        content = SopManagementService.get(db, tenant_id, agent_id, sop_id).content_json
+    card = skill_card_from_persisted(content)
+    _validate_handoff_assignees(db, card, tenant_id)
+    row = SopManagementService.save(db, tenant_id, agent_id,
+        card.model_dump(mode="json"), status=status, create=create,
+        metadata=user_creator_metadata(user) if create else None)
+    return skill_read(row)
+
+
 def validate_published_sop(db: Session, tenant_id: str, agent_id: str | None, sop_id: str) -> None:
     """Validate the published instance through the same module sources/compiler as runtime."""
     from app.config import get_settings
@@ -104,6 +122,10 @@ def validate_published_sop(db: Session, tenant_id: str, agent_id: str | None, so
     db.flush()
     try:
         validate_configuration(get_registry(get_settings()), db, SourceContext(tenant_id, agent_id), sop_id=sop_id)
+        import os
+        if os.environ.get("SOP_RUNTIME_ENDPOINT"):
+            from app.skills.sop_management import SopManagementService
+            SopManagementService.publish(db, tenant_id, agent_id)
     except (ModuleSdkError, ValueError, LookupError) as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"SOP 模块装配无效：{exc}") from exc
@@ -325,6 +347,10 @@ def create_skill(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> SkillRead:
+    if legacy_sop_writes_disabled():
+        return _managed_write(db, request.tenant_id, agent_id, current_user,
+            request.content.model_dump(mode="json"), status=request.status, create=True)
+    ensure_legacy_sop_writes_enabled()
     ensure_tenant(db, request.tenant_id)
     existing = db.exec(
         select(Skill).where(
@@ -334,7 +360,7 @@ def create_skill(
     if existing:
         raise HTTPException(status_code=409, detail="Skill ID already exists for this tenant")
     normalized_content, _warnings = skill_card_with_unique_step_ids(request.content)
-    content = normalized_content.model_dump()
+    content = normalize_sop_write(normalized_content.model_dump())
     _validate_handoff_assignees(db, normalized_content, request.tenant_id)
     agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
     try:
@@ -427,6 +453,13 @@ def update_skill(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> SkillRead:
+    if legacy_sop_writes_disabled():
+        if request.content.skill_id != skill_id:
+            raise HTTPException(400, "SOP skill_id cannot be modified")
+        SopManagementService.get(db, request.tenant_id, agent_id, skill_id)
+        return _managed_write(db, request.tenant_id, agent_id, current_user,
+            request.content.model_dump(mode="json"), status=request.status)
+    ensure_legacy_sop_writes_enabled()
     if request.content.skill_id != skill_id:
         raise HTTPException(status_code=400, detail="SOP skill_id cannot be modified")
     row = _get_skill(db, request.tenant_id, skill_id)
@@ -483,7 +516,7 @@ def update_skill(
     row.name = normalized_content.name
     row.business_domain = normalized_content.business_domain
     row.description = normalized_content.description
-    row.content_json = normalized_content.model_dump()
+    row.content_json = normalize_sop_write(normalized_content.model_dump())
     _sync_skill_tool_bindings(db, request.tenant_id, row.skill_id, row.content_json)
     if request.status:
         row.status = request.status
@@ -506,6 +539,9 @@ def publish_skill(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> SkillRead:
+    if legacy_sop_writes_disabled():
+        return _managed_write(db, tenant_id, agent_id, current_user, sop_id=skill_id, status="published")
+    ensure_legacy_sop_writes_enabled()
     row = _get_skill(db, tenant_id, skill_id)
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
     validation_content = (
@@ -571,6 +607,9 @@ def archive_skill(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> SkillRead:
+    if legacy_sop_writes_disabled():
+        return _managed_write(db, tenant_id, agent_id, current_user, sop_id=skill_id, status="archived")
+    ensure_legacy_sop_writes_enabled()
     row = _get_skill(db, tenant_id, skill_id)
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
     if agent and not agent.is_overall:
@@ -604,6 +643,9 @@ def draft_skill(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> SkillRead:
+    if legacy_sop_writes_disabled():
+        return _managed_write(db, tenant_id, agent_id, current_user, sop_id=skill_id, status="draft")
+    ensure_legacy_sop_writes_enabled()
     row = _get_skill(db, tenant_id, skill_id)
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
     if agent and not agent.is_overall:
@@ -629,6 +671,10 @@ def delete_skill(
     agent_id: str | None = None,
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
+    if legacy_sop_writes_disabled():
+        _managed_write(db, tenant_id, agent_id, current_user, sop_id=skill_id, status="deleted")
+        return {"status": "deleted"}
+    ensure_legacy_sop_writes_enabled()
     row = _get_skill(db, tenant_id, skill_id)
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
     if agent and not agent.is_overall:
@@ -699,6 +745,9 @@ def list_skill_versions(
     db: Session = Depends(get_session),
     agent_id: str | None = None,
 ) -> list[SkillVersionRead]:
+    if legacy_sop_writes_disabled():
+        SopManagementService.get(db, tenant_id, agent_id, skill_id)
+        return [skill_version_read(row) for row in SopManagementService.versions(db, tenant_id, agent_id, skill_id)]
     row = _get_visible_skill_for_scope(db, tenant_id, skill_id, agent_id)
     agent = get_agent(db, tenant_id, agent_id)
     if agent and not agent.is_overall:
@@ -734,6 +783,11 @@ def get_skill_version(
     agent_id: str | None = None,
     db: Session = Depends(get_session),
 ) -> SkillVersionRead:
+    if legacy_sop_writes_disabled():
+        row = next((r for r in SopManagementService.versions(db, tenant_id, agent_id, skill_id) if r.version == version), None)
+        if row is None:
+            raise HTTPException(404, "SOP version not found")
+        return skill_version_read(row)
     _get_visible_skill_for_scope(db, tenant_id, skill_id, agent_id)
     agent = get_agent(db, tenant_id, agent_id)
     if agent and not agent.is_overall:
@@ -760,6 +814,18 @@ def delete_skill_version(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
+    if legacy_sop_writes_disabled():
+        ensure_open_gallery_admin(tenant_id, current_user)
+        skill = SopManagementService.get(db, tenant_id, None, skill_id)
+        if skill.version == version:
+            raise HTTPException(409, "Cannot delete the active skill version")
+        row = next((r for r in SopManagementService.versions(db, tenant_id, None, skill_id) if r.version == version), None)
+        if row is None:
+            raise HTTPException(404, "Skill version not found")
+        db.delete(row)
+        db.commit()
+        return {"status": "deleted"}
+    ensure_legacy_sop_writes_enabled()
     skill = _get_skill(db, tenant_id, skill_id)
     ensure_open_gallery_admin(tenant_id, current_user)
     if skill.version == version:
@@ -779,6 +845,15 @@ def rollback_skill_version(
     agent_id: str | None = None,
     current_user: User = Depends(get_current_user),
 ) -> SkillRead:
+    if legacy_sop_writes_disabled():
+        selected = next((r for r in SopManagementService.versions(db, tenant_id, agent_id, skill_id) if r.version == version), None)
+        if selected is None:
+            raise HTTPException(404, "SOP version not found")
+        from app.public_api.sops import _next_version
+        current = SopManagementService.get(db, tenant_id, agent_id, skill_id)
+        content = {**deepcopy(selected.content_json), "version": _next_version(current.version)}
+        return _managed_write(db, tenant_id, agent_id, current_user, content, status="draft")
+    ensure_legacy_sop_writes_enabled()
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)
     if agent and not agent.is_overall:
         branch = rollback_branch(db, tenant_id, agent.id, skill_id, version)
@@ -805,7 +880,7 @@ def rollback_skill_version(
     row.name = version_row.name
     row.business_domain = version_row.business_domain
     row.description = version_row.description
-    row.content_json = normalized_content.model_dump()
+    row.content_json = normalize_sop_write(normalized_content.model_dump())
     row.updated_at = utc_now()
     db.add(row)
     db.commit()
@@ -1556,6 +1631,7 @@ def _recent_skill_stats(
 
 
 def _upsert_skill_version(db: Session, row: Skill) -> SkillVersion:
+    ensure_legacy_sop_writes_enabled()
     existing = db.exec(
         select(SkillVersion).where(
             SkillVersion.tenant_id == row.tenant_id,

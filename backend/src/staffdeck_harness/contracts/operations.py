@@ -50,5 +50,6 @@ SUPPORTED_CONTRACTS = {
     )
 }
 
-# v2 removes persistence objects from the SOP lifecycle SPI. v1 plugins must migrate.
-SUPPORTED_CONTRACTS["sop.lifecycle"] = {"v2"}
+# v3 moves graph state ownership into the independent Runtime. v2 remains
+# registered only so the legacy StaffDeck facade can be drained during migration.
+SUPPORTED_CONTRACTS["sop.lifecycle"] = {"v2", "v3"}

@@ -23,7 +23,7 @@ export const CHAT_ICON_BUTTON_CLASS =
 export const CHAT_MAIN_CLASS = 'flex min-h-0 min-w-0 flex-col bg-[#fcfcfc]';
 export const CHAT_HEADER_CLASS =
   'flex h-[88px] shrink-0 items-center justify-between gap-[12px] border-b border-[#f4f4f4] pt-[32px] pl-[18px] pr-[24px]';
-export const CHAT_HEADER_TITLE_STACK_CLASS = 'flex min-w-0 items-end gap-[8px]';
+export const CHAT_HEADER_TITLE_STACK_CLASS = 'flex min-w-0 flex-1 items-end gap-[8px]';
 export const CHAT_HEADER_TITLE_NAME_CLASS = 'truncate text-[14px] capitalize text-[#18181a]';
 export const CHAT_HEADER_TITLE_META_CLASS = 'shrink-0 truncate text-[10px] text-[#757f9c]';
 export const CHAT_HEADER_ACTIONS_CLASS = 'flex shrink-0 items-center gap-[6px]';
@@ -217,12 +217,12 @@ export const CHAT_EMPTY_GREETING_CARD_CLASS =
 export const CHAT_EMPTY_TITLE_CLASS = 'text-[36px] font-semibold leading-none text-[#18181a]';
 export const CHAT_EMPTY_SUBTITLE_CLASS = 'text-[18px] font-medium text-[#464c5e]';
 export const CHAT_EMPTY_CARD_CLASS =
-  'flex w-full items-stretch gap-[8px] rounded-[20px] bg-[#f6f6f6] p-[16px]';
+  'flex w-full min-w-0 flex-wrap items-stretch gap-[8px] rounded-[20px] bg-[#f6f6f6] p-[16px]';
 export const CHAT_EMPTY_ROLE_CLASS = 'line-clamp-2 text-[12px] capitalize leading-[1.5] text-[#757f9c]';
 export const CHAT_EMPTY_TAGS_CLASS =
   'flex flex-wrap items-center gap-[10px] [&>span]:rounded-[10px] [&>span]:border-[0.5px] [&>span]:border-[#e3e7f1] [&>span]:px-[10px] [&>span]:py-[4px] [&>span]:text-[10px] [&>span]:capitalize [&>span]:text-[#757f9c]';
 export const CHAT_EMPTY_STAT_CELL_CLASS =
-  'flex flex-1 flex-col justify-center gap-[4px] border-[0.5px] border-[#e3e7f1] px-[20px] py-[8px] capitalize text-[#464c5e] first:rounded-l-[14px] last:rounded-r-[14px] [&:not(:first-child)]:ml-[-0.5px]';
+  'flex min-w-0 flex-1 flex-col justify-center gap-[4px] border-[0.5px] border-[#e3e7f1] px-[12px] py-[8px] capitalize text-[#464c5e] first:rounded-l-[14px] last:rounded-r-[14px] [&:not(:first-child)]:ml-[-0.5px]';
 
 // ---------------------------------------------------------------------------
 // Composer
