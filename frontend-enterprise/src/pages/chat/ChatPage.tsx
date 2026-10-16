@@ -1,7 +1,9 @@
 import { type CSSProperties } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import AppSidebar from '@/components/AppSidebar';
 import { SidebarProvider } from '@/components/ui/sidebar';
+import { EnterpriseRoute } from '@/enums/routes';
 import { cn } from '@/lib/utils';
 
 import { CHAT_MAIN_CLASS } from './chatPageStyles';
@@ -14,6 +16,7 @@ import ChatDialogs from './components/ChatDialogs';
 
 export default function ChatPage() {
   const chat = useChatSession();
+  const navigate = useNavigate();
 
   return (
     <SidebarProvider
@@ -48,6 +51,7 @@ export default function ChatPage() {
           if (selectedAgent) chat.openDraftForAgent(selectedAgent.id);
           else chat.openGallery();
         }}
+        onOpenHome={() => navigate(EnterpriseRoute.Platform)}
         onOpenGallery={chat.openGallery}
         handoffCount={chat.handoffs.length}
         onOpenHandoffs={chat.openHandoffInbox}

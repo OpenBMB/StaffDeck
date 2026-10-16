@@ -1,10 +1,12 @@
 import { type CSSProperties } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { api, TENANT_ID } from '@/api/client';
 import AppSidebar from '@/components/AppSidebar';
 import { notify } from '@/components/ui/app-toast';
 import { SidebarProvider } from '@/components/ui/sidebar';
 import { getEnterpriseAuthSession, isEnterpriseAdmin } from '@/auth';
+import { EnterpriseRoute } from '@/enums/routes';
 import type { AgentProfileRead } from '@/types';
 
 import EmployeeGalleryPage from '../EmployeeGalleryPage';
@@ -14,6 +16,7 @@ import ChatDialogs from './components/ChatDialogs';
 
 export default function ChatGalleryPage() {
   const chat = useChatSession();
+  const navigate = useNavigate();
   const auth = getEnterpriseAuthSession();
   const isAdmin = isEnterpriseAdmin(auth?.user);
 
@@ -54,6 +57,7 @@ export default function ChatGalleryPage() {
         sessionFilterOptions={chat.sessionFilterOptions}
         isSessionUnread={(session) => sessionHasUnreadReply(session, chat.sessionReadTimes, chat.sessionId)}
         onOpenSession={chat.openSession}
+        onOpenHome={() => navigate(EnterpriseRoute.Platform)}
         onOpenGallery={chat.openGallery}
         galleryActive
         handoffCount={chat.handoffs.length}

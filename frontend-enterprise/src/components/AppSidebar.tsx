@@ -197,6 +197,8 @@ export type AppSidebarChatProps = {
   isSessionUnread: (session: ChatSession) => boolean;
   onOpenSession: (id: string) => void;
   onNewConversation?: () => void;
+  /** Clicking the brand logo returns to the site landing page (开放广场「全部」). */
+  onOpenHome: () => void;
   onOpenGallery: () => void;
   /** Highlights the 数字员工广场 entry as the active menu (chat gallery route). */
   galleryActive?: boolean;
@@ -1209,6 +1211,7 @@ function CollapsedChatSidebar({
   isSessionUnread,
   onOpenSession,
   onNewConversation,
+  onOpenHome,
   onOpenGallery,
   galleryActive = false,
   handoffCount = 0,
@@ -1217,7 +1220,7 @@ function CollapsedChatSidebar({
   onToggle,
 }: Pick<
   AppSidebarChatProps,
-  'sessions' | 'sessionsLoading' | 'agents' | 'scopeTeams' | 'activeSessionId' | 'sessionFilter' | 'onSessionFilterChange' | 'sessionFilterOptions' | 'isSessionUnread' | 'onOpenSession' | 'onNewConversation' | 'onOpenGallery' | 'galleryActive' | 'handoffCount' | 'onOpenHandoffs' | 'onOpenAdmin'
+  'sessions' | 'sessionsLoading' | 'agents' | 'scopeTeams' | 'activeSessionId' | 'sessionFilter' | 'onSessionFilterChange' | 'sessionFilterOptions' | 'isSessionUnread' | 'onOpenSession' | 'onNewConversation' | 'onOpenHome' | 'onOpenGallery' | 'galleryActive' | 'handoffCount' | 'onOpenHandoffs' | 'onOpenAdmin'
 > & { onToggle: () => void }) {
   return (
     <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[20px] pt-[42px] pb-[10px]">
@@ -1226,7 +1229,7 @@ function CollapsedChatSidebar({
           type="button"
           title="返回首页"
           aria-label="返回首页"
-          onClick={onOpenGallery}
+          onClick={onOpenHome}
           className="flex items-center justify-center p-[10px] transition-opacity hover:opacity-70"
         >
           <BrandLogo markOnly />
@@ -1385,6 +1388,7 @@ function ChatSidebarVariant({
   isSessionUnread,
   onOpenSession,
   onNewConversation,
+  onOpenHome,
   onOpenGallery,
   galleryActive = false,
   handoffCount = 0,
@@ -1413,6 +1417,7 @@ function ChatSidebarVariant({
           isSessionUnread={isSessionUnread}
           onOpenSession={onOpenSession}
           onNewConversation={onNewConversation}
+          onOpenHome={onOpenHome}
           onOpenGallery={onOpenGallery}
           galleryActive={galleryActive}
           handoffCount={handoffCount}
@@ -1433,7 +1438,7 @@ function ChatSidebarVariant({
               type="button"
               title="返回首页"
               aria-label="返回首页"
-              onClick={onOpenGallery}
+              onClick={onOpenHome}
               className="flex flex-1 justify-center transition-opacity hover:opacity-70"
             >
               <BrandLogo />

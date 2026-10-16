@@ -161,7 +161,10 @@ describe('AppSidebar chat variant group conversations', () => {
     ],
   };
 
-  function renderChatSidebar(scopeTeams: TeamRead[] = [teamWithLeader]) {
+  function renderChatSidebar(
+    scopeTeams: TeamRead[] = [teamWithLeader],
+    handlers: { onOpenHome?: () => void; onOpenGallery?: () => void } = {},
+  ) {
     const sessions = [
       {
         id: 'session-tl',
@@ -195,7 +198,8 @@ describe('AppSidebar chat variant group conversations', () => {
               sessionFilterOptions={[{ value: 'all', label: '全部员工 · 2' }]}
               isSessionUnread={() => false}
               onOpenSession={() => {}}
-              onOpenGallery={() => {}}
+              onOpenHome={handlers.onOpenHome ?? (() => {})}
+              onOpenGallery={handlers.onOpenGallery ?? (() => {})}
               onRenameSession={() => {}}
               onDeleteSession={() => {}}
               onOpenAdmin={() => {}}
@@ -205,6 +209,18 @@ describe('AppSidebar chat variant group conversations', () => {
       </I18nProvider>,
     );
   }
+
+  it('logo 点击回到站点首页，而不是数字员工广场（对话端）', async () => {
+    const user = userEvent.setup();
+    const onOpenHome = vi.fn();
+    const onOpenGallery = vi.fn();
+    renderChatSidebar([teamWithLeader], { onOpenHome, onOpenGallery });
+
+    await user.click(screen.getByLabelText('返回首页'));
+
+    expect(onOpenHome).toHaveBeenCalledTimes(1);
+    expect(onOpenGallery).not.toHaveBeenCalled();
+  });
 
   it('renders employee sessions and team groups as different conversation types', () => {
     renderChatSidebar();
