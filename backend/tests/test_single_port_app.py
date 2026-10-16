@@ -294,11 +294,16 @@ async def test_anthropic_messages_relay_uses_dedicated_upstream(monkeypatch) -> 
 
 
 def test_root_redirects_to_the_plaza_home() -> None:
-    """/ 是站点默认落地页：必须落到「首页」/enterprise/home，而不是对话端 /chat/。"""
+    """/ 是站点默认落地页：必须落到开放广场「全部」tab，而不是对话端 /chat/。
+
+    2026-10-13 站点头页下线，首页能力（热门总览/快捷访问/新闻）并入广场「全部」
+    tab，故 /enterprise/home 退化为跳转到 /enterprise/platform 的别名
+    （后端 single_port_app.root_redirect、前端 App.tsx 两处保持一致）。
+    """
     response = single_port_app.root_redirect()
 
     assert response.status_code == 307
-    assert response.headers["location"] == "/enterprise/home"
+    assert response.headers["location"] == "/enterprise/platform"
 
 
 def test_share_route_serves_spa_index(monkeypatch, tmp_path: Path) -> None:
