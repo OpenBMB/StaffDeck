@@ -67,7 +67,7 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
 <body>
 <table>
   <tr><td class="lb">报销类型</td><td><div class="ant-select" data-fieldmark="field6970" data-options="差旅费用|日常费用|公务限额费用"></div></td>
-      <td class="lb">公司名称</td><td><div class="ant-select" data-fieldmark="field6969" data-options="上海复星旅游管理有限公司|珠海市横琴复星旅文旅游发展有限公司"></div></td></tr>
+      <td class="lb">公司名称</td><td><div class="ant-select" data-fieldmark="field6969" data-options="上海复星旅游管理有限公司|珠海市横琴复星旅文旅游发展有限公司|上海忞轸信息科技有限公司"></div></td></tr>
   <tr><td class="lb">是否含超标</td><td><div class="ant-select" data-fieldmark="field7014" data-options="是|否"></div></td>
       <td class="lb">是否差旅/业务招待报销</td><td><div class="ant-select" data-fieldmark="field6974" data-options="是|否"></div></td></tr>
   <tr><td class="lb">报销事由</td><td colspan="3"><input id="field6946"></td></tr>

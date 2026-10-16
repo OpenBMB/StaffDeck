@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { api, TENANT_ID } from '@/api/client';
 import { cn } from '@/lib/utils';
 import { reveal, settle, prefersReducedMotion } from '@/lib/motion';
+import { findAgentCatalogEntry } from '@/lib/agentCatalog';
+import { emitAgentScopeChange, persistSharedAgentScope } from '@/lib/agent-scope-storage';
 import { NewsPanel, QuickAccessTiles } from '@/components/openPlatform/PlazaWidgets';
 
 /**
@@ -10,7 +12,9 @@ import { NewsPanel, QuickAccessTiles } from '@/components/openPlatform/PlazaWidg
  *
  * 氛围层（极光光斑 / 26px 点阵 / 噪点颗粒）+ 编辑式大标题 +
  * 左列：№1 主推大卡（鼠标追光 + 3D 倾斜）+ 热门排行榜 Top 10（真实计数，
- * 后端 /api/enterprise/plaza-hot 与广场可见性同口径）；点击任一行/主推卡跳对应广场 tab。
+ * 后端 /api/enterprise/plaza-hot 与广场可见性同口径）。
+ * 点击行为见 `openHotItem`：榜单里的「数字员工」直进该员工的工作台（不落在广场 tab），
+ * 目录型 Agent（如 OA 单据助手）进对应工作台路由，其余资源类型仍跳对应广场 tab。
  * 右列：快捷访问画布（可编辑摆放）+ 首页同款新闻（AI 圈 · 旅文圈）。
  */
 
@@ -356,6 +360,36 @@ export default function PlazaAllTab({ toolbar }: { toolbar?: ReactNode }) {
 
   const openKind = (kind: string) => navigate(`/enterprise/platform/${kind}`);
 
+  /**
+   * 榜单成员的「打开」落点。
+   *
+   * 数字员工（kind === 'agents'）在榜单里只是一个名字 + 热度，跳进广场 tab 等于把用户
+   * 丢回列表再让他自己找一遍，所以这里直进该员工的工作台：
+   * 1. 目录型 Agent（`agent-catalog.json` 里的条目，如 OA 单据助手）→ 工作台路由
+   *    `/enterprise/agent-apps/:entry`，它们在 `agent_profiles` 里没有记录，不能走员工作用域；
+   * 2. 真·数字员工 → 先 `/use` 收进「我的数字员工」（失败也不挡跳转），再切换当前员工
+   *    作用域并落到员工工作台，与「我的数字员工」列表点卡片的落点保持一致。
+   *
+   * 其余类型（技能 / SOP / 知识库）没有单资源页，保持跳对应广场 tab。
+   */
+  const openHotItem = (item: HotItem) => {
+    if (item.kind !== 'agents') {
+      openKind(item.kind);
+      return;
+    }
+    const catalogEntry = findAgentCatalogEntry(item.ref_id);
+    if (catalogEntry) {
+      navigate(`/enterprise/agent-apps/${encodeURIComponent(catalogEntry.entry)}`);
+      return;
+    }
+    void api
+      .post(`/api/chat/agents/${encodeURIComponent(item.ref_id)}/use?tenant_id=${TENANT_ID}`, {})
+      .catch(() => {});
+    persistSharedAgentScope(item.ref_id);
+    emitAgentScopeChange(item.ref_id);
+    navigate('/enterprise/dashboard');
+  };
+
   return (
     <div className="relative">
       <Atmosphere />
@@ -385,7 +419,7 @@ export default function PlazaAllTab({ toolbar }: { toolbar?: ReactNode }) {
             )}
             {!error && champion && (
               <>
-                <ChampionCard item={champion} onOpen={() => openKind(champion.kind)} />
+                <ChampionCard item={champion} onOpen={() => openHotItem(champion)} />
 
                 <section
                   aria-label="热门排行榜"
@@ -422,7 +456,7 @@ export default function PlazaAllTab({ toolbar }: { toolbar?: ReactNode }) {
                         rank={index + 2}
                         index={index}
                         percent={Math.round((item.score / maxScore) * 100)}
-                        onOpen={() => openKind(item.kind)}
+                        onOpen={() => openHotItem(item)}
                       />
                     ))}
                     {rest.length === 0 && (

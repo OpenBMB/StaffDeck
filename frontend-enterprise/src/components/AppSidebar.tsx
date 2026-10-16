@@ -593,7 +593,13 @@ function CollapsedSidebar({
   return (
     <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[16px] pt-[42px] pb-[10px]">
       <div className="flex w-full flex-col items-center gap-[10px]">
-        <button type="button" title="开放广场" className="flex items-center justify-center p-[10px]">
+        <button
+          type="button"
+          onClick={() => onNavigate(EnterpriseRoute.Platform)}
+          title="返回首页"
+          aria-label="返回首页"
+          className="flex items-center justify-center p-[10px] transition-opacity hover:opacity-70"
+        >
           <BrandLogo markOnly />
         </button>
         <Tooltip>
@@ -738,7 +744,13 @@ function ManagementSidebar({
       <div className="flex h-full w-(--sidebar-width) shrink-0 flex-col">
       <SidebarHeader className="gap-[16px] px-[20px] pt-[32px] group-data-[collapsible=icon]:px-[20px]">
         <div className="flex items-center justify-between">
-          <button type="button" title="开放广场" className="flex flex-1 justify-center">
+          <button
+            type="button"
+            onClick={() => onNavigate(EnterpriseRoute.Platform)}
+            title="返回首页"
+            aria-label="返回首页"
+            className="flex flex-1 justify-center transition-opacity hover:opacity-70"
+          >
             <BrandLogo wordmarkClassName="group-data-[collapsible=icon]:hidden" />
           </button>
           {!brandCollapsed && (
@@ -1210,7 +1222,13 @@ function CollapsedChatSidebar({
   return (
     <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[20px] pt-[42px] pb-[10px]">
       <div className="flex w-full flex-col items-center gap-[10px]">
-        <button type="button" title="数字员工广场" onClick={onOpenGallery} className="flex items-center justify-center p-[10px]">
+        <button
+          type="button"
+          title="返回首页"
+          aria-label="返回首页"
+          onClick={onOpenGallery}
+          className="flex items-center justify-center p-[10px] transition-opacity hover:opacity-70"
+        >
           <BrandLogo markOnly />
         </button>
         <Tooltip>
@@ -1411,7 +1429,13 @@ function ChatSidebarVariant({
       <div className="flex h-full w-(--sidebar-width) shrink-0 flex-col">
         <SidebarHeader className="gap-[16px] px-[20px] pt-[32px]">
           <div className="flex items-center justify-between">
-            <button type="button" title="数字员工广场" onClick={onOpenGallery} className="flex flex-1 justify-center">
+            <button
+              type="button"
+              title="返回首页"
+              aria-label="返回首页"
+              onClick={onOpenGallery}
+              className="flex flex-1 justify-center transition-opacity hover:opacity-70"
+            >
               <BrandLogo />
             </button>
             <button

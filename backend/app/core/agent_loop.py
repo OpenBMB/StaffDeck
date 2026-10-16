@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Iterator
 from time import sleep
 from typing import Any, Literal
@@ -15,6 +16,7 @@ from app.agents.branching import (
 )
 from app.agents.free_model import resolve_turn_default_model
 from app.channels.service_outbox import stage_channel_delivery
+from app.chat_pubsub import publish_relay_wake
 from app.core.agent_identity_prompt import AgentIdentityPrompt
 from app.core.cancellation import clear_chat_turn_cancelled
 from app.core.conversation_context import (
@@ -81,6 +83,19 @@ from app.tools.tool_schema import ToolResult
 logger = logging.getLogger(__name__)
 
 STREAM_CHUNK_INTERVAL_SECONDS = 0.045
+STREAM_CHUNK_SIZE = 8
+# 真流式增量的落库节流：模型碎片可能来得远快于人的阅读节奏，逐片写库 + 推送
+# 会把 relay 变成高频小包。合并到 60ms 一档再落库，既保留「随到随显」的观感，
+# 又把写库次数压到 ~16 次/秒以内；合并只影响可见节奏，不拖慢本轮完成时间。
+STREAM_DELTA_FLUSH_INTERVAL_SECONDS = 0.06
+STREAM_DELTA_FLUSH_MAX_CHARS = 400
+# 每一次落库都是一次 DB 往返（生产环境为远程 PG），长回答若始终按 60ms 一档
+# 落库，写库耗时会被累加进本轮收尾。这里给整段生成一个写库次数上限，超过后
+# 按已流逝时间反推间隔，把写库次数锁在常数级。
+STREAM_DELTA_MAX_FLUSHES = 150
+# 兜底打字机预算：没有真流式可用的轮次（直出回复、固定话术）按整轮最多多花
+# 2.5 秒铺开，取代原先「一次性暴发」。
+STREAM_TYPING_BUDGET_SECONDS = 2.5
 MAX_TOOL_ACTIONS_PER_TURN = 32
 MAX_TOOL_ACTIONS_PER_TURN_LIMIT = 100
 GRAPH_PENDING_STEPS_SLOT = "_graph_pending_steps"
@@ -142,6 +157,115 @@ class AgentLoopPreconditionError(Exception):
         self.message = message
 
 
+class TurnStreamSink:
+    """流式轮次的实时投递器：执行期阶段状态 + 生成期增量文本。
+
+    改造前 ``handle_turn_stream`` 要先等 ``handle_turn`` 整轮跑完才能拿到
+    ``response.reply`` 再切块下发，纯问答轮次因此要等「整轮耗时」才有第一个字。
+    本类让执行期与生成期都能持续写入 ``AgentEvent`` relay 行并唤醒订阅该会话的
+    SSE，前端看到的节奏变成「执行结束 + TTFT」。
+
+    只在流式路径挂载：非流式 ``handle_turn`` 不构造它，行为与改造前一致。
+    """
+
+    def __init__(self, owner: AgentLoop) -> None:
+        self._owner = owner
+        self._tenant_id = ""
+        self._session_id = ""
+        self._buffer: list[str] = []
+        self._last_flush_at = 0.0
+        self._started_at: float | None = None
+        self.streamed_chars = 0
+
+    @property
+    def active(self) -> bool:
+        return bool(self._tenant_id and self._session_id)
+
+    @property
+    def streamed(self) -> bool:
+        return self.streamed_chars > 0
+
+    def bind(self, tenant_id: str, session_id: str) -> None:
+        self._tenant_id = str(tenant_id or "")
+        self._session_id = str(session_id or "")
+        self._buffer = []
+        self._last_flush_at = 0.0
+        self._started_at = None
+        self.streamed_chars = 0
+
+    def status(self, phase: str, text: str, **extra: object) -> None:
+        if not self.active:
+            return
+        self._record("stream_status", {"phase": phase, "text": text, **extra})
+
+    def delta(self, chunk: str) -> None:
+        if not self.active or not chunk:
+            return
+        now = time.monotonic()
+        if self._started_at is None:
+            self._started_at = now
+        self._buffer.append(chunk)
+        self.streamed_chars += len(chunk)
+        pending = sum(len(item) for item in self._buffer)
+        if (
+            now - self._last_flush_at < self._flush_interval(now)
+            and pending < STREAM_DELTA_FLUSH_MAX_CHARS
+        ):
+            return
+        self.flush()
+
+    def _flush_interval(self, now: float) -> float:
+        """落库最小间隔：短回复固定 60ms，长回复按上限次数自动摊开。"""
+
+        if self._started_at is None:
+            return STREAM_DELTA_FLUSH_INTERVAL_SECONDS
+        elapsed = max(0.0, now - self._started_at)
+        return max(
+            STREAM_DELTA_FLUSH_INTERVAL_SECONDS,
+            elapsed / STREAM_DELTA_MAX_FLUSHES,
+        )
+
+    def flush(self) -> None:
+        if not self.active or not self._buffer:
+            return
+        content = "".join(self._buffer)
+        self._buffer = []
+        self._last_flush_at = time.monotonic()
+        self._record("stream_delta", {"content": content})
+
+    def reset(self) -> None:
+        """丢弃已下发的增量（生成中途失败降级时用，避免残留半截文本）。
+
+        清空 ``streamed_chars`` 让调用方知道「流式内容已作废」，可以安全地
+        按老路径重新分片下发。
+        """
+        if not self.active:
+            return
+        self._buffer = []
+        self.streamed_chars = 0
+        self._last_flush_at = 0.0
+        self._started_at = None
+        self._record("stream_replace", {"content": ""})
+
+    def replace(self, content: str) -> None:
+        """用给定正文原地替换已下发内容（最终正文不可续写时用）。"""
+        if not self.active:
+            return
+        self._buffer = []
+        self._last_flush_at = time.monotonic()
+        self.streamed_chars = len(content)
+        self._record("stream_replace", {"content": content})
+
+    def _record(self, event_type: str, payload: dict[str, object]) -> None:
+        self._owner.events.record(
+            self._tenant_id, self._session_id, event_type, dict(payload)
+        )
+        self._owner.db.commit()
+        # relay 行已提交：唤醒监听该会话的 SSE 流（Redis 不可用时为 no-op，
+        # SSE 走兜底轮询，正确性不受影响）。
+        publish_relay_wake(self._session_id)
+
+
 class AgentLoop:
     def __init__(
         self,
@@ -154,6 +278,8 @@ class AgentLoop:
         self.runtime = SkillRuntime()
         self.response_generator = ResponseGenerator()
         self.memory = MemoryService(db)
+        # 仅流式轮次挂载（见 _handle_turn_stream_v2）；非流式路径恒为 None。
+        self.turn_stream: TurnStreamSink | None = None
 
     def _turn_payload(self, payload: dict[str, Any], user_message_id: str | None) -> dict[str, Any]:
         data = dict(payload)
@@ -163,7 +289,7 @@ class AgentLoop:
         return data
 
     def handle_turn(self, request: ChatTurnRequest) -> ChatTurnResponse:
-        engine = HarnessV2Engine(self)
+        engine = HarnessV2Engine(self, turn_stream=self.turn_stream)
         chat_session: ChatSession | None = None
         user_message_id: str | None = None
         step_result = StepAgentResult(action="reply")
@@ -341,7 +467,16 @@ class AgentLoop:
             {"execution_engine": "harness_v2"},
             user_message_id=initial_turn_id,
         )
-        response = self.handle_turn(scoped_request)
+        # 真流式：把 sink 挂到本轮 AgentLoop 上，harness_v2 在执行期（检索/调工具）
+        # 与生成期（最终回复）都能把内容实时写给 SSE relay，而不是等整轮跑完。
+        sink = TurnStreamSink(self)
+        sink.bind(chat_session.tenant_id, chat_session.id)
+        self.turn_stream = sink
+        try:
+            response = self.handle_turn(scoped_request)
+        finally:
+            self.turn_stream = None
+        sink.flush()
         chat_session = self.db.get(ChatSession, response.session_id)
         if chat_session is None:
             return
@@ -406,20 +541,43 @@ class AgentLoop:
                 ),
             )
             return
-        for chunk in self.response_generator.chunk_text(response.reply):
-            event = self._stream_event(
-                "stream_delta",
-                chat_session,
-                self._turn_payload(
-                    {
-                        "content": chunk,
-                        "execution_engine": "harness_v2",
-                    },
-                    resolved_turn_id,
-                ),
+        if sink.streamed:
+            # 生成期已经真流式下发过正文，这里不再重发一遍；最终正文由
+            # assistant_message_created / 会话消息刷新校准（前端 stream_replace）。
+            pass
+        else:
+            # 无真流式可用的轮次（直出回复、固定话术、结构化结果）回退打字机节奏，
+            # 取代原先「整段一次性暴发」。整轮额外耗时以
+            # STREAM_TYPING_BUDGET_SECONDS 为上限，长回复自动加快单字间隔。
+            chunks = list(
+                self.response_generator.chunk_text(
+                    response.reply, chunk_size=STREAM_CHUNK_SIZE
+                )
             )
-            self.db.commit()
-            yield event
+            interval = (
+                min(
+                    STREAM_CHUNK_INTERVAL_SECONDS,
+                    STREAM_TYPING_BUDGET_SECONDS / len(chunks),
+                )
+                if chunks
+                else 0.0
+            )
+            for index, chunk in enumerate(chunks):
+                if index:
+                    sleep(interval)
+                event = self._stream_event(
+                    "stream_delta",
+                    chat_session,
+                    self._turn_payload(
+                        {
+                            "content": chunk,
+                            "execution_engine": "harness_v2",
+                        },
+                        resolved_turn_id,
+                    ),
+                )
+                self.db.commit()
+                yield event
         end_event = self._stream_event(
             "stream_end",
             chat_session,

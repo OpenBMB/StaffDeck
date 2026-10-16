@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Iterator
 from copy import deepcopy
 from typing import Any
 
@@ -232,6 +233,29 @@ def _direct_reply_answer(
     抛给调用方降级到标准 Harness 路径，不劣于现状。
     """
 
+    return "".join(
+        _direct_reply_answer_stream(
+            message,
+            persona_prompt,
+            memory_context,
+            conversation_context,
+            answer_model_config,
+            capability_summary=capability_summary,
+        )
+    ).strip()
+
+
+def _direct_reply_answer_stream(
+    message: str,
+    persona_prompt: str | None,
+    memory_context: list[dict[str, Any]],
+    conversation_context: dict[str, Any] | None,
+    answer_model_config: Any,
+    capability_summary: str | None = None,
+) -> Iterator[str]:
+    """``_direct_reply_answer`` 的流式版本：同一个请求体，改用
+    ``generate_text_stream``，让纯问答轮次的首字延迟降到 TTFT。"""
+
     from app.core import response_generator as response_generator_module
 
     if capability_summary:
@@ -278,8 +302,57 @@ def _direct_reply_answer(
     from app.observability.spans import llm_operation
 
     with llm_operation("response.direct_reply"):
-        text = LLMClient(answer_model_config).generate_text(unified_system_prompt(), payload)
-    return text.strip()
+        yield from LLMClient(answer_model_config).generate_text_stream(
+            unified_system_prompt(), payload
+        )
+
+
+# 执行期 trace 事件 → 前端可读的 stream_status。
+# phase 一律取前端既有词表里的值（前端零改动即可渲染），text 用中文描述当前
+# 阶段；前端把 status 行按 `decision_status_<phase>` 归并，因此同一 phase 的
+# 连续状态会原地刷新成「当前在做什么」，而不是堆出一串历史行。
+_TRACE_STREAM_STATUS: dict[str, tuple[str, str]] = {
+    "knowledge_source_read": ("preparing", "读取知识来源"),
+    "knowledge_payload_compacted": ("preparing", "整理知识证据"),
+    "capability_search_completed": ("preparing", "匹配可用能力"),
+    "capability_described": ("preparing", "加载能力说明"),
+    "harness_action_model_retry": ("preparing", "模型输出异常，正在重试"),
+    "harness_action_repair_requested": ("preparing", "正在修正模型输出格式"),
+    "harness_completion_blocked": ("preparing", "正在补足必需能力后重试"),
+    "harness_action_sequence_accepted": ("preparing", "按模型给出的动作序列执行"),
+    "harness_structured_result_adapted": ("preparing", "整理结构化业务结果"),
+    "sop_slot_extraction": ("preparing", "正在提取槽位信息"),
+}
+
+
+def _stream_status_for_trace(
+    event_type: str,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """把 harness 执行期的 trace 事件翻译成用户可见的等待提示。
+
+    只有「用户此刻确实在等」的环节才翻译；finish 动作不产生新行，
+    避免静默结束前多出一条无意义的滚动状态。
+    """
+
+    if event_type == "harness_action_created":
+        tool_name = str(payload.get("tool_name") or "").strip()
+        if not tool_name:
+            return None
+        return {
+            "phase": "preparing",
+            "text": f"正在调用工具 {tool_name}",
+            "tool_name": tool_name,
+        }
+    mapped = _TRACE_STREAM_STATUS.get(event_type)
+    if mapped is None:
+        return None
+    phase, text = mapped
+    extra: dict[str, Any] = {}
+    query = str(payload.get("query") or "").strip()
+    if query:
+        extra["query"] = query
+    return {"phase": phase, "text": text, **extra}
 
 
 def _apply_forced_sop_snapshot(
@@ -362,10 +435,12 @@ def _turn_slash_selection(request: ChatTurnRequest) -> SlashCommandSelection | N
 class HarnessV2Engine:
     """Outer planner + durable TaskFrame scheduler + isolated Harness runs."""
 
-    def __init__(self, owner: Any) -> None:
+    def __init__(self, owner: Any, *, turn_stream: Any | None = None) -> None:
         self.owner = owner
         self.db = owner.db
         self.events = owner.events
+        # 流式轮次的实时投递器（AgentLoop.TurnStreamSink）；非流式路径恒为 None。
+        self.turn_stream = turn_stream
         self.planner = TurnPlanner()
         self.compiler = TaskRequestCompiler()
         self.manifests = CapabilityManifestBuilder(self.db)
@@ -385,6 +460,125 @@ class HarnessV2Engine:
         self.slash_command: SlashCommandSelection | None = None
         self._session_lock: Any | None = None
         self._session_lock_id: str | None = None
+
+    def _emit_stream_status(self, phase: str, text: str, **extra: Any) -> None:
+        stream = self.turn_stream
+        if stream is None:
+            return
+        stream.status(phase, text, **extra)
+
+    def _emit_stream_delta(self, chunk: str) -> None:
+        stream = self.turn_stream
+        if stream is None or not chunk:
+            return
+        stream.delta(chunk)
+
+    def _trace_stream_status(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """把 harness trace 事件翻译成等待期可见的状态（流式轮次才生效）。"""
+
+        if self.turn_stream is None:
+            return
+        status = _stream_status_for_trace(event_type, payload)
+        if status is None:
+            return
+        phase = str(status.pop("phase"))
+        text = str(status.pop("text"))
+        self._emit_stream_status(phase, text, **status)
+
+    def _answer_direct_reply(
+        self,
+        message: str,
+        persona_prompt: str | None,
+        memory_context: list[dict[str, Any]],
+        conversation_context: dict[str, Any] | None,
+        answer_model: Any,
+        *,
+        capability_summary: str | None = None,
+    ) -> str:
+        """direct_reply / capability_intro 直出回复（流式轮次真流式下发）。"""
+
+        stream = self.turn_stream
+        if stream is None:
+            return _direct_reply_answer(
+                message,
+                persona_prompt,
+                memory_context,
+                conversation_context,
+                answer_model,
+                capability_summary=capability_summary,
+            )
+        self._emit_stream_status("preparing", "正在生成回复")
+        parts: list[str] = []
+        for chunk in _direct_reply_answer_stream(
+            message,
+            persona_prompt,
+            memory_context,
+            conversation_context,
+            answer_model,
+            capability_summary=capability_summary,
+        ):
+            parts.append(chunk)
+            self._emit_stream_delta(chunk)
+        return "".join(parts).strip()
+
+    def _synthesize_reply(
+        self,
+        request: ChatTurnRequest,
+        execution_request: ChatTurnRequest,
+        session: ChatSession,
+        response_skill: Skill | None,
+        router_decision: Any,
+        last_step_result: StepAgentResult,
+        model_config: Any,
+        memory_context: list[dict[str, object]],
+        conversation_context: dict[str, Any] | None,
+        execution_payloads: list[dict[str, object]],
+    ) -> str:
+        """本轮最终回复的综合生成。
+
+        流式轮次改用 ``generate_stream`` 边收边发（首字延迟 = TTFT，而不是整轮
+        耗时）；非流式轮次保持原 ``generate`` 调用，行为完全不变。
+        """
+
+        arguments = (
+            execution_request.message,
+            session,
+            response_skill,
+            router_decision,
+            last_step_result,
+            None,
+            model_config,
+            self.owner._get_persona_prompt(request.tenant_id, session.agent_id),
+            memory_context,
+            conversation_context,
+            execution_payloads,
+        )
+        stream = self.turn_stream
+        if stream is None:
+            return self.owner.response_generator.generate(*arguments)
+        self._emit_stream_status("preparing", "正在生成回复")
+        parts: list[str] = []
+        try:
+            for chunk in self.owner.response_generator.generate_stream(*arguments):
+                parts.append(chunk)
+                self._emit_stream_delta(chunk)
+        except Exception as exc:  # noqa: BLE001 - 兜底口径与 generate() 对齐
+            from app.core.response_generator import (
+                format_runtime_failure_reply,
+                model_failure_suggestion,
+            )
+
+            failure = format_runtime_failure_reply(
+                "模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc)
+            )
+            # 生成中途断流：已下发的半截正文作废，原地换成报错文案。
+            stream.replace(failure)
+            return failure
+        return "".join(parts)
 
     def run(self, request: ChatTurnRequest) -> ChatTurnResponse:
         session_request = _with_recoverable_first_session(request)
@@ -724,6 +918,9 @@ class HarnessV2Engine:
         execution_results: list[TaskExecutionResult] = []
         last_step_result = StepAgentResult()
         last_skill: Skill | None = None
+        if records:
+            # 规划已结束、进入执行：给等待期一个明确的阶段提示（流式轮次才生效）。
+            self._emit_stream_status("preparing", "正在执行任务")
 
         for record_index, row in enumerate(records):
             self._renew_session_lease()
@@ -925,15 +1122,14 @@ class HarnessV2Engine:
                 f"已完成 {task_count} 个团队任务的拆分与派发。"
             )
         if reply is None:
-            reply = self.owner.response_generator.generate(
-                execution_request.message,
+            reply = self._synthesize_reply(
+                request,
+                execution_request,
                 session,
                 response_skill,
                 router_decision,
                 last_step_result,
-                None,
                 model_config,
-                self.owner._get_persona_prompt(request.tenant_id, session.agent_id),
                 memory_context,
                 conversation_context,
                 execution_payloads,
@@ -1109,7 +1305,7 @@ class HarnessV2Engine:
                     # 没有任何可介绍的能力：仍可直出（提示语会引导模型坦率说明），
                     # 但传 None 会走问候分支，因此显式给一个空清单说明。
                     capability_summary = "（当前该数字员工暂无可介绍的业务能力。）"
-            reply = _direct_reply_answer(
+            reply = self._answer_direct_reply(
                 execution_request.message,
                 persona_prompt,
                 memory_context,
@@ -1118,6 +1314,10 @@ class HarnessV2Engine:
                 capability_summary=capability_summary,
             )
         except Exception as exc:  # noqa: BLE001 - 降级到标准路径
+            # 生成中途失败：清掉已下发的半截增量，避免降级到标准路径后
+            # 两段互不相关的文本拼在一起。
+            if self.turn_stream is not None:
+                self.turn_stream.reset()
             row.status = "queued"
             row.updated_at = utc_now()
             self.db.add(row)
@@ -1347,6 +1547,9 @@ class HarnessV2Engine:
                 # each trace checkpoint so the stream relay can expose the
                 # running TaskFrame instead of revealing it only at the end.
                 self.db.commit()
+                # 流式轮次：把「检索知识库 / 正在调用工具 X / 模型输出异常重试」
+                # 等执行期环节翻译成等待期可见的状态，避免界面上「卡死」。
+                self._trace_stream_status(event_type, payload)
 
             invoker = HarnessCapabilityInvoker(
                 self.db,

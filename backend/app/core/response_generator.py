@@ -136,6 +136,7 @@ class ResponseGenerator:
             task_results,
         )
         payload = self._stage_payload(raw_payload, persona_prompt)
+        has_streamed = False
         try:
             if tool_result and not tool_result.success and not task_results:
                 yield from self.chunk_text(tool_failure_reply(tool_result))
@@ -148,7 +149,6 @@ class ResponseGenerator:
                     unified_system_prompt(), payload
                 )
                 reply_parts: list[str] = []
-                has_streamed = False
                 for chunk in stream:
                     if not chunk:
                         continue
@@ -172,6 +172,10 @@ class ResponseGenerator:
             yield from self.chunk_text(reply)
             return
         except Exception as exc:
+            if has_streamed:
+                # 已经下发过正文：再追加一段报错会拼出「半截正文 + 报错」的脏
+                # 文本，交给调用方决定如何收尾（与 generate() 的兜底口径一致）。
+                raise
             yield from self.chunk_text(
                 format_runtime_failure_reply("模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc))
             )

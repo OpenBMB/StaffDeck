@@ -87,6 +87,14 @@ async function runScenario(page, host, id, opts = {}) {
     await host.locator('input[type=file]').first().setInputFiles(opts.files);
     await page.waitForTimeout(2200);
   }
+  if (opts.companyName) {
+    // 公司名称：可搜索 + 可自定义的下拉（交互对齐「模型配置」里的模型下拉）
+    await host.locator('[data-role="company-trigger"]').click();
+    const cSearch = host.locator('[data-role="company-search"]');
+    await cSearch.fill(opts.companyName);
+    await cSearch.press('Enter');
+    await page.waitForTimeout(300);
+  }
   if (opts.otherFiles && opts.otherFiles.length) {
     // 面板的第二个文件框 = 其他参考资料
     await host.locator('input[type=file]').nth(1).setInputFiles(opts.otherFiles);
@@ -468,6 +476,33 @@ if (HOTEL && TRAIN) {
   const after = await (await fetch(BASE + '/api/enterprise/oa-assistant/usage')).json();
   check('计次 计数 +1', after.usage_count === before.usage_count + 1,
     before.usage_count + ' → ' + after.usage_count);
+}
+
+// 18) 公司名称：可搜索 + 可自定义的下拉（对齐「模型配置」的模型下拉）
+if (HOTEL) {
+  const host = await injectPanel(page);
+  // ① 候选列表：展开即有常用项，当前值打勾，输入可过滤
+  await host.locator('select').first().selectOption('company_payment');
+  await host.locator('[data-role="company-trigger"]').click();
+  const opts0 = await host.locator('[data-role="company-option"]').allTextContents();
+  const cSearch = host.locator('[data-role="company-search"]');
+  check('公司名称 展开有常用候选且当前值打勾', opts0.length >= 2 && opts0[0].startsWith('✓'), JSON.stringify(opts0));
+  await cSearch.fill('横琴');
+  const opts1 = await host.locator('[data-role="company-option"]').allTextContents();
+  check('公司名称 输入可过滤候选', opts1.length === 1 && opts1[0].indexOf('横琴') >= 0, JSON.stringify(opts1));
+  await cSearch.fill('上海忞轸信息科技有限公司');
+  check('公司名称 不在候选里时给「使用自定义名称」', (await host.locator('[data-role="company-custom"]').count()) === 1, '');
+  await cSearch.press('Enter');
+  check('公司名称 回车即用自定义名称', (await host.locator('[data-role="company-trigger"]').textContent()).indexOf('上海忞轸') >= 0,
+    (await host.locator('[data-role="company-trigger"]').textContent()).trim());
+
+  // ② 代填：自定义名称走 OA 联想选中（该名称不在面板预设列表里）
+  await host.locator('input[type=file]').first().setInputFiles([HOTEL]);
+  await page.waitForTimeout(2200);
+  await host.locator('button:has-text("代填")').first().click();
+  await page.waitForTimeout(14000);
+  const oa = await readOa(page);
+  check('公司名称 自定义全称被 OA 选中', oa.company === '上海忞轸信息科技有限公司', oa.company);
 }
 
 await browser.close();
