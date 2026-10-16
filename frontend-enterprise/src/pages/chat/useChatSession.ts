@@ -39,6 +39,7 @@ import {
   visibleChatEmployees,
 } from '@/employee';
 import { notify } from '@/components/ui/app-toast';
+import { knowledgeCitationsHidden } from './chatHelpers';
 import { useI18n } from '@/i18n';
 import type {
   AgentProfileRead,
@@ -411,6 +412,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     show_thinking_trace: true,
     show_skill_trace: true,
     show_tool_trace: true,
+    show_knowledge_citations: true,
     reflection_max_rounds: 1,
     agent_loop_max_actions: 32,
     context_token_budget: 32_000,
@@ -3785,8 +3787,12 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     auth,
     SHOW_DEBUG,
     lastTurn,
-    // 分享访客不展示「知识来源」引用卡片：来源指向站内知识库，对外不可见
-    hideKnowledgeCitations: shareMode,
+    // 「知识来源」引用卡片：分享访客不展示（来源指向站内知识库，对外不可见），
+    // 超级管理员在租户配置里关掉 show_knowledge_citations 后全租户也不展示。
+    hideKnowledgeCitations: knowledgeCitationsHidden({
+      shareMode,
+      showKnowledgeCitations: uiConfig.show_knowledge_citations,
+    }),
     // sessions + agents
     sessionsLoading,
     visibleSidebarSessions,

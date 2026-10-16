@@ -168,11 +168,14 @@ export default function TeamCollaborationPanel({
   agents,
   conversation,
   onOpenCitation,
+  hideCitations = false,
 }: {
   team: TeamRead;
   agents: AgentProfileRead[];
   conversation?: TeamConversationRead;
   onOpenCitation?: (citation: KnowledgeCitation) => void;
+  /** 与主对话同一口径：分享访客或租户关闭「知识来源」时，协作记录里也不渲染来源卡片。 */
+  hideCitations?: boolean;
 }) {
   const loadedConversations = useTeamCollaborations(conversation ? undefined : team);
   const conversations = conversation ? [conversation] : loadedConversations;
@@ -473,10 +476,12 @@ export default function TeamCollaborationPanel({
                           tenantId={TENANT_ID}
                           sessionId={conversation.session_id}
                         />
-                        <KnowledgeCitationList
-                          citations={citations}
-                          onOpen={(citation) => onOpenCitation?.(citation)}
-                        />
+                        {!hideCitations && (
+                          <KnowledgeCitationList
+                            citations={citations}
+                            onOpen={(citation) => onOpenCitation?.(citation)}
+                          />
+                        )}
                       </div>
                     );
                   })}

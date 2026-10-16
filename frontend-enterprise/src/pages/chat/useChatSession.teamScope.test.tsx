@@ -85,6 +85,48 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
+describe('useChatSession 知识来源展示口径', () => {
+  /** 除 ui-config 外都走默认空响应；ui-config 按传入字段返回。 */
+  function stubUiConfigFetch(showKnowledgeCitations: boolean | undefined) {
+    const payload: Record<string, unknown> = {
+      tenant_id: 'tenant_demo',
+      show_thinking_trace: true,
+      show_skill_trace: true,
+      show_tool_trace: true,
+    };
+    if (showKnowledgeCitations !== undefined) payload.show_knowledge_citations = showKnowledgeCitations;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/chat/ui-config')) return jsonResponse(payload);
+      if (url.includes('/api/chat/')) return jsonResponse([]);
+      if (url.includes('/api/enterprise/')) return jsonResponse([]);
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('租户关掉「展示知识来源」后 hideKnowledgeCitations 变 true', async () => {
+    const fetchMock = stubUiConfigFetch(false);
+    const { result } = renderChatSession('/workspace/chat');
+
+    await waitFor(() => {
+      expect(result.current.hideKnowledgeCitations).toBe(true);
+    });
+    expect(fetchMock.mock.calls.map((call) => String(call[0])).some((url) => url.includes('/api/chat/ui-config'))).toBe(true);
+  });
+
+  it('未配置该字段（老后端）时保持展示', async () => {
+    const fetchMock = stubUiConfigFetch(undefined);
+    const { result } = renderChatSession('/workspace/chat');
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.map((call) => String(call[0])).some((url) => url.includes('/api/chat/ui-config'))).toBe(true);
+    });
+    expect(result.current.hideKnowledgeCitations).toBe(false);
+  });
+});
+
 describe('useChatSession team scope', () => {
   it('syncs the shared scope for an active team group', async () => {
     window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, 'agent-1');

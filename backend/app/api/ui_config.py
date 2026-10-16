@@ -32,6 +32,7 @@ class UIConfigRead(BaseModel):
     show_thinking_trace: bool
     show_skill_trace: bool
     show_tool_trace: bool
+    show_knowledge_citations: bool = True
     reflection_max_rounds: int
     agent_loop_max_actions: int
     context_token_budget: int
@@ -65,6 +66,8 @@ class UIConfigUpdateRequest(BaseModel):
     show_thinking_trace: bool = True
     show_skill_trace: bool = True
     show_tool_trace: bool = True
+    # 对话里是否展示「知识来源」引用卡片；默认 True，老客户端不传也保持既有行为。
+    show_knowledge_citations: bool = True
     reflection_max_rounds: int = Field(default=1, ge=0, le=5)
     agent_loop_max_actions: int = Field(default=32, ge=1, le=100)
     context_token_budget: int = Field(default=32_000, ge=512, le=262_144)
@@ -121,6 +124,7 @@ def ui_config_read(row: UIConfig, *, restart_scheduled: bool = False) -> UIConfi
         show_thinking_trace=row.show_thinking_trace,
         show_skill_trace=row.show_skill_trace,
         show_tool_trace=row.show_tool_trace,
+        show_knowledge_citations=bool(row.show_knowledge_citations),
         reflection_max_rounds=row.reflection_max_rounds,
         agent_loop_max_actions=row.agent_loop_max_actions,
         context_token_budget=row.context_token_budget,
@@ -211,6 +215,7 @@ def update_enterprise_ui_config(
     row.show_thinking_trace = request.show_thinking_trace
     row.show_skill_trace = request.show_skill_trace
     row.show_tool_trace = request.show_tool_trace
+    row.show_knowledge_citations = request.show_knowledge_citations
     row.reflection_max_rounds = request.reflection_max_rounds
     row.agent_loop_max_actions = request.agent_loop_max_actions
     row.context_token_budget = request.context_token_budget

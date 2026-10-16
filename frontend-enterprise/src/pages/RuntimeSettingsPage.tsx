@@ -20,6 +20,7 @@ type UiConfigForm = {
   show_thinking_trace: boolean;
   show_skill_trace: boolean;
   show_tool_trace: boolean;
+  show_knowledge_citations: boolean;
   reflection_max_rounds: string;
   agent_loop_max_actions: string;
   context_token_budget: string;
@@ -40,6 +41,7 @@ const DEFAULT_UI_CONFIG: UiConfigForm = {
   show_thinking_trace: true,
   show_skill_trace: true,
   show_tool_trace: true,
+  show_knowledge_citations: true,
   reflection_max_rounds: '1',
   agent_loop_max_actions: '32',
   context_token_budget: '32000',
@@ -81,6 +83,8 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
           show_thinking_trace: row.show_thinking_trace,
           show_skill_trace: row.show_skill_trace,
           show_tool_trace: row.show_tool_trace,
+          // 老后端不返回这个字段时按「展示」处理，避免把开关静默置为关闭
+          show_knowledge_citations: row.show_knowledge_citations !== false,
           reflection_max_rounds: String(row.reflection_max_rounds),
           agent_loop_max_actions: String(row.agent_loop_max_actions),
           context_token_budget: String(row.context_token_budget),
@@ -123,6 +127,7 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
         show_thinking_trace: form.show_thinking_trace,
         show_skill_trace: form.show_skill_trace,
         show_tool_trace: form.show_tool_trace,
+        show_knowledge_citations: form.show_knowledge_citations,
         reflection_max_rounds: reflectionMaxRounds,
         agent_loop_max_actions: agentLoopMaxActions,
         context_token_budget: Number(form.context_token_budget),
@@ -205,6 +210,12 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
               <SwitchRow label="展示思考状态" checked={form.show_thinking_trace} onChange={(next) => update({ show_thinking_trace: next })} />
               <SwitchRow label="展示执行技能" checked={form.show_skill_trace} onChange={(next) => update({ show_skill_trace: next })} />
               <SwitchRow label="展示工具调用" checked={form.show_tool_trace} onChange={(next) => update({ show_tool_trace: next })} />
+              <SwitchRow
+                label="展示知识来源"
+                hint="关闭后，数字员工回答下方的「知识来源」引用卡片不再展示（回答正文里的 [1] 等引用标记不受影响）。"
+                checked={form.show_knowledge_citations}
+                onChange={(next) => update({ show_knowledge_citations: next })}
+              />
               <LabeledField label="反思轮数" hint="设为 0 时关闭反思；每轮允许模型检查当前技能和工具结果。"><Input type="number" min={0} max={5} step={1} value={form.reflection_max_rounds} onChange={(e) => update({ reflection_max_rounds: e.target.value })} /></LabeledField>
               <LabeledField label="单轮最大动作数" hint="限制一次用户输入内连续决策和工具调用的次数，避免无限循环。"><Input type="number" min={1} max={100} step={1} value={form.agent_loop_max_actions} onChange={(e) => update({ agent_loop_max_actions: e.target.value })} /></LabeledField>
             </CardContent>

@@ -13,6 +13,7 @@ import {
   harnessEventTraceLine,
   harnessWorkspaceArtifacts,
   knowledgeCitations,
+  knowledgeCitationsHidden,
   messageAttachments,
   renderInlineMarkdown,
   scheduledDraftForMessage,
@@ -728,5 +729,23 @@ describe('a2uiFormForMessage', () => {
     expect(form).not.toBeNull();
     const text = slotSubmissionText(form!, { employee_id: '3012', include_income: false });
     expect(text).toBe('员工工号：3012；是否含收入项：否');
+  });
+});
+
+describe('knowledgeCitationsHidden（「知识来源」展示口径）', () => {
+  it('默认展示：配置为 true 或字段缺失都展示', () => {
+    expect(knowledgeCitationsHidden({ showKnowledgeCitations: true })).toBe(false);
+    // 老后端不返回该字段 / 接口结构异常时不能把来源卡片静默吞掉
+    expect(knowledgeCitationsHidden({})).toBe(false);
+    expect(knowledgeCitationsHidden({ showKnowledgeCitations: undefined })).toBe(false);
+  });
+
+  it('超级管理员在租户配置里关掉后不再展示', () => {
+    expect(knowledgeCitationsHidden({ showKnowledgeCitations: false })).toBe(true);
+  });
+
+  it('分享访客始终不展示，与租户开关无关', () => {
+    expect(knowledgeCitationsHidden({ shareMode: true, showKnowledgeCitations: true })).toBe(true);
+    expect(knowledgeCitationsHidden({ shareMode: true, showKnowledgeCitations: false })).toBe(true);
   });
 });

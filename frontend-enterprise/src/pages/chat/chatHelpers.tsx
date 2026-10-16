@@ -1795,6 +1795,23 @@ export function traceLineAllowed(line: TraceLine, config: UIConfigRead): boolean
   return true;
 }
 
+/**
+ * 是否隐藏对话里的「知识来源」引用卡片。
+ *
+ * 两个来源任一成立就隐藏：① 分享访客（来源指向站内知识库，对外不可见）；
+ * ② 超级管理员在租户配置里关掉了 `show_knowledge_citations`。
+ *
+ * 只在**显式为 false** 时隐藏 —— 接口没返回、返回结构异常、老版本后端不带这个字段时
+ * 都退回「展示」，避免配置读取失败把来源卡片静默吞掉。
+ */
+export function knowledgeCitationsHidden(options: {
+  shareMode?: boolean;
+  showKnowledgeCitations?: boolean;
+}): boolean {
+  if (options.shareMode) return true;
+  return options.showKnowledgeCitations === false;
+}
+
 export function traceSummary(trace: TurnTrace, lines: TraceLine[]): { text: string; state: TraceLine['state'] } {
   if (trace.completedAt) {
     if (lines.some((line) => line.state === 'failed')) {

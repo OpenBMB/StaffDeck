@@ -284,6 +284,9 @@ export default function DashboardPage({
   );
 
   const heroActionButtonClass = 'inline-flex items-center justify-center gap-[4px] py-[8px] px-[12px] rounded-[14px] border-[0.5px] border-[#e3e7f1] bg-white text-[12px] font-normal text-[#858b9c] shadow-[0px_6px_6px_rgba(0,0,0,0.05)] hover:bg-[#f6f6f6] hover:text-[#858b9c]';
+  // 「去对话」是这个页面的主行动：全页唯一的填充色按钮（teal 强调色）+ 更大尺寸 +
+  // 柔和投影。首次进入的人视线会先落在这块，不必在几个同权重灰按钮里挑。
+  const heroPrimaryButtonClass = 'inline-flex items-center justify-center gap-[7px] h-[40px] px-[20px] rounded-[12px] border-0 bg-[#0f7268] text-[13.5px] font-semibold text-white shadow-[0_10px_22px_-10px_rgba(15,114,104,0.85)] transition-all hover:bg-[#0c6158] hover:-translate-y-[1px] hover:shadow-[0_14px_26px_-10px_rgba(15,114,104,0.9)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0f7268]/35 focus-visible:ring-offset-2';
   const heroAvatar = (
     <EmployeeAvatar
       agent={selectedAgent}
@@ -320,14 +323,20 @@ export default function DashboardPage({
               ) : (
                 heroAvatar
               )}
-              <div className="flex items-center gap-4">
+              <div className="mt-[4px] flex flex-wrap items-center gap-4">
                 <UiButton
-                  variant="outline"
-                  className={heroActionButtonClass}
+                  variant="default"
+                  className={heroPrimaryButtonClass}
                   onClick={() => { window.location.href = '/workspace/chat'; }}
                 >
-                  <IconChat className="size-[14px]" />
+                  <IconChat className="size-[16px]" />
                   去对话
+                  <span
+                    aria-hidden
+                    className="ml-[1px] text-[15px] leading-none transition-transform group-hover/button:translate-x-[3px]"
+                  >
+                    →
+                  </span>
                 </UiButton>
                 {canEditSelectedAgent && (
                   <UiButton

@@ -76,6 +76,7 @@ export default function MessageList({
                 agents={chat.agents}
                 conversation={entry.conversation}
                 onOpenCitation={chat.setActiveCitation}
+                hideCitations={hideKnowledgeCitations}
               />
             ) : null;
           }

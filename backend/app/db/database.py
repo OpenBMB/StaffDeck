@@ -68,6 +68,7 @@ def init_db() -> None:
     _migrate_general_skill_download_count()
     _migrate_general_skill_category()
     _migrate_free_model_schema()
+    _migrate_ui_config_knowledge_citations()
     # _migrate_sqlite_skill_schema()
     # _migrate_pg_api_key_schema()
     # _migrate_user_ldap_schema()
@@ -3344,6 +3345,28 @@ def _migrate_free_model_schema() -> None:
                         f"{'NOT NULL DEFAULT FALSE' if engine.url.get_backend_name().startswith('postgresql') else 'NOT NULL DEFAULT 0'}"
                     )
                 )
+
+
+def _migrate_ui_config_knowledge_citations() -> None:
+    """ui_configs 补 show_knowledge_citations：对话里是否展示「知识来源」引用卡片。
+
+    新表由 create_all 直接建；这里给**已存在**的表补新列。
+    默认 TRUE = 保持既有行为（历史租户照旧展示来源卡片）。
+    """
+    inspector = inspect(engine)
+    if "ui_configs" not in set(inspector.get_table_names()):
+        return
+    columns = {column["name"] for column in inspector.get_columns("ui_configs")}
+    if "show_knowledge_citations" in columns:
+        return
+    default = "TRUE" if engine.url.get_backend_name().startswith("postgresql") else "1"
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE ui_configs ADD COLUMN show_knowledge_citations BOOLEAN "
+                f"NOT NULL DEFAULT {default}"
+            )
+        )
 
 
 def _migrate_mcp_server_timeout() -> None:

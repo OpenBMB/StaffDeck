@@ -921,6 +921,9 @@ class UIConfig(SQLModel, table=True):
     show_thinking_trace: bool = True
     show_skill_trace: bool = True
     show_tool_trace: bool = True
+    # 对话里是否展示「知识来源」引用卡片（超管开关，租户级）。
+    # 默认 True = 保持既有行为；置 False 后所有会话（含团队协作面板）都不渲染来源卡片。
+    show_knowledge_citations: bool = True
     reflection_max_rounds: int = 1
     agent_loop_max_actions: int = 32
     context_token_budget: int = 32_000

@@ -84,6 +84,38 @@ export default function OaAssistantPage({
           <AgentAppBackButton />
         </div>
 
+        {/* Slogan：一眼说清它替用户做什么 */}
+        <section className="relative overflow-hidden rounded-[20px] bg-[#18181a] px-[26px] py-[24px] text-white shadow-[0_10px_28px_-12px_rgba(17,17,17,0.45)]">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute -right-[60px] -top-[70px] size-[220px] rounded-full bg-[#0f7268]/35 blur-[46px]"
+          />
+          <div
+            aria-hidden
+            className="pointer-events-none absolute -bottom-[80px] right-[120px] size-[180px] rounded-full bg-[#c9a227]/20 blur-[46px]"
+          />
+          <div className="relative">
+            <h1 className="text-[23px] font-black leading-[1.35] tracking-[-0.02em] max-[900px]:text-[20px]">
+              你只管传发票，
+              <span className="text-[#5fd0bd]">其余全自动填好</span>
+            </h1>
+            <p className="mt-[8px] max-w-[620px] text-[12.5px] leading-[1.9] text-white/72">
+              上传 PDF 发票，面板自动识别金额与税率、选好发票类型、生成报销明细、对齐报销场景与事由 ——
+              你在 OA 上要做的，只剩点一下「代填」。
+            </p>
+            <ul className="mt-[14px] flex flex-wrap gap-[8px]">
+              {['发票自动识别', '明细自动生成', '场景/事由自动对齐', '零安装 · 纯浏览器'].map((tag) => (
+                <li
+                  key={tag}
+                  className="rounded-full border border-white/18 bg-white/8 px-[10px] py-[3px] text-[11.5px] text-white/85"
+                >
+                  {tag}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
         {/* 安装 */}
         <section className="rounded-[20px] bg-white p-[20px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
           <div className="flex items-center gap-[8px]">
@@ -128,8 +160,7 @@ export default function OaAssistantPage({
             <li>默认<strong>不会自动点保存</strong>，先看填得对不对；确认无误后可勾选「填完后自动点保存」。</li>
           </ol>
           <p className="mt-[10px] rounded-[10px] border border-[#eef0f5] bg-[#fafbfd] p-[10px] text-[11.5px] leading-[1.8] text-[#858b9c]">
-            说明：本方案不需要服务端浏览器，也不需要用户安装扩展。代价是<strong className="text-[#5b6274]">每次执行都要手动点一下书签</strong>（浏览器不允许网页替用户点书签），
-            且若 OA 页面配置了严格 CSP，注入脚本可能被拦截（面板会给出提示）。
+            说明：本方案不需要服务端浏览器，也不需要用户安装扩展。代价是<strong className="text-[#5b6274]">每次执行都要手动点一下书签</strong>（浏览器不允许网页替用户点书签）。
           </p>
         </section>
 

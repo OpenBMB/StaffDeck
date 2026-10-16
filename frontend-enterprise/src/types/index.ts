@@ -369,6 +369,8 @@ export type UIConfigRead = {
   show_thinking_trace: boolean;
   show_skill_trace: boolean;
   show_tool_trace: boolean;
+  /** 对话里是否展示「知识来源」引用卡片（超管租户级开关，缺省视为展示）。 */
+  show_knowledge_citations?: boolean;
   reflection_max_rounds: number;
   agent_loop_max_actions: number;
   context_token_budget: number;

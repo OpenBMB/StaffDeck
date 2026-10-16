@@ -8,6 +8,7 @@ const validForm = {
   show_thinking_trace: true,
   show_skill_trace: true,
   show_tool_trace: true,
+  show_knowledge_citations: true,
   reflection_max_rounds: '1',
   agent_loop_max_actions: '32',
   context_token_budget: '32000',
