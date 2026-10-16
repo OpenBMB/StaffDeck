@@ -21,6 +21,7 @@ from app.core.task_request_compiler import (
 )
 from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
+from app.llm.json_field_stream import JsonStringFieldStream
 from app.observability.spans import llm_operation
 from app.core.sop_step_executor import plan_sop_prefill_actions
 from app.session.slot_policy import strip_router_generated_message_slots
@@ -126,6 +127,7 @@ class HarnessTaskAgent:
         edge_condition_specs: dict[str, Any] | None = None,
         slot_submission: Mapping[str, Any] | None = None,
         laya_router: Any = None,
+        reply_preview_sink: Callable[[str], None] | None = None,
     ) -> TaskExecutionResult:
         max_actions = max(1, min(int(max_actions), 100))
         checkpoint = dict(checkpoint or {})
@@ -340,6 +342,12 @@ class HarnessTaskAgent:
                                         client,
                                         system_prompt,
                                         directive_payload,
+                                        preview_sink=_iteration_reply_preview(
+                                            requirement,
+                                            capability_results,
+                                            satisfied_required_knowledge_ids,
+                                            reply_preview_sink,
+                                        ),
                                     )
                                     break
                                 except LLMError as exc:
@@ -789,14 +797,60 @@ def _generate_harness_action_json(
     client: LLMClient,
     system_prompt: str,
     payload: dict[str, Any],
+    preview_sink: Callable[[str], None] | None = None,
 ) -> Any:
     """Use sequence-aware parsing when the concrete client supports it."""
 
+    kwargs: dict[str, Any] = {}
+    if preview_sink is not None:
+        kwargs["preview_sink"] = preview_sink
     sequence_generator = getattr(client, "generate_json_sequence", None)
     if callable(sequence_generator):
-        return sequence_generator(system_prompt, payload)
+        return sequence_generator(system_prompt, payload, **kwargs)
     # Test doubles and older compatible clients still expose the original method.
-    return client.generate_json(system_prompt, payload)
+    return client.generate_json(system_prompt, payload, **kwargs)
+
+
+def _reply_preview_sink(emit: Callable[[str], None]) -> Callable[[str], None]:
+    """把决策 JSON 的原始文本增量翻译成 ``finish.reply_fragment`` 预览增量。
+
+    预览通道只负责「正文早出现」：结构不符、字段顺序意外都静默放弃，最终正文
+    一律以完整 JSON 的解析结果为准（由 ``TurnStreamSink.reconcile`` 收尾对账）。
+    """
+
+    extractor = JsonStringFieldStream("reply_fragment", arm_marker="finish")
+
+    def feed(delta: str) -> None:
+        text = extractor.feed(delta)
+        if text:
+            emit(text)
+
+    return feed
+
+
+def _iteration_reply_preview(
+    requirement: TaskRequirement,
+    capability_results: list[dict[str, Any]],
+    satisfied_required_knowledge_ids: set[str],
+    emit: Callable[[str], None] | None,
+) -> Callable[[str], None] | None:
+    """本次决策调用是否启用正文预览。
+
+    只在「强制能力都已满足」时启用：此时模型要么收尾（``finish``，正文就是最终
+    答案），要么再多调一个非强制能力（没有 ``reply_fragment``，预览不会误吐）。
+    仍缺强制能力时模型不可能被接受 ``finish``，提前预览只会把一段注定作废的文本
+    推给用户，反而要等收尾对账再抹掉。
+    """
+
+    if emit is None:
+        return None
+    if _missing_required_capabilities(
+        requirement,
+        capability_results,
+        satisfied_required_knowledge_ids,
+    ):
+        return None
+    return _reply_preview_sink(emit)
 
 
 def _harness_actions_from_raw(raw: object) -> list[HarnessAction]:

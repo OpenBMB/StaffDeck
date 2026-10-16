@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 import copy
 import hashlib
 import json
@@ -369,6 +369,8 @@ class LLMClient:
         system_prompt: str,
         user_payload: dict[str, Any] | str,
         cancellation: CancellationToken | None = None,
+        *,
+        response_format: dict[str, str] | None = None,
     ) -> Iterator[str]:
         operation = current_llm_operation()
         max_output_tokens = operation_output_tokens(operation, self.max_output_tokens)
@@ -380,6 +382,10 @@ class LLMClient:
         )
         context_messages, serialized = _prepare_user_input(user_payload)
         request_messages = _request_messages(system_prompt, context_messages, serialized)
+        # 与 generate_text 保持同构：JSON 模式既要带厂商参数，也要带文本约束，
+        # 否则流式读回来的候选与阻塞版不是同一个请求（Harness 预览会错位）。
+        if response_format and response_format.get("type") == "json_object":
+            request_messages = _with_json_mode_instruction(request_messages)
         request_messages = _fit_request_messages(request_messages)
         if isinstance(user_payload, dict) and isinstance(
             user_payload.get(STAGE_PROTOCOL_KEY), dict
@@ -404,6 +410,8 @@ class LLMClient:
                         getattr(self, "extra_body", {}),
                     ),
                 }
+                if response_format:
+                    stream_request["response_format"] = response_format
                 if cancellation is not None:
                     stream_request["_cancellation"] = cancellation
                 driver = self._protocol_driver()
@@ -422,7 +430,7 @@ class LLMClient:
                     request_parameters=_observable_request_parameters(
                         temperature=self.temperature,
                         max_output_tokens=current_max_tokens,
-                        response_format=None,
+                        response_format=response_format,
                         stream=True,
                     ),
                     request_payload=_observable_value(
@@ -532,13 +540,16 @@ class LLMClient:
                         response_chunks=response_chunks,
                         **stream_usage_metrics,
                     )
-                    _record_stage_exchange(
-                        user_payload,
-                        response_text,
-                        request_user_content=getattr(
-                            self, "_last_stage_request_user_content", None
-                        ),
-                    )
+                    # 与 generate_text 同构：generate_json 在解析完成后再统一记录
+                    # stage exchange（_defer_stage_recording=True），这里不能再记一次。
+                    if not getattr(self, "_defer_stage_recording", False):
+                        _record_stage_exchange(
+                            user_payload,
+                            response_text,
+                            request_user_content=getattr(
+                                self, "_last_stage_request_user_content", None
+                            ),
+                        )
                     return
                 span.finish(
                     provider_setup_ms=provider_setup_ms,
@@ -613,6 +624,7 @@ class LLMClient:
         cancellation: CancellationToken | None = None,
         *,
         accept_json_sequence: bool = False,
+        preview_sink: Callable[[str], None] | None = None,
     ) -> Any:
         outputs: list[str] = []
         next_payload = user_payload
@@ -634,9 +646,20 @@ class LLMClient:
                 previous_defer = getattr(self, "_defer_stage_recording", False)
                 self._defer_stage_recording = True
                 try:
-                    text = self._generate_json_candidate(
-                        system_prompt, next_payload, json_mode_supported, cancellation
-                    )
+                    # 预览通道只在首次尝试上启用：repair 重试的正文属于「作废
+                    # 那一版」，再喂一遍只会让预览内容和最终结果更加对不上。
+                    if preview_sink is not None and attempt == 0:
+                        text = self._generate_json_candidate_streaming(
+                            system_prompt,
+                            next_payload,
+                            json_mode_supported,
+                            preview_sink,
+                            cancellation,
+                        )
+                    else:
+                        text = self._generate_json_candidate(
+                            system_prompt, next_payload, json_mode_supported, cancellation
+                        )
                     if json_mode_supported and _response_format_unsupported(text):
                         json_mode_supported = False
                         text = self.generate_text(system_prompt, next_payload)
@@ -706,6 +729,8 @@ class LLMClient:
         system_prompt: str,
         user_payload: dict[str, Any],
         cancellation: CancellationToken | None = None,
+        *,
+        preview_sink: Callable[[str], None] | None = None,
     ) -> Any:
         """Accept consecutive top-level JSON values for sequence-aware consumers.
 
@@ -721,7 +746,69 @@ class LLMClient:
             user_payload,
             cancellation,
             accept_json_sequence=True,
+            preview_sink=preview_sink,
         )
+
+    def _generate_json_candidate_streaming(
+        self,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        json_mode_supported: bool,
+        preview_sink: Callable[[str], None],
+        cancellation: CancellationToken | None = None,
+    ) -> str:
+        """``_generate_json_candidate`` 的流式版本：请求体同构，只换读取方式。
+
+        文本增量原样交给 ``preview_sink``（预览通道自己决定怎么用），返回值与
+        阻塞版一样是完整文本。降级分支（Anthropic 协议 / 不支持 JSON 模式 /
+        厂商拒绝 response_format）与阻塞版一一对应，保证异常类型与行为不变。
+        """
+
+        emitted = False
+
+        def call_stream(
+            prompt: str,
+            payload: dict[str, Any],
+            response_format: dict[str, str] | None = None,
+        ) -> str:
+            nonlocal emitted
+            parts: list[str] = []
+            for chunk in self.generate_text_stream(
+                prompt,
+                payload,
+                cancellation,
+                response_format=response_format,
+            ):
+                if not chunk:
+                    continue
+                parts.append(chunk)
+                emitted = True
+                preview_sink(chunk)
+            return "".join(parts)
+
+        if getattr(self, "api_protocol", ModelApiProtocol.OPENAI_CHAT_COMPLETIONS) is (
+            ModelApiProtocol.ANTHROPIC_MESSAGES
+        ):
+            return call_stream(
+                system_prompt.rstrip()
+                + "\n\n只返回一个合法 JSON object；不要输出 Markdown、代码围栏、解释或额外文本。",
+                user_payload,
+            )
+        if not json_mode_supported:
+            return call_stream(system_prompt, user_payload)
+        try:
+            return call_stream(
+                system_prompt,
+                user_payload,
+                response_format={"type": "json_object"},
+            )
+        except TypeError:
+            return call_stream(system_prompt, user_payload)
+        except LLMError as exc:
+            # 已经下发过预览就不能重来（会重复），直接抛出交给调用方兜底。
+            if not emitted and _response_format_unsupported(str(exc)):
+                return call_stream(system_prompt, user_payload)
+            raise
 
     def _generate_json_candidate(
         self,

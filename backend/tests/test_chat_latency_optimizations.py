@@ -127,13 +127,15 @@ def _task_requirement() -> TaskRequirement:
 
 
 def test_operation_timeout_policy() -> None:
-    assert OPERATION_TIMEOUT_SECONDS["harness.task_action"] == 90.0
+    # 2026-09-28 现场：任务型对话末轮 payload 41K + 思考模式，90s 上限把「接近
+    # 完成」的第 14 轮判死，故放宽到 120s（见 output_policy.OPERATION_TIMEOUT_SECONDS）。
+    assert OPERATION_TIMEOUT_SECONDS["harness.task_action"] == 120.0
     assert OPERATION_TIMEOUT_SECONDS["turn_planner.plan"] == 90.0
     assert OPERATION_TIMEOUT_SECONDS["sop.slot_extraction"] == 30.0
     # 未配置的操作（生成类/流式回复）保持模型级默认
     assert operation_timeout_seconds("response.generate", 600.0) == 600.0
     assert operation_timeout_seconds(None, 600.0) == 600.0
-    assert operation_timeout_seconds("harness.task_action", 600.0) == 90.0
+    assert operation_timeout_seconds("harness.task_action", 600.0) == 120.0
 
 
 def test_generate_text_sets_interactive_request_timeout(monkeypatch) -> None:
@@ -146,7 +148,12 @@ def test_generate_text_sets_interactive_request_timeout(monkeypatch) -> None:
         with llm_operation("harness.task_action"):
             client.generate_json("系统提示", {"task_requirement": {}})
 
-    assert calls and calls[0]["_request_timeout"] == 90.0
+    # 断言的是「按操作下发的超时被驱动层带下去了」，而不是某个写死的秒数——
+    # 策略值调整（90 → 120）不应让这条用例失效。
+    assert calls
+    assert calls[0]["_request_timeout"] == operation_timeout_seconds(
+        "harness.task_action", client.timeout_seconds
+    )
 
 
 def test_generate_text_keeps_default_timeout_for_generative(monkeypatch) -> None:
@@ -248,7 +255,7 @@ def test_harness_task_agent_lightweight_first_iteration_falls_back_on_protocol_e
     decision_models: list[str] = []
     payloads: list[dict] = []
 
-    def fake_generate(client, system_prompt, payload):
+    def fake_generate(client, system_prompt, payload, preview_sink=None):
         decision_models.append(str(getattr(client, "model", "")))
         payloads.append(deepcopy(payload))
         call_index = len(decision_models)
@@ -311,7 +318,7 @@ def test_harness_task_agent_lightweight_success_avoids_main_model() -> None:
     decision_models: list[str] = []
     payloads: list[dict] = []
 
-    def fake_generate(client, system_prompt, payload):
+    def fake_generate(client, system_prompt, payload, preview_sink=None):
         decision_models.append(str(getattr(client, "model", "")))
         payloads.append(deepcopy(payload))
         return {
@@ -358,7 +365,7 @@ def test_harness_task_agent_no_lightweight_keeps_main_model() -> None:
     decision_models: list[str] = []
     payloads: list[dict] = []
 
-    def fake_generate(client, system_prompt, payload):
+    def fake_generate(client, system_prompt, payload, preview_sink=None):
         decision_models.append(str(getattr(client, "model", "")))
         payloads.append(deepcopy(payload))
         return {
@@ -454,7 +461,7 @@ def test_knowledge_routing_uses_intent_model(monkeypatch) -> None:
     captured: dict = {}
     monkeypatch.setattr(
         "app.core.harness_capability_invoker.KnowledgeService",
-        lambda db: _RecordingKnowledgeService(captured),
+        lambda db, laya_router=None: _RecordingKnowledgeService(captured),
     )
 
     def fake_model_for_agent(db, tenant_id, agent_id, role="default", user_id=None):
@@ -485,7 +492,7 @@ def test_knowledge_routing_falls_back_to_main_model(monkeypatch) -> None:
     captured: dict = {}
     monkeypatch.setattr(
         "app.core.harness_capability_invoker.KnowledgeService",
-        lambda db: _RecordingKnowledgeService(captured),
+        lambda db, laya_router=None: _RecordingKnowledgeService(captured),
     )
 
     def fake_model_for_agent(db, tenant_id, agent_id, role="default", user_id=None):

@@ -5842,6 +5842,11 @@ def test_direct_reply_answer_uses_module_prompt_path(monkeypatch) -> None:
             captured["payload"] = payload
             return "  你好！很高兴见到你。  "
 
+        def generate_text_stream(self, system_prompt: str, payload: dict):
+            # _direct_reply_answer 现在与流式版本同源，替身需要提供流式入口。
+            captured["payload"] = payload
+            yield "  你好！很高兴见到你。  "
+
     monkeypatch.setattr("app.llm.LLMClient", _FakeClient)
 
     reply = harness_v2_engine._direct_reply_answer(
@@ -5875,6 +5880,11 @@ def test_capability_intro_direct_answer_injects_summary(monkeypatch) -> None:
         def generate_text(self, system_prompt: str, payload: dict) -> str:
             captured["payload"] = payload
             return "我可以帮您处理请假、报销等事务。"
+
+        def generate_text_stream(self, system_prompt: str, payload: dict):
+            # _direct_reply_answer 现在与流式版本同源，替身需要提供流式入口。
+            captured["payload"] = payload
+            yield "我可以帮您处理请假、报销等事务。"
 
     monkeypatch.setattr("app.llm.LLMClient", _FakeClient)
 

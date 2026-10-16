@@ -173,6 +173,7 @@ class TurnStreamSink:
         self._tenant_id = ""
         self._session_id = ""
         self._buffer: list[str] = []
+        self._streamed_parts: list[str] = []
         self._last_flush_at = 0.0
         self._started_at: float | None = None
         self.streamed_chars = 0
@@ -189,6 +190,7 @@ class TurnStreamSink:
         self._tenant_id = str(tenant_id or "")
         self._session_id = str(session_id or "")
         self._buffer = []
+        self._streamed_parts = []
         self._last_flush_at = 0.0
         self._started_at = None
         self.streamed_chars = 0
@@ -205,6 +207,7 @@ class TurnStreamSink:
         if self._started_at is None:
             self._started_at = now
         self._buffer.append(chunk)
+        self._streamed_parts.append(chunk)
         self.streamed_chars += len(chunk)
         pending = sum(len(item) for item in self._buffer)
         if (
@@ -241,7 +244,10 @@ class TurnStreamSink:
         """
         if not self.active:
             return
+        if not self.streamed_chars and not self._buffer:
+            return
         self._buffer = []
+        self._streamed_parts = []
         self.streamed_chars = 0
         self._last_flush_at = 0.0
         self._started_at = None
@@ -252,9 +258,24 @@ class TurnStreamSink:
         if not self.active:
             return
         self._buffer = []
+        self._streamed_parts = [content] if content else []
         self._last_flush_at = time.monotonic()
         self.streamed_chars = len(content)
         self._record("stream_replace", {"content": content})
+
+    def reconcile(self, content: str) -> None:
+        """收尾对账：下发内容与最终正文不一致时用最终正文原地替换。
+
+        预览通道（决策 JSON 的 ``finish.reply_fragment``）只负责「正文早出现」，
+        正确性由这里兜底——引用编号重排、``finish`` 被拒后重来、降级话术、最终
+        裁剪都会落到这条路径。两者一致时不产生任何事件。
+        """
+
+        if not self.active or not self.streamed_chars:
+            return
+        if "".join(self._streamed_parts) == content:
+            return
+        self.replace(content)
 
     def _record(self, event_type: str, payload: dict[str, object]) -> None:
         self._owner.events.record(
@@ -542,9 +563,9 @@ class AgentLoop:
             )
             return
         if sink.streamed:
-            # 生成期已经真流式下发过正文，这里不再重发一遍；最终正文由
-            # assistant_message_created / 会话消息刷新校准（前端 stream_replace）。
-            pass
+            # 生成期已经真流式下发过正文（含决策 JSON 预览通道），这里不再重发；
+            # 只做一次对账：最终正文与已下发内容不一致时原地替换。
+            sink.reconcile(response.reply)
         else:
             # 无真流式可用的轮次（直出回复、固定话术、结构化结果）回退打字机节奏，
             # 取代原先「整段一次性暴发」。整轮额外耗时以

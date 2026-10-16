@@ -560,6 +560,9 @@ class HarnessV2Engine:
         stream = self.turn_stream
         if stream is None:
             return self.owner.response_generator.generate(*arguments)
+        # 综合生成的正文是本轮权威答案：先丢弃决策 JSON 预览通道的残留（多帧轮次
+        # 里那段文本属于某个中间帧），否则两段内容会接在一起。
+        stream.reset()
         self._emit_stream_status("preparing", "正在生成回复")
         parts: list[str] = []
         try:
@@ -1595,6 +1598,11 @@ class HarnessV2Engine:
                     request.slot_submission
                     if row.source_turn_id == self.user_message_id
                     else None
+                ),
+                # 流式轮次：决策 JSON 里的 finish 正文边生成边下发（预览通道）。
+                # 最终正文仍以解析结果为准，收尾由 TurnStreamSink.reconcile 对账。
+                reply_preview_sink=(
+                    self._emit_stream_delta if self.turn_stream is not None else None
                 ),
             )
             deferred_continuation = False
