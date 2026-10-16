@@ -17,7 +17,7 @@ from app.session.session_schema import RouterDecision
 from staffdeck_harness.sop.contracts import SopDependencies
 from staffdeck_harness.sop.graph import GraphRules
 from staffdeck_harness.sop.module import SopRuntimeModule
-from staffdeck_sop_runtime.api import create_app
+from staffdeck_harness.sop.legacy_api import create_app
 
 
 CLIENT = TestClient(create_app())

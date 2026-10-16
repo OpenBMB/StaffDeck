@@ -480,7 +480,11 @@ def cancel_knowledge_job_facade(
     agent_id: str, job_id: str,
     principal: PublicPrincipal = Depends(require_scopes("knowledge:write")), db: Session = Depends(get_session),
 ) -> Any:
-    enforce_public_knowledge_pep(db, principal, agent_id, write=True)
+    row = _knowledge_asset(db, principal, agent_id, "jobs", job_id)
+    if not row or row.tenant_id != principal.tenant_id:
+        raise PublicAPIError(404, "JOB_NOT_FOUND", "Knowledge ingest job not found.")
+    enforce_public_knowledge_pep(db, principal, agent_id, write=True,
+                                 knowledge_base_id=row.knowledge_base_id)
     return _payload(native_knowledge.cancel_job(job_id, principal.tenant_id, db, principal.actor_user))
 
 

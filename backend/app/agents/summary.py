@@ -5,9 +5,10 @@ from app.agents.branching import get_overall_agent, _binding_is_private
 
 
 def summary_facts(db, tenant_id, bindings):
-    from app.knowledge.http_adapter import enabled as km_enabled
+    from app.db.models import SopDefinitionRecord
+    from app.skills.sop_management import legacy_sop_writes_disabled
     resources = {}
-    for kind, model in (('skill', Skill), ('general_skill', GeneralSkill),
+    for kind, model in (('skill', SopDefinitionRecord if legacy_sop_writes_disabled() else Skill), ('general_skill', GeneralSkill),
                         ('tool', Tool)):
         ids = {b.resource_id for b in bindings if b.resource_type == kind}
         if ids:

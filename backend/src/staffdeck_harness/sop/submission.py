@@ -42,11 +42,15 @@ class SopResultValidator:
             if missing_slots:
                 return ModuleResult.fail("REQUIRED_SLOT_MISSING", "当前步骤必填字段未齐：" + "、".join(missing_slots),
                                          extensions={"details": {"missing_slots": missing_slots}})
-            from staffdeck_harness.runtime.completion import missing_capabilities
-
-            missing = missing_capabilities(
-                self.requirement, capability_results, citations, evidence
-            )
+            succeeded = {str(item.get("tool_name") or "") for item in capability_results
+                if isinstance(item, dict) and item.get("success") is True}
+            knowledge_ids = {str(item["knowledge_base_id"]) for item in citations if item.get("knowledge_base_id")}
+            for pack in evidence:
+                for item in [*(pack.get("chunks") or []), *(pack.get("evidence_pack") or [])]:
+                    if isinstance(item, dict) and item.get("knowledge_base_id"):
+                        knowledge_ids.add(str(item["knowledge_base_id"]))
+            missing = [name for name in self.requirement.required_capability_names if name not in succeeded]
+            missing += [f"knowledge_search:{identifier}" for identifier in self.requirement.required_knowledge_base_ids if identifier not in knowledge_ids]
             if missing:
                 return ModuleResult.fail(
                     "REQUIRED_CAPABILITY_NOT_INVOKED", "必需能力尚未成功执行：" + "、".join(missing)

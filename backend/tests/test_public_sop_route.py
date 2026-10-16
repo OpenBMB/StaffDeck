@@ -99,7 +99,8 @@ def test_public_route_to_bound_pd_port_preserves_visible_sop_and_pep(monkeypatch
                                      "actorUserId": "user-1", "agentId": "agent-1"}
         if body["operation"] == "list_model_catalog":
             return httpx.Response(200, json={"defaultSelection": {"mode": "model", "provider": "p", "model": "m"},
-                "data": [{"id": "p/m", "provider": "p", "model": "m", "available": True}]})
+                "data": [{"id": "p/m", "provider": "p", "model": "m", "available": True},
+                         {"id": "other/model", "provider": "other", "model": "model", "available": True}]})
         assert body["operation"] == "model_stream"
         assert body["input"]["modelId"] == "p/m"
         return httpx.Response(200, headers={"content-type": "application/x-ndjson"}, text=

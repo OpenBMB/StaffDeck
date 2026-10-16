@@ -56,7 +56,8 @@ def test_manifest_sop_runtime(registry, module):
     assert m.kind.value == "T"
     assert item.slot is SlotName.RUNTIME_SOP
     assert m.attaches_to == (SlotName.RUNTIME_SOP,)
-    assert m.provides_operations == ("sop.lifecycle/v2",)
+    assert m.provides_operations == ("sop.lifecycle/v3", "sop.lifecycle/v2")
+    assert m.metadata["primaryContract"] == "sop.lifecycle/v3"
     assert m.requires_operations == ()
     assert m.policy_actions == ("sop.execute/v1",)
     assert m.hooks == ()

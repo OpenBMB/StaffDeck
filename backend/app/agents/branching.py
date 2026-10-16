@@ -358,6 +358,9 @@ def visible_skill_rows(
     agent_id: str | None = None,
     include_inactive: bool = True,
 ) -> list[Skill]:
+    from app.skills.sop_management import legacy_sop_writes_disabled, SopManagementService
+    if legacy_sop_writes_disabled():
+        return SopManagementService.rows(db, tenant_id, agent_id, published_only=not include_inactive)
     agent = get_agent(db, tenant_id, agent_id)
     if not agent or agent.is_overall:
         status_clause = (
@@ -419,6 +422,10 @@ def visible_published_skills(
 def visible_skill(
     db: Session, tenant_id: str, skill_id: str, agent_id: str | None = None
 ) -> Skill | None:
+    from app.skills.sop_management import legacy_sop_writes_disabled, SopManagementService
+    if legacy_sop_writes_disabled():
+        return next((r for r in SopManagementService.rows(db, tenant_id, agent_id, published_only=True)
+            if r.skill_id == skill_id), None)
     skill = db.exec(
         select(Skill).where(Skill.tenant_id == tenant_id, Skill.skill_id == skill_id)
     ).first()
@@ -521,6 +528,8 @@ def ensure_agent_skill_branch(
     skill: Skill,
     metadata_json: dict[str, Any] | None = None,
 ) -> AgentSkillBranch:
+    from app.skills.sop_management import ensure_legacy_sop_writes_enabled
+    ensure_legacy_sop_writes_enabled()
     branch = db.exec(
         select(AgentSkillBranch).where(
             AgentSkillBranch.tenant_id == tenant_id,
@@ -569,6 +578,8 @@ def update_branch_skill(
     next_version = next_unique_branch_version(db, branch, str(content.get("version") or ""))
     next_content = dict(content)
     next_content["version"] = next_version
+    from app.skills.sop_management import normalize_sop_write
+    next_content = normalize_sop_write(next_content)
     branch.content_json = next_content
     branch.head_version = next_version
     branch.status = previous_status
@@ -757,7 +768,10 @@ def _runtime_model(
 
 
 def copy_overall_scope_to_agent(db: Session, tenant_id: str, agent: AgentProfile) -> None:
-    skills = db.exec(
+    from app.skills.sop_management import SopManagementService, legacy_sop_writes_disabled
+    if legacy_sop_writes_disabled():
+        SopManagementService.copy_scope(db, tenant_id, None, agent.id)
+    skills = [] if legacy_sop_writes_disabled() else db.exec(
         select(Skill).where(Skill.tenant_id == tenant_id, Skill.status == "published")
     ).all()
     for skill in skills:

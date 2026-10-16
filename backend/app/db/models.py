@@ -28,6 +28,17 @@ class Tenant(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class PilotDeckProjectBinding(SQLModel, table=True):
+    __tablename__ = "pilotdeck_project_bindings"
+    __table_args__ = (UniqueConstraint("tenant_id", "agent_id"),)
+
+    tenant_id: str = Field(primary_key=True)
+    installation_id: str = Field(primary_key=True)
+    project_binding_id: str = Field(primary_key=True)
+    agent_id: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class User(SQLModel, table=True):
     __tablename__ = "users"
     __table_args__ = (
@@ -359,6 +370,55 @@ class APISOPDraft(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
     published_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class SopDraftRecord(SQLModel, table=True):
+    """Management draft; never a legacy Skill runtime object."""
+    __tablename__ = "sop_management_drafts"
+
+    id: str = Field(default_factory=lambda: new_id("sopdraft"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    skill_id: str = Field(index=True)
+    base_version: Optional[str] = None
+    draft_version: str
+    content_json: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
+    status: str = Field(default="draft", index=True)
+    source: str = "structured"
+    warnings_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    validation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    etag: str
+    created_by_credential_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    published_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class SopManagementFields(SQLModel):
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(default="", index=True)
+    skill_id: str = Field(index=True)
+    version: str = "1.0.0"
+    name: str
+    business_domain: Optional[str] = None
+    description: Optional[str] = None
+    content_json: dict[str, Any] = Field(sa_type=JSON, nullable=False)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_type=JSON)
+    status: str = Field(default="draft", index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class SopDefinitionRecord(SopManagementFields, table=True):
+    __tablename__ = "sop_management_definitions"
+    __table_args__ = (UniqueConstraint("tenant_id", "agent_id", "skill_id", name="uq_sop_definition_scope"),)
+    id: str = Field(default_factory=lambda: new_id("sopdef"), primary_key=True)
+
+
+class SopVersionRecord(SopManagementFields, table=True):
+    __tablename__ = "sop_management_versions"
+    __table_args__ = (UniqueConstraint("tenant_id", "agent_id", "skill_id", "version", name="uq_sop_version_scope"),)
+    id: str = Field(default_factory=lambda: new_id("sopver"), primary_key=True)
 
 
 class APIAuditLog(SQLModel, table=True):

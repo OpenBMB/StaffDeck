@@ -41,6 +41,32 @@ class PublicStaffDeckFacadeTests(unittest.TestCase):
         self.assertNotIn("jobs:cancel", USER_FULL_ACCESS_SCOPES)
         self.assertNotIn("*", USER_FULL_ACCESS_SCOPES)
 
+    def test_cancel_knowledge_job_checks_resource_owner_before_mutation(self) -> None:
+        row = SimpleNamespace(tenant_id="tenant", knowledge_base_id="private-a")
+        db = SimpleNamespace(get=lambda model, key: row)
+        with patch.object(facade, "enforce_public_knowledge_pep", side_effect=PublicAPIError(
+            404, "RESOURCE_NOT_FOUND", "Unavailable"
+        )) as pep, patch.object(facade, "_knowledge_asset", return_value=row) as asset, patch.object(facade.native_knowledge, "cancel_job") as cancel:
+            with self.assertRaises(PublicAPIError):
+                facade.cancel_knowledge_job_facade("agent-b", "job-a", self.principal, db)
+        pep.assert_called_once_with(db, self.principal, "agent-b", write=True,
+                                    knowledge_base_id="private-a")
+        asset.assert_called_once_with(db, self.principal, "agent-b", "jobs", "job-a")
+        cancel.assert_not_called()
+
+    def test_cancel_knowledge_job_rejects_foreign_tenant_before_mutation(self) -> None:
+        db = SimpleNamespace(get=lambda model, key: SimpleNamespace(
+            tenant_id="other", knowledge_base_id="private-a"))
+        row = SimpleNamespace(tenant_id="other", knowledge_base_id="private-a")
+        with patch.object(facade, "_knowledge_asset", return_value=row), patch.object(facade, "enforce_public_knowledge_pep") as pep, patch.object(
+            facade.native_knowledge, "cancel_job"
+        ) as cancel:
+            with self.assertRaises(PublicAPIError) as raised:
+                facade.cancel_knowledge_job_facade("agent-b", "job-a", self.principal, db)
+        self.assertEqual(raised.exception.status_code, 404)
+        pep.assert_not_called()
+        cancel.assert_not_called()
+
     def test_fixed_public_routes_are_registered(self) -> None:
         paths = create_public_api_app().openapi()["paths"]
         expected = {

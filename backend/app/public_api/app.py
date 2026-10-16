@@ -88,6 +88,9 @@ def create_public_api_app() -> FastAPI:
     app.include_router(pilotdeck_knowledge_read.router)
     app.include_router(credentials.router)
     app.include_router(gallery.router)
+    from app.public_api import project_bindings, project_knowledge
+    app.include_router(project_bindings.router)
+    app.include_router(project_knowledge.router)
     app.include_router(agents.router)
     app.include_router(sessions.router)
     app.include_router(runs.router)

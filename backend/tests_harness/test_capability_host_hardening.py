@@ -310,6 +310,8 @@ def test_host_pep_allows_bound_tool_and_runs_provider(db, monkeypatch):
     assert res.success is True, res.error
     assert provider.calls == ["tool.invoke/v1"]
     assert receipt is not None and receipt.status == "completed"
+    assert host.results[-1]["operation_id"] == inv.invocation_id
+    assert host.results[-1]["capability_id"] == tool.id
 
 
 def test_host_pep_fails_closed_for_unmapped_operation(db, monkeypatch):

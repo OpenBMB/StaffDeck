@@ -64,8 +64,6 @@ class PilotDeckDomainHostClient:
                 raise RuntimeError("PUBLIC_HOST_MODEL_CATALOG_INVALID")
             available = [item for item in items if isinstance(item, dict)
                          and item.get("available", item.get("enabled")) is True]
-            if len(available) != 1:
-                raise RuntimeError("PUBLIC_HOST_MODEL_SELECTION_AMBIGUOUS")
             default = catalog.get("defaultSelection")
             if isinstance(default, dict):
                 if default.get("mode", "model") != "model" or not isinstance(default.get("provider"), str) \
@@ -79,7 +77,7 @@ class PilotDeckDomainHostClient:
             if len(defaults) != 1:
                 raise RuntimeError("PUBLIC_HOST_MODEL_SELECTION_UNBOUND")
             selected = defaults[0]
-            if selected is not available[0]:
+            if selected not in available:
                 raise RuntimeError("PUBLIC_HOST_MODEL_SELECTION_INVALID")
             provider, model, model_id = selected.get("provider"), selected.get("model"), selected.get("id")
             if not isinstance(provider, str) or not isinstance(model, str) \

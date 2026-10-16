@@ -456,6 +456,8 @@ class StaffDeckKnowledgeAdapter:
             versions = self.visible_versions()
             permitted = []
             for base_id, version in versions.items():
+                if (request.mode == "chat" or public_host_retrieval_selected()) and not request._sop_authorized and version.capability_scope == "sop_specific":
+                    continue
                 if request.knowledge_base_ids and base_id not in request.knowledge_base_ids:
                     continue
                 if request.knowledge_base_version_ids and version.id not in request.knowledge_base_version_ids:

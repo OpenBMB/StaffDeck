@@ -125,6 +125,16 @@ def bound_resource_ref(
 ) -> ResourceRef:
     """Project one resource as seen from one agent (binding may be absent)."""
 
+    from app.db.models import SopDefinitionRecord
+    if isinstance(resource, SopDefinitionRecord):
+        private = bool(resource.agent_id)
+        bound = not private or (agent is not None and agent.id == resource.agent_id)
+        return ResourceRef(type=resource_type, id=resource.id, tenant_id=resource.tenant_id,
+            attributes={"status": resource.status, "enabled": True, "owner_user_id": _owner_of(resource),
+                "binding_status": "active" if bound and resource.status == "published" else "inactive",
+                "private_to_agent": private and bound, "open_gallery": not private,
+                "agent_is_overall": bool(agent and agent.is_overall)})
+
     meta = _resource_metadata(resource)
     binding_status = binding.status if binding is not None else None
     private = bool(
@@ -194,6 +204,12 @@ def bound_resources(db: Session, tenant_id: str, agent_id: str | None, resource_
         return [adapter.resource_projection(row["id"]) for row in adapter.call("GET", "/knowledge-bases")
                 if row["status"] == "active"]
     model = _RESOURCE_MODEL[resource_type]
+    if resource_type in {"sop", "skill"}:
+        from app.skills.sop_management import legacy_sop_writes_disabled, SopManagementService
+        if legacy_sop_writes_disabled():
+            agent = get_agent(db, tenant_id, agent_id) if agent_id else None
+            return [(row, None, bound_resource_ref(db, tenant_id, resource_type, row, agent=agent))
+                for row in SopManagementService.rows(db, tenant_id, agent_id, published_only=True)]
     agent = get_agent(db, tenant_id, agent_id) if agent_id else None
     out: list[tuple[Any, AgentResourceBinding | None, ResourceRef]] = []
     if agent is None or agent.is_overall:

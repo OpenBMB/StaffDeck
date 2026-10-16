@@ -4,7 +4,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import Engine, inspect, text
+from sqlalchemy import Engine, inspect, text, event
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import get_settings
@@ -22,6 +22,18 @@ settings = get_settings()
 database_url = _normalize_database_url(settings.database_url)
 connect_args = {"check_same_thread": False, "timeout": 30} if database_url.startswith("sqlite") else {}
 engine: Engine = create_engine(database_url, echo=False, connect_args=connect_args)
+
+
+@event.listens_for(Session, "before_flush")
+def _reject_legacy_sop_mutations(session, _flush_context, _instances):
+    from app.skills.sop_management import ensure_legacy_sop_writes_enabled, legacy_sop_writes_disabled
+    if not legacy_sop_writes_disabled():
+        return
+    from app.db.models import Skill, SkillVersion, AgentSkillBranch, AgentSkillBranchVersion, APISOPDraft
+    legacy_models = (Skill, SkillVersion, AgentSkillBranch, AgentSkillBranchVersion, APISOPDraft)
+    for row in (*session.new, *session.dirty, *session.deleted):
+        if isinstance(row, legacy_models):
+            ensure_legacy_sop_writes_enabled()
 
 _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID = "20260712_default_model_output_tokens_8192"
 _LEGACY_DEFAULT_MODEL_OUTPUT_TOKENS = 2048

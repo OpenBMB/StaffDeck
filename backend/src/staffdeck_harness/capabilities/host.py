@@ -460,7 +460,8 @@ class CapabilityHost:
                 name = f"general_skill.{descriptor.metadata.get('slug', descriptor.name)}"
         elif inv.operation == "knowledge.search/v1":
             name = "knowledge_search"
-        self.results.append({"tool_name": name, "operation": inv.operation, "resource_id": inv.binding_id,
+        self.results.append({"tool_name": name, "operation": inv.operation, "operation_id": inv.invocation_id,
+                             "capability_id": inv.binding_id, "resource_id": inv.binding_id,
                              "success": result.success, "data": result.data, "error": result.error,
                              "citations": list(result.citations), "receipt": receipt.to_json()})
         if result.success:
