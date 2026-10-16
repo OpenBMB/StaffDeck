@@ -23,6 +23,7 @@ from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
 from app.llm.json_field_stream import JsonStringFieldStream
 from app.observability.spans import llm_operation
+from app.core.knowledge_prefetch import plan_knowledge_prefill_actions
 from app.core.sop_step_executor import plan_sop_prefill_actions
 from app.session.slot_policy import strip_router_generated_message_slots
 
@@ -215,6 +216,19 @@ class HarnessTaskAgent:
         if prefill_actions:
             pending_actions.extend(
                 HarnessAction.model_validate(item) for item in prefill_actions
+            )
+        # 仅知识库数字员工的确定性直查：新帧首轮直接预填 knowledge_search，
+        # 模型第一次被调用时检索结果已在 transcript 里，省掉「决策调检索」
+        # 那一整轮 LLM（仅 conversation kind 且无技能/工具能力时介入）。
+        knowledge_prefill = plan_knowledge_prefill_actions(
+            requirement,
+            first_turn=not transcript and not evidence_results,
+            trace_sink=trace_sink,
+            judge_model=lightweight_model_config or model_config,
+        )
+        if knowledge_prefill:
+            pending_actions.extend(
+                HarnessAction.model_validate(item) for item in knowledge_prefill
             )
 
         def finish(result: TaskExecutionResult) -> TaskExecutionResult:
