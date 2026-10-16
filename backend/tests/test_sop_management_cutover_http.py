@@ -3,13 +3,14 @@ from sqlmodel import Session, select
 from staffdeck_sop_runtime.api import create_app
 from test_public_api_v1 import _client, _skill_card, _tenant_key
 
-from app.db.models import APISOPDraft, Skill, SkillVersion, SopDefinitionRecord, SopDraftRecord
+from app.db.models import APISOPDraft, AgentResourceBinding, Skill, SkillVersion, SopDefinitionRecord, SopDraftRecord
 from staffdeck_harness.sop.runtime_client import RuntimeClient
 
 
 def test_public_http_create_patch_publish_versions_archive_without_legacy_writes(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, independent_knowledge_service
 ):
+    independent_knowledge_service('tenant_api')
     monkeypatch.setenv("SOP_RUNTIME_LEGACY_WRITES", "disabled")
     monkeypatch.setenv("SOP_RUNTIME_ENDPOINT", "http://runtime")
     with TestClient(create_app()) as runtime_http:
@@ -51,6 +52,20 @@ def test_public_http_create_patch_publish_versions_archive_without_legacy_writes
             json={"draft_id": draft["id"]},
         )
         assert published.status_code == 200, published.text
+        with Session(engine) as db:
+            db.info['staffdeck_actor_id'] = 'user_api_admin'
+            from app.agents.summary import summary_facts
+            from app.api.agents import _local_agent_resource_timeline_events, _resource_binding_visible_in_agent_summary
+            from app.db.models import AgentProfile
+            definition = db.exec(select(SopDefinitionRecord)).one()
+            binding = db.exec(select(AgentResourceBinding).where(
+                AgentResourceBinding.resource_id == definition.id)).one()
+            facts = summary_facts(db, 'tenant_api', [binding])
+            assert facts['resources'][('skill', definition.id)].name == definition.name
+            assert _resource_binding_visible_in_agent_summary(
+                db, 'tenant_api', db.get(AgentProfile, 'agent_api'), binding, facts=facts)
+            assert any(event.kind == 'sop' and event.label == definition.name
+                       for event in _local_agent_resource_timeline_events(db, 'tenant_api', 'agent_api'))
         listing = client.get("/agents/agent_api/sops", headers=headers)
         assert listing.status_code == 200, listing.text
         assert listing.json()["data"][0]["content"]["description"] == "Changed"

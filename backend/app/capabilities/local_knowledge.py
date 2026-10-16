@@ -34,6 +34,9 @@ class LocalKnowledgeRuntime(KnowledgeRuntime):
         self._model_config = model_config
 
     def list_scopes(self, context: CapabilityContext) -> tuple[KnowledgeScope, ...]:
+        from app.knowledge.http_adapter import enabled
+        if enabled():
+            self._db.info["staffdeck_actor_id"] = context.user_id
         versions = visible_knowledge_base_versions(
             self._db, context.tenant_id, context.agent_id
         )
@@ -71,7 +74,11 @@ class LocalKnowledgeRuntime(KnowledgeRuntime):
             budget_tokens=request.budget_tokens,
             mode="chat",
         )
-        response = self._service_factory(self._db).search(legacy_request, self._model_config)
+        from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter
+        self._db.info["staffdeck_actor_id"] = context.user_id
+        response = StaffDeckKnowledgeAdapter(
+            self._db, context.tenant_id, context.agent_id,
+        ).handle("search_knowledge", {"request": legacy_request})
         if not isinstance(response, KnowledgeSearchResponse):
             raise TypeError("local Knowledge provider returned an invalid response")
         items = tuple(
@@ -101,6 +108,14 @@ class LocalKnowledgeRuntime(KnowledgeRuntime):
     def resolve_citation(
         self, context: CapabilityContext, provider_citation_ref: str
     ) -> CitationDetail:
+        from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+        if enabled():
+            self._db.info["staffdeck_actor_id"] = context.user_id
+            row = StaffDeckKnowledgeAdapter(self._db, context.tenant_id, context.agent_id).call(
+                "GET", f"/citations/{provider_citation_ref}",
+            )
+            return CitationDetail(citation_id=row["id"], title=None,
+                                  content=row["content"], source_ref=row.get("source_ref"))
         raise CapabilityProviderError(
             CapabilityErrorInfo(
                 code="KNOWLEDGE_CITATION_NOT_DURABLE",

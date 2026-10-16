@@ -1,0 +1,69 @@
+{
+  "status": "passed",
+  "checks": [
+    {
+      "name": "minimal",
+      "status": "passed",
+      "evidence": [
+        "combination-browser/minimal/report.json",
+        "combination-browser/minimal/minimal-browser.json"
+      ]
+    },
+    {
+      "name": "authentication",
+      "status": "passed",
+      "evidence": [
+        "combination-browser/authentication/report.json",
+        "combination-browser/authentication/minimal-browser.json"
+      ]
+    },
+    {
+      "name": "catalog",
+      "status": "passed",
+      "evidence": [
+        "combination-browser/catalog/report.json",
+        "combination-browser/catalog/minimal-browser.json"
+      ]
+    },
+    {
+      "name": "catalog_versions",
+      "status": "passed",
+      "evidence": [
+        "combination-browser/catalog_versions/report.json",
+        "combination-browser/catalog_versions/minimal-browser.json"
+      ]
+    },
+    {
+      "name": "concepts",
+      "status": "passed",
+      "evidence": [
+        "combination-browser/concepts/report.json",
+        "combination-browser/concepts/minimal-browser.json"
+      ]
+    },
+    {
+      "name": "discovery",
+      "status": "passed",
+      "evidence": [
+        "combination-browser/discovery/report.json",
+        "combination-browser/discovery/minimal-browser.json"
+      ]
+    },
+    {
+      "name": "concepts_discovery",
+      "status": "passed",
+      "evidence": [
+        "combination-browser/concepts_discovery/report.json",
+        "combination-browser/concepts_discovery/minimal-browser.json"
+      ]
+    },
+    {
+      "name": "spaces_catalog_versions",
+      "status": "passed",
+      "evidence": [
+        "combination-browser/spaces_catalog_versions/report.json",
+        "combination-browser/spaces_catalog_versions/minimal-browser.json"
+      ]
+    }
+  ]
+}

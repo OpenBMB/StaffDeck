@@ -1,0 +1,16 @@
+{
+  "name": "concepts_discovery",
+  "status": "passed",
+  "command": [
+    "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/venv/bin/python",
+    "-m",
+    "knowledge_core.cli",
+    "--config",
+    "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/combination-browser/concepts_discovery/configuration.json",
+    "--database-url",
+    "sqlite:////Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/combination-browser/concepts_discovery/knowledge-ba2988c9c6194f1fa2d5bd2932c60bcf.sqlite",
+    "--port",
+    "52296"
+  ],
+  "shutdown_returncode": -15
+}

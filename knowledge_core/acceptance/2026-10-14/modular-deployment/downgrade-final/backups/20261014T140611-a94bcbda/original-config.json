@@ -1,0 +1,1 @@
+{"protocol": "knowledge-config/v1", "preset": "minimal", "modules": {"authentication": false, "spaces": true, "catalog": true, "versions": true, "concepts": true, "discovery": true, "publication": false}}

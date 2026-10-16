@@ -9,7 +9,6 @@ from __future__ import annotations
 from sqlmodel import Session
 
 from app.api import knowledge_bases as native_bases
-from app.db.models import KnowledgeDocument
 from app.public_api.auth import PublicPrincipal, enforce_agent_access
 from app.public_api.errors import PublicAPIError
 from app.public_api.sessions import ensure_public_agent
@@ -25,6 +24,8 @@ def enforce_public_knowledge_pep(
     knowledge_base_id: str | None = None,
     document_id: str | None = None,
 ) -> None:
+    db.info["staffdeck_actor_id"] = principal.actor_user.id
+    db.info["staffdeck_km_agent_id"] = agent_id
     enforce_agent_access(principal, agent_id, write=write)
     ensure_public_agent(db, principal, agent_id)
     if write:
@@ -35,11 +36,11 @@ def enforce_public_knowledge_pep(
         # Checks the visible branch/version, not only tenant ownership of the row.
         native_bases.get_knowledge_base(knowledge_base_id, principal.tenant_id, agent_id, db)
     if document_id:
-        row = db.get(KnowledgeDocument, document_id)
-        if (
-            not row or row.tenant_id != principal.tenant_id
-            or row.knowledge_base_id != knowledge_base_id
-        ):
+        from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter
+        row = StaffDeckKnowledgeAdapter(
+            db, principal.tenant_id, agent_id, principal.actor_user,
+        ).call("GET", f"/documents/{document_id}")
+        if row["knowledge_base_id"] != knowledge_base_id:
             raise PublicAPIError(404, "DOCUMENT_NOT_FOUND", "Document not found in this knowledge base.")
 
 

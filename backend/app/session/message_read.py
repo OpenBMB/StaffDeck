@@ -5,7 +5,7 @@ import re
 from sqlalchemy import or_
 from sqlmodel import Session, select
 
-from app.db.models import KnowledgeChunk, KnowledgeConcept, Message
+from app.db.models import ChatSession, Message, User
 from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT, compact_knowledge_citation_labels
 from app.session.session_schema import MessageRead
 
@@ -58,7 +58,7 @@ def _message_metadata_read(row: Message, db: Session | None = None) -> dict:
         if not isinstance(citation, dict):
             hydrated.append(citation)
             continue
-        content = _citation_content_from_db(db, row.tenant_id, citation)
+        content = _citation_content_from_km(db, row, citation)
         if content:
             next_citation = dict(citation)
             next_citation["content"] = content[:CITATION_EXCERPT_CHAR_LIMIT]
@@ -72,25 +72,36 @@ def _message_metadata_read(row: Message, db: Session | None = None) -> dict:
     return metadata
 
 
-def _citation_content_from_db(db: Session, tenant_id: str, citation: dict) -> str:
-    concept_id = str(citation.get("concept_id") or "").strip()
-    if concept_id:
-        concept = db.exec(
-            select(KnowledgeConcept).where(
-                KnowledgeConcept.tenant_id == tenant_id,
-                or_(KnowledgeConcept.concept_id == concept_id, KnowledgeConcept.id == concept_id),
-            )
-        ).first()
-        if concept:
-            content = _strip_okf_frontmatter(concept.content_md or "")
-            if content:
-                return content
-    chunk_id = str(citation.get("chunk_id") or "").strip()
-    if chunk_id:
-        chunk = db.get(KnowledgeChunk, chunk_id)
-        if chunk and chunk.tenant_id == tenant_id and chunk.content:
-            return chunk.content
+def _citation_content_from_km(db: Session, row: Message, citation: dict) -> str:
+    from fastapi import HTTPException
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter
+
+    session = db.get(ChatSession, row.session_id)
+    if session is None or session.tenant_id != row.tenant_id:
+        return ""
+    actor_id = db.info.get("staffdeck_actor_id") or session.user_id
+    if not actor_id:
+        return ""
+    try:
+        actor = db.get(User, actor_id)
+        if actor is None:
+            return ""
+        adapter = StaffDeckKnowledgeAdapter(db, row.tenant_id, session.agent_id, actor)
+        chunk_id = str(citation.get("chunk_id") or "").strip()
+        if chunk_id:
+            return adapter.call("GET", f"/citations/{chunk_id}").get("content", "")
+        concept_id, base_id = citation.get("concept_id"), citation.get("knowledge_base_id")
+        if concept_id and base_id:
+            concepts = adapter.call("GET", f"/knowledge-bases/{base_id}/concepts")
+            concept = next((item for item in concepts if concept_id in {item["id"], item["concept_id"]}), None)
+            if concept:
+                return _strip_okf_frontmatter(concept.get("content_md", ""))
+    except HTTPException:
+        # Persisted evidence remains readable when its source is unavailable.
+        return ""
     return ""
+
+
 
 
 def _strip_okf_frontmatter(value: str) -> str:

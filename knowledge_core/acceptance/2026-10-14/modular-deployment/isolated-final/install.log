@@ -1,0 +1,30 @@
+Using Python 3.14.7 environment at: /Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/venv
+Resolved 25 packages in 548ms
+Prepared 25 packages in 8ms
+Uninstalled 25 packages in 141ms
+Installed 25 packages in 20ms
+ ~ annotated-doc==0.0.5
+ ~ annotated-types==0.8.0
+ ~ anyio==4.15.1
+ ~ beautifulsoup4==4.15.0
+ ~ certifi==2026.7.22
+ ~ click==8.5.0
+ ~ fastapi==0.143.1
+ ~ h11==0.16.0
+ ~ httpcore==1.0.9
+ ~ httpx==0.28.1
+ ~ idna==3.20
+ ~ knowledge-core==0.1.0 (from file:///Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/isolated-source/dist/knowledge_core-0.1.0-py3-none-any.whl)
+ ~ lxml==6.1.3
+ ~ opentelemetry-api==1.45.1
+ ~ pydantic==2.14.1
+ ~ pydantic-core==2.50.1
+ ~ pypdf==6.20.1
+ ~ python-docx==1.2.0
+ ~ soupsieve==3.0.3
+ ~ sqlalchemy==2.0.54
+ ~ sqlmodel==0.0.39
+ ~ starlette==1.8.0
+ ~ typing-extensions==4.16.0
+ ~ typing-inspection==0.4.4
+ ~ uvicorn==0.54.0

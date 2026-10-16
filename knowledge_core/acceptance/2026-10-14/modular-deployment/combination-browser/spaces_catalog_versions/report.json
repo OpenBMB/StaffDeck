@@ -1,0 +1,16 @@
+{
+  "name": "spaces_catalog_versions",
+  "status": "passed",
+  "command": [
+    "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/isolated-final/venv/bin/python",
+    "-m",
+    "knowledge_core.cli",
+    "--config",
+    "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/combination-browser/spaces_catalog_versions/configuration.json",
+    "--database-url",
+    "sqlite:////Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/combination-browser/spaces_catalog_versions/knowledge-270a3a7c5e6f499886756ab7e2ae12f3.sqlite",
+    "--port",
+    "52325"
+  ],
+  "shutdown_returncode": -15
+}

@@ -1,0 +1,32 @@
+{
+  "status": "passed",
+  "groups": {
+    "pd": {
+      "command": [
+        "/Users/a1/.nvm/versions/node/v22.23.1/bin/node",
+        "--test",
+        "/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/dist/tests/composition/knowledge-agent.spec.js",
+        "/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/dist/tests/composition/knowledge-core-operations.spec.js",
+        "/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/dist/tests/composition/knowledge-core.spec.js",
+        "/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/dist/tests/composition/knowledge-modular.spec.js",
+        "/Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/dist/tests/composition/knowledge-public-read.spec.js"
+      ],
+      "exit_code": 0,
+      "status": "passed"
+    },
+    "sd": {
+      "command": [
+        "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/bin/python",
+        "-m",
+        "pytest",
+        "backend/tests/test_knowledge_agent.py",
+        "backend/tests_harness/test_composition.py",
+        "-q",
+        "--junitxml",
+        "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-15/source-deployment/host-regression/sd.xml"
+      ],
+      "exit_code": 0,
+      "status": "passed"
+    }
+  }
+}

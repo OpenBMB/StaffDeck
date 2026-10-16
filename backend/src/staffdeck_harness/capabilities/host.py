@@ -119,6 +119,10 @@ PROXY_TOOLS: dict[str, dict[str, Any]] = {
 }
 
 
+from app.knowledge.agent_tools import schemas as knowledge_agent_schemas
+PROXY_TOOLS.update(knowledge_agent_schemas())
+
+
 def proxy_tool_schemas() -> list[dict[str, Any]]:
     """Every proxy tool, unfiltered.
 
@@ -129,7 +133,9 @@ def proxy_tool_schemas() -> list[dict[str, Any]]:
     (activation fence, PEP), never by hiding schemas.
     """
 
-    return [{"name": name, "description": spec["description"], "parameters": spec["parameters"]} for name, spec in PROXY_TOOLS.items()]
+    return [{"name": name, "description": spec["description"], "parameters": spec["parameters"],
+             **({'annotations': {'readOnlyHint': not spec['side_effecting'], 'destructiveHint': spec['side_effecting']}}
+                if 'side_effecting' in spec else {})} for name, spec in PROXY_TOOLS.items()]
 
 
 @dataclass
@@ -217,9 +223,16 @@ class CapabilityHost:
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         allowed = self.slot.allowed()
+        from app.knowledge.agent_tools import supported_methods
+        enabled_knowledge = supported_methods() if any(grant.operation in
+            {spec['operation'] for spec in knowledge_agent_schemas().values()} for grant in self.slot.grants()) else set()
         out: list[dict[str, Any]] = []
         for name, spec in PROXY_TOOLS.items():
             op = spec["operation"]
+            if name in knowledge_agent_schemas() and not any(grant.operation == op for grant in self.slot.grants()):
+                continue
+            if name in knowledge_agent_schemas() and name.removeprefix('knowledge_') not in enabled_knowledge:
+                continue
             if op == "knowledge.search/v1" and not allowed.get("knowledge_base"):
                 continue
             if op == "general_skill.consume/v1" and not allowed.get("general_skill"):
@@ -229,7 +242,9 @@ class CapabilityHost:
             if op == "sandbox.execute/v1" and not self.slot.snapshot.session_policy.get("sandbox_enabled") and not allowed.get("tool"):
                 # sandbox is always available to a Staff for file work; keep it.
                 pass
-            out.append({"name": name, "description": spec["description"], "parameters": spec["parameters"]})
+            out.append({"name": name, "description": spec["description"], "parameters": spec["parameters"],
+                        **({'annotations': {'readOnlyHint': not spec['side_effecting'],
+                            'destructiveHint': spec['side_effecting']}} if 'side_effecting' in spec else {})})
         return out
 
     def describe(self, kind: str = "all") -> dict[str, Any]:
@@ -309,6 +324,9 @@ class CapabilityHost:
             binding_id = str(args.get("skill_id") or "")
         elif op == "sandbox.execute/v1":
             side_effecting = str(args.get("tool") or "") in {"write_file", "exec_command", "run_skill_script", "apply_patch", "delete_file"}
+        elif proxy_name in knowledge_agent_schemas():
+            binding_id = str(args.get('knowledge_base_id') or '')
+            side_effecting = bool(spec.get('side_effecting'))
         inv = ModuleInvocation(
             invocation_id=ctx.trace_id or f"hcall_{int(time.time()*1000)}",
             module_id=op.split(".", 1)[0],
@@ -332,6 +350,13 @@ class CapabilityHost:
                 return ModuleResult.fail(exc.code, exc.message), None
 
     def _invoke(self, inv: ModuleInvocation) -> tuple[ModuleResult, Receipt | None]:
+        agent_spec = next((spec for spec in knowledge_agent_schemas().values() if spec['operation'] == inv.operation), None)
+        if agent_spec:
+            from jsonschema import validate, ValidationError
+            try: validate(dict(inv.arguments), agent_spec['parameters'])
+            except ValidationError as exc: return _invalid_arguments(inv.operation, exc), None
+            from dataclasses import replace
+            inv = replace(inv, side_effecting=agent_spec['side_effecting'])
         if self.slot.snapshot.session_policy.get("read_only"):
             readable = inv.operation == "general_skill.consume/v1" or (
                 inv.operation == "sandbox.execute/v1" and inv.arguments.get("tool") in

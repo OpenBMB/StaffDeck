@@ -4,13 +4,13 @@ import os
 import signal
 import subprocess
 import sys
+import base64
+import time
 
 import pytest
 from sqlmodel import SQLModel, Session, create_engine, select
 
-from app.db.models import (AgentProfile, AgentResourceBinding, PilotDeckProjectBinding, Tenant, User,
-                           KnowledgeDocument, KnowledgeBucket, KnowledgeChunk, KnowledgeIngestJob,
-                           KnowledgeDiscoverySuggestion)
+from app.db.models import AgentProfile, AgentResourceBinding, PilotDeckProjectBinding, Tenant, User
 from app.public_api.auth import PublicPrincipal
 from app.public_api.errors import PublicAPIError
 from app.public_api.project_bindings import EnsureProjectBinding, ensure_project_binding
@@ -96,7 +96,8 @@ with Session(create_engine(url)) as db:
     engine.dispose()
 
 
-def test_public_binding_api_and_project_resource_isolation(tmp_path):
+def test_public_binding_api_and_project_resource_isolation(tmp_path, independent_knowledge_service):
+    km = independent_knowledge_service('tenant')
     engine = create_engine(f"sqlite:///{tmp_path / 'api.sqlite'}", connect_args={"check_same_thread": False})
     SQLModel.metadata.create_all(engine)
     with Session(engine) as db:
@@ -136,33 +137,31 @@ def test_public_binding_api_and_project_resource_isolation(tmp_path):
     assert len(module(a, 'list_bases', {}).json()['payload']['result']) == 2
     assert module(b, 'list_bases', {}).json()['payload']['result'] == []
     assert module(a, 'list_bases', {'agentId': b}).status_code == 403
-    with Session(engine) as db:
-        base_id = module(a, 'list_bases', {}).json()['payload']['result'][0]['id']
-        rows = [KnowledgeDocument(id='document-a', tenant_id='tenant', knowledge_base_id=base_id,
-                                  filename='a.txt', file_type='txt'),
-                KnowledgeBucket(id='bucket-a', tenant_id='tenant', knowledge_base_id=base_id,
-                                document_id='document-a', bucket_key='a', title='A', summary='A'),
-                KnowledgeChunk(id='chunk-a', tenant_id='tenant', knowledge_base_id=base_id,
-                               document_id='document-a', bucket_id='bucket-a', chunk_index=0,
-                               content='A private marker'),
-                KnowledgeIngestJob(id='job-a', tenant_id='tenant', knowledge_base_id=base_id,
-                                   document_id='document-a', filename='a.txt'),
-                KnowledgeDiscoverySuggestion(id='suggestion-a', tenant_id='tenant',
-                    knowledge_base_id=base_id, document_id='document-a', suggestion_type='concept', title='A')]
-        for row in rows:
-            db.add(row)
-        db.commit()
+    base_id = module(a, 'list_bases', {}).json()['payload']['result'][0]['id']
+    uploaded = module(a, 'import_document', {'knowledgeBaseId': base_id, 'filename': 'a.md',
+        'contentBase64': base64.b64encode(b'# A\n\nA private marker').decode()})
+    assert uploaded.status_code == 200, uploaded.text
+    job = uploaded.json()['payload']['result']
+    for _ in range(100):
+        result = module(a, 'get_job', {'jobId': job['id']}).json()['payload']['result']
+        if result['status'] in {'succeeded', 'failed'}:
+            break
+        time.sleep(.02)
+    assert result['status'] == 'succeeded', result
+    document_id = result['document_id']
+    bucket = module(a, 'list_document_buckets', {'documentId': document_id}).json()['payload']['result'][0]
+    chunk = module(a, 'list_bucket_chunks', {'bucketId': bucket['id']}).json()['payload']['result'][0]
     for operation, value in [
-        ('get_document', {'documentId': 'document-a'}),
-        ('update_document', {'documentId': 'document-a', 'content': 'changed'}),
-        ('delete_document', {'documentId': 'document-a'}),
-        ('list_document_buckets', {'documentId': 'document-a'}),
-        ('update_bucket', {'bucketId': 'bucket-a', 'summary': 'changed'}),
-        ('list_bucket_chunks', {'bucketId': 'bucket-a'}),
-        ('update_chunk', {'chunkId': 'chunk-a', 'content': 'changed'}),
-        ('resolve_citation', {'chunkId': 'chunk-a'}),
-        ('get_job', {'jobId': 'job-a'}),
-        ('cancel_job', {'jobId': 'job-a'}),
+        ('get_document', {'documentId': document_id}),
+        ('update_document', {'documentId': document_id, 'content': 'changed'}),
+        ('delete_document', {'documentId': document_id}),
+        ('list_document_buckets', {'documentId': document_id}),
+        ('update_bucket', {'bucketId': bucket['id'], 'summary': 'changed'}),
+        ('list_bucket_chunks', {'bucketId': bucket['id']}),
+        ('update_chunk', {'chunkId': chunk['id'], 'content': 'changed'}),
+        ('resolve_citation', {'chunkId': chunk['id']}),
+        ('get_job', {'jobId': job['id']}),
+        ('cancel_job', {'jobId': job['id']}),
         ('confirm_discovery', {'suggestionId': 'suggestion-a'}),
         ('reject_discovery', {'suggestionId': 'suggestion-a'}),
         ('list_versions', {'knowledgeBaseId': base_id}),
@@ -171,7 +170,7 @@ def test_public_binding_api_and_project_resource_isolation(tmp_path):
     ]:
         denied = module(b, operation, value)
         assert denied.status_code == 404, (operation, denied.text)
-    assert module(a, 'resolve_citation', {'chunkId': 'chunk-a'}).status_code == 200
+    assert module(a, 'resolve_citation', {'chunkId': chunk['id']}).status_code == 200
     card = {'skill_id': 'project_a_sop', 'name': 'Project A SOP', 'version': '1.0.0',
             'description': 'A only', 'trigger_intents': ['A'],
             'nodes': [{'node_id': 'answer', 'type': 'respond', 'name': 'Answer', 'instruction': 'Answer A',

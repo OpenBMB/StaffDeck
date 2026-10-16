@@ -1,0 +1,36 @@
+{
+  "status": "passed",
+  "checks": [
+    {
+      "name": "merge_revisions_and_references",
+      "status": "passed",
+      "evidence": [
+        "downgrade-closeout/preflight.json",
+        "downgrade-closeout/conversion.json",
+        "downgrade-closeout/readback.json"
+      ]
+    },
+    {
+      "name": "persistent_backup_and_prewrite_restore",
+      "status": "passed",
+      "evidence": [
+        "downgrade-closeout/backups/20261014T142217-65aa3516/report.json",
+        "downgrade-closeout/backups/20261014T142217-65aa3516/original.sqlite"
+      ]
+    },
+    {
+      "name": "interruption_recovery",
+      "status": "passed",
+      "evidence": [
+        "downgrade-closeout/interruption.json"
+      ]
+    },
+    {
+      "name": "postwrite_restore_guard_and_export",
+      "status": "passed",
+      "evidence": [
+        "downgrade-closeout/new-content.json"
+      ]
+    }
+  ]
+}

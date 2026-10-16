@@ -1,0 +1,42 @@
+{
+  "status": "passed",
+  "groups": {
+    "core": {
+      "command": [
+        "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/bin/python",
+        "-m",
+        "pytest",
+        "knowledge_core/tests",
+        "-q"
+      ],
+      "collection_exit_code": 0,
+      "exit_code": 0,
+      "status": "passed"
+    },
+    "compatibility": {
+      "command": [
+        "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/.venv/bin/python",
+        "-m",
+        "pytest",
+        "backend/tests/test_knowledge_base.py",
+        "backend/tests/test_knowledge_capabilities_adapter.py",
+        "backend/tests/test_knowledge_citations.py",
+        "backend/tests/test_knowledge_explicit_version_scope.py",
+        "backend/tests/test_knowledge_http_adapter.py",
+        "backend/tests/test_knowledge_ingest_writer.py",
+        "backend/tests/test_knowledge_ports.py",
+        "backend/tests/test_knowledge_publication_adapter.py",
+        "backend/tests/test_knowledge_restart_migration.py",
+        "backend/tests/test_knowledge_seed_http.py",
+        "backend/tests/test_public_staffdeck_facade.py",
+        "backend/tests/test_public_knowledge_auto_upload.py",
+        "backend/tests/test_public_pilotdeck_domain_host.py",
+        "backend/tests/test_public_pilotdeck_knowledge_read.py",
+        "-q"
+      ],
+      "collection_exit_code": 0,
+      "exit_code": 0,
+      "status": "passed"
+    }
+  }
+}

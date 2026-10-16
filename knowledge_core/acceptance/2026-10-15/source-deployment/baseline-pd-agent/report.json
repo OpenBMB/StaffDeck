@@ -1,0 +1,4486 @@
+{
+  "status": "not_accepted",
+  "isolation": {
+    "staffdeck_service": false,
+    "km_from_wheel": true,
+    "staffdeck_source": false,
+    "pilotdeck_from_build": true
+  },
+  "requests": [
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/spaces",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": [
+        {
+          "id": "pd-space",
+          "name": "PilotDeck acceptance",
+          "tenant_id": "pd-acceptance",
+          "owner_id": "pd-owner",
+          "owner_name": "pd-owner",
+          "status": "active",
+          "created_at": "2026-10-15T13:54:22.226958",
+          "updated_at": "2026-10-15T13:54:22.226985",
+          "can_write": true
+        }
+      ]
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/capabilities/catalog",
+      "method": "POST",
+      "status": 200,
+      "body": {},
+      "response": {
+        "data": [
+          {
+            "id": "moonshot/kimi-k3",
+            "provider": "moonshot",
+            "model": "kimi-k3",
+            "displayName": "Kimi K3",
+            "available": true,
+            "capabilities": {},
+            "name": "Kimi K3",
+            "enabled": true,
+            "is_default": false
+          },
+          {
+            "id": "provider1/claude-sonnet-5",
+            "provider": "provider1",
+            "model": "claude-sonnet-5",
+            "displayName": "claude-sonnet-5",
+            "available": true,
+            "capabilities": {},
+            "name": "claude-sonnet-5",
+            "enabled": true,
+            "is_default": false
+          },
+          {
+            "id": "provider1/deepseek-v4-flash-0731",
+            "provider": "provider1",
+            "model": "deepseek-v4-flash-0731",
+            "displayName": "deepseek-v4-flash-0731",
+            "available": true,
+            "capabilities": {},
+            "name": "deepseek-v4-flash-0731",
+            "enabled": true,
+            "is_default": true
+          },
+          {
+            "id": "provider1/qwen3.6-flash-distill",
+            "provider": "provider1",
+            "model": "qwen3.6-flash-distill",
+            "displayName": "qwen3.6-flash-distill",
+            "available": true,
+            "capabilities": {},
+            "name": "qwen3.6-flash-distill",
+            "enabled": true,
+            "is_default": false
+          },
+          {
+            "id": "provider2/CLAUDE_5boy00",
+            "provider": "provider2",
+            "model": "CLAUDE_5boy00",
+            "displayName": "CLAUDE_5boy00",
+            "available": true,
+            "capabilities": {},
+            "name": "CLAUDE_5boy00",
+            "enabled": true,
+            "is_default": false
+          },
+          {
+            "id": "provider2/claude-sonnet-5",
+            "provider": "provider2",
+            "model": "claude-sonnet-5",
+            "displayName": "claude-sonnet-5",
+            "available": true,
+            "capabilities": {},
+            "name": "claude-sonnet-5",
+            "enabled": true,
+            "is_default": false
+          },
+          {
+            "id": "provider3/ep-glm52",
+            "provider": "provider3",
+            "model": "ep-glm52",
+            "displayName": "ep-glm52",
+            "available": true,
+            "capabilities": {},
+            "name": "ep-glm52",
+            "enabled": true,
+            "is_default": false
+          },
+          {
+            "id": "provider3/ep-hackthondsv4flash",
+            "provider": "provider3",
+            "model": "ep-hackthondsv4flash",
+            "displayName": "ep-hackthondsv4flash",
+            "available": true,
+            "capabilities": {},
+            "name": "ep-hackthondsv4flash",
+            "enabled": true,
+            "is_default": false
+          },
+          {
+            "id": "provider3/ep-hackthondsv4vision",
+            "provider": "provider3",
+            "model": "ep-hackthondsv4vision",
+            "displayName": "ep-hackthondsv4vision",
+            "available": true,
+            "capabilities": {},
+            "name": "ep-hackthondsv4vision",
+            "enabled": true,
+            "is_default": false
+          },
+          {
+            "id": "provider3/ep-hackthonglm53",
+            "provider": "provider3",
+            "model": "ep-hackthonglm53",
+            "displayName": "ep-hackthonglm53",
+            "available": true,
+            "capabilities": {},
+            "name": "ep-hackthonglm53",
+            "enabled": true,
+            "is_default": false
+          },
+          {
+            "id": "provider3/ep-hackthonhy3",
+            "provider": "provider3",
+            "model": "ep-hackthonhy3",
+            "displayName": "ep-hackthonhy3",
+            "available": true,
+            "capabilities": {},
+            "name": "ep-hackthonhy3",
+            "enabled": true,
+            "is_default": false
+          },
+          {
+            "id": "provider3/ep-hackthonm3",
+            "provider": "provider3",
+            "model": "ep-hackthonm3",
+            "displayName": "ep-hackthonm3",
+            "available": true,
+            "capabilities": {},
+            "name": "ep-hackthonm3",
+            "enabled": true,
+            "is_default": false
+          },
+          {
+            "id": "TestProvider/model",
+            "provider": "TestProvider",
+            "model": "model",
+            "displayName": "model",
+            "available": true,
+            "capabilities": {},
+            "name": "model",
+            "enabled": true,
+            "is_default": false
+          }
+        ],
+        "defaultSelection": {
+          "mode": "model",
+          "provider": "provider1",
+          "model": "deepseek-v4-flash-0731"
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/bindings?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": []
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": []
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": []
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases",
+      "method": "POST",
+      "status": 201,
+      "body": {
+        "space_id": "pd-space",
+        "name": "Acceptance 1792072471682"
+      },
+      "response": {
+        "id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "tenant_id": "pd-acceptance",
+        "name": "Acceptance 1792072471682",
+        "description": null,
+        "status": "active",
+        "capability_scope": "general",
+        "metadata": {
+          "owner_id": "pd-owner",
+          "owner_name": "pd-owner",
+          "published_version_id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0"
+        },
+        "created_at": "2026-10-15T13:54:31.862331",
+        "updated_at": "2026-10-15T13:54:31.862331"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": [
+        {
+          "id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "name": "Acceptance 1792072471682",
+          "description": null,
+          "status": "active",
+          "metadata": {
+            "owner_id": "pd-owner",
+            "owner_name": "pd-owner",
+            "published_version_id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0"
+          },
+          "tenant_id": "pd-acceptance",
+          "capability_scope": "general",
+          "created_at": "2026-10-15T13:54:31.862331",
+          "updated_at": "2026-10-15T13:54:31.862331"
+        }
+      ]
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/bindings?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": [
+        {
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "space_id": "pd-space",
+          "hidden": false,
+          "id": "binding_8bee273ffdde49f78623f8f0b7b15911",
+          "metadata": {
+            "name": "Acceptance 1792072471682"
+          },
+          "created_at": "2026-10-15T13:54:31.865104",
+          "updated_at": "2026-10-15T13:54:31.865124",
+          "tenant_id": "pd-acceptance",
+          "branch": {
+            "id": "kbranch_3c3167a8681349aab3a8ff9049c63ec9",
+            "tenant_id": "pd-acceptance",
+            "space_id": "pd-space",
+            "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+            "base_version_id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0",
+            "head_version_id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0",
+            "status": "active",
+            "sync_state": "synced",
+            "created_at": "2026-10-15T13:54:31.866698",
+            "updated_at": "2026-10-15T13:54:31.866487"
+          }
+        }
+      ]
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/suggestions?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": []
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/documents?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": []
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/versions?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": [
+        {
+          "id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "version": "1.0.0",
+          "name": "Acceptance 1792072471682",
+          "description": null,
+          "status": "active",
+          "capability_scope": "general",
+          "metadata": {},
+          "created_at": "2026-10-15T13:54:31.862331",
+          "updated_at": "2026-10-15T13:54:31.862331",
+          "tenant_id": "pd-acceptance"
+        }
+      ]
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "name": "Acceptance 1792072471682",
+        "description": null,
+        "status": "active",
+        "metadata": {
+          "owner_id": "pd-owner",
+          "owner_name": "pd-owner",
+          "published_version_id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0"
+        },
+        "tenant_id": "pd-acceptance",
+        "capability_scope": "general",
+        "created_at": "2026-10-15T13:54:31.862331",
+        "updated_at": "2026-10-15T13:54:31.862331",
+        "branch": {
+          "id": "kbranch_3c3167a8681349aab3a8ff9049c63ec9",
+          "tenant_id": "pd-acceptance",
+          "space_id": "pd-space",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "base_version_id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0",
+          "head_version_id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0",
+          "status": "active",
+          "sync_state": "synced",
+          "created_at": "2026-10-15T13:54:31.866698",
+          "updated_at": "2026-10-15T13:54:31.866487"
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/concepts?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": []
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/documents",
+      "method": "POST",
+      "status": 202,
+      "body": {
+        "space_id": "pd-space",
+        "filename": "expenses.md",
+        "content_base64": "IyBFeHBlbnNlIHBvbGljeQoKRXhwZW5zZSByZWltYnVyc2VtZW50IHJlcXVpcmVzIHJlY2VpcHRzIHdpdGhpbiAzMCBkYXlzLgoKIyMgQXBwcm92YWwKCkEgbWFuYWdlciBhcHByb3ZlcyBldmVyeSBleHBlbnNlIGNsYWltLg==",
+        "model_id": "provider1/deepseek-v4-flash-0731"
+      },
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "queued",
+        "stage": "queued",
+        "progress": 0,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:36.596255",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": null,
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "name": "Acceptance 1792072471682",
+        "description": null,
+        "status": "active",
+        "metadata": {
+          "owner_id": "pd-owner",
+          "owner_name": "pd-owner",
+          "published_version_id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0"
+        },
+        "tenant_id": "pd-acceptance",
+        "capability_scope": "general",
+        "created_at": "2026-10-15T13:54:31.862331",
+        "updated_at": "2026-10-15T13:54:31.862331",
+        "branch": {
+          "id": "kbranch_3c3167a8681349aab3a8ff9049c63ec9",
+          "tenant_id": "pd-acceptance",
+          "space_id": "pd-space",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "base_version_id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0",
+          "head_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+          "status": "active",
+          "sync_state": "modified",
+          "created_at": "2026-10-15T13:54:31.866698",
+          "updated_at": "2026-10-15T13:54:35.264018"
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/documents?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": []
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/concepts?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": []
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/suggestions?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": []
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/versions?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": [
+        {
+          "id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "version": "draft-8a4c2d98a538456ab10423554b02c041",
+          "name": "Acceptance 1792072471682",
+          "description": null,
+          "status": "active",
+          "capability_scope": "general",
+          "metadata": {},
+          "created_at": "2026-10-15T13:54:35.260471",
+          "updated_at": "2026-10-15T13:54:35.260477",
+          "tenant_id": "pd-acceptance"
+        },
+        {
+          "id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "version": "1.0.0",
+          "name": "Acceptance 1792072471682",
+          "description": null,
+          "status": "active",
+          "capability_scope": "general",
+          "metadata": {},
+          "created_at": "2026-10-15T13:54:31.862331",
+          "updated_at": "2026-10-15T13:54:31.862331",
+          "tenant_id": "pd-acceptance"
+        }
+      ]
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "parsing",
+        "progress": 0.08,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:36.628263",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "解析原始资料",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "running"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "pending"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "pending"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "pending"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:54:37.353839",
+        "finished_at": null,
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "processing",
+          "stage_detail": "等待后台处理",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "pending"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "pending"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "pending"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "pending"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/jobs/kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kjob_6a1a2c4cbaf64a0ea4bb63988066e2a7",
+        "filename": "expenses.md",
+        "status": "succeeded",
+        "stage": "done",
+        "progress": 1,
+        "error": null,
+        "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+        "created_at": "2026-10-15T13:54:36.596255",
+        "updated_at": "2026-10-15T13:55:02.290474",
+        "finished_at": "2026-10-15T13:55:02.290474",
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "started_at": "2026-10-15T13:54:36.630722",
+        "metadata": {
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner"
+          },
+          "title": null,
+          "stage_label": "完成入库",
+          "stage_detail": "完成入库：4 个 Wiki 页面，1 个内部索引，2 个引用来源",
+          "ingest_steps": [
+            {
+              "key": "queued",
+              "label": "排队中",
+              "progress": 0,
+              "status": "done"
+            },
+            {
+              "key": "parsing",
+              "label": "解析原始资料",
+              "progress": 0.08,
+              "status": "done"
+            },
+            {
+              "key": "normalizing",
+              "label": "规范化 Source",
+              "progress": 0.16,
+              "status": "done"
+            },
+            {
+              "key": "documenting",
+              "label": "写入 Source Document",
+              "progress": 0.24,
+              "status": "done"
+            },
+            {
+              "key": "bucketing",
+              "label": "规划 Wiki 页面",
+              "progress": 0.36,
+              "status": "done"
+            },
+            {
+              "key": "bucket_writing",
+              "label": "写入 OKF Wiki",
+              "progress": 0.48,
+              "status": "done"
+            },
+            {
+              "key": "chunking",
+              "label": "生成引用来源",
+              "progress": 0.62,
+              "status": "done"
+            },
+            {
+              "key": "summarizing",
+              "label": "刷新 PageIndex",
+              "progress": 0.74,
+              "status": "done"
+            },
+            {
+              "key": "discovering",
+              "label": "发现 SOP/工具",
+              "progress": 0.88,
+              "status": "done"
+            },
+            {
+              "key": "done",
+              "label": "完成入库",
+              "progress": 1,
+              "status": "running"
+            }
+          ],
+          "stage_stats": {
+            "concept_count": 4,
+            "bucket_count": 1,
+            "chunk_count": 2
+          }
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "name": "Acceptance 1792072471682",
+        "description": null,
+        "status": "active",
+        "metadata": {
+          "owner_id": "pd-owner",
+          "owner_name": "pd-owner",
+          "published_version_id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0"
+        },
+        "tenant_id": "pd-acceptance",
+        "capability_scope": "general",
+        "created_at": "2026-10-15T13:54:31.862331",
+        "updated_at": "2026-10-15T13:54:31.862331",
+        "branch": {
+          "id": "kbranch_3c3167a8681349aab3a8ff9049c63ec9",
+          "tenant_id": "pd-acceptance",
+          "space_id": "pd-space",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "base_version_id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0",
+          "head_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+          "status": "active",
+          "sync_state": "modified",
+          "created_at": "2026-10-15T13:54:31.866698",
+          "updated_at": "2026-10-15T13:55:02.327636"
+        }
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/documents?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": [
+        {
+          "id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+          "filename": "expenses.md",
+          "file_type": "md",
+          "title": "expenses",
+          "status": "ready",
+          "metadata": {
+            "capability_scope": "general",
+            "km_model_id": "provider1/deepseek-v4-flash-0731",
+            "creator_id": "pd-owner",
+            "creator_name": "pd-owner",
+            "raw_text": "# Expense policy\n\nExpense reimbursement requires receipts within 30 days.\n\n## Approval\n\nA manager approves every expense claim.",
+            "document_card": {
+              "title": "expenses",
+              "filename": "expenses.md",
+              "file_type": "md",
+              "summary": "# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.",
+              "outline": [
+                {
+                  "section_id": "sec_1",
+                  "title": "Expense policy",
+                  "path": "Expense policy",
+                  "level": 1,
+                  "summary": "# Expense policy Expense reimbursement requires receipts within 30 days."
+                },
+                {
+                  "section_id": "sec_2",
+                  "title": "Approval",
+                  "path": "Expense policy / Approval",
+                  "level": 2,
+                  "summary": "## Approval A manager approves every expense claim."
+                }
+              ],
+              "applicable_scenarios": [
+                "Expense policy",
+                "Approval"
+              ],
+              "key_entities": [
+                "Expense",
+                "policy",
+                "reimbursement",
+                "requires",
+                "receipts",
+                "within",
+                "days",
+                "Approval",
+                "manager",
+                "approves",
+                "every",
+                "expense",
+                "claim"
+              ],
+              "char_count": 127,
+              "section_count": 2
+            },
+            "section_tree": [
+              {
+                "section_id": "sec_1",
+                "related_section_id": "sec_1",
+                "node_type": "section",
+                "level": 1,
+                "title": "Expense policy",
+                "parent_id": null,
+                "path": "Expense policy",
+                "section_order": 1,
+                "summary": "# Expense policy Expense reimbursement requires receipts within 30 days.",
+                "content": "# Expense policy\n\nExpense reimbursement requires receipts within 30 days.",
+                "source_span": {
+                  "start_paragraph": 0,
+                  "end_paragraph": 1
+                },
+                "anchor_entities": [
+                  "Expense",
+                  "policy",
+                  "reimbursement",
+                  "requires",
+                  "receipts",
+                  "within",
+                  "days"
+                ]
+              },
+              {
+                "section_id": "sec_2",
+                "related_section_id": "sec_2",
+                "node_type": "section",
+                "level": 2,
+                "title": "Approval",
+                "parent_id": "sec_1",
+                "path": "Expense policy / Approval",
+                "section_order": 2,
+                "summary": "## Approval A manager approves every expense claim.",
+                "content": "## Approval\n\nA manager approves every expense claim.",
+                "source_span": {
+                  "start_paragraph": 2,
+                  "end_paragraph": 3
+                },
+                "anchor_entities": [
+                  "Approval",
+                  "manager",
+                  "approves",
+                  "every",
+                  "expense",
+                  "claim"
+                ]
+              }
+            ],
+            "ingest_schema_version": 2,
+            "char_count": 127,
+            "section_stats": {
+              "section_count": 2,
+              "paragraph_count": 4
+            },
+            "chunk_stats": {
+              "total_chunks": 2,
+              "chunk_count": 2,
+              "target_chars": 900,
+              "section_target_chars": 1400
+            },
+            "bucket_quality": [
+              {
+                "bucket_id": "kbucket_95ba85afc5894cbeb865dc07480edb75",
+                "title": "Expense policy",
+                "quality": {
+                  "status": "ready",
+                  "warnings": [],
+                  "has_source_sections": true,
+                  "has_summary": true,
+                  "content_chars": 127
+                }
+              }
+            ],
+            "okf": {
+              "version": "0.1",
+              "concept_count": 4,
+              "concept_types": [
+                "Source Document",
+                "Source Section",
+                "Topic"
+              ]
+            }
+          },
+          "bucket_count": 1,
+          "chunk_count": 2,
+          "created_at": "2026-10-15T13:55:02.290474",
+          "updated_at": "2026-10-15T13:55:02.290474",
+          "tenant_id": "pd-acceptance",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+          "error": null
+        }
+      ]
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/versions?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": [
+        {
+          "id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "version": "draft-8a4c2d98a538456ab10423554b02c041",
+          "name": "Acceptance 1792072471682",
+          "description": null,
+          "status": "active",
+          "capability_scope": "general",
+          "metadata": {},
+          "created_at": "2026-10-15T13:54:35.260471",
+          "updated_at": "2026-10-15T13:54:35.260477",
+          "tenant_id": "pd-acceptance"
+        },
+        {
+          "id": "kbver_kb_4bbd42e7056642ad9ea14a3ac0783a49_1_0_0",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "version": "1.0.0",
+          "name": "Acceptance 1792072471682",
+          "description": null,
+          "status": "active",
+          "capability_scope": "general",
+          "metadata": {},
+          "created_at": "2026-10-15T13:54:31.862331",
+          "updated_at": "2026-10-15T13:54:31.862331",
+          "tenant_id": "pd-acceptance"
+        }
+      ]
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/suggestions?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": [
+        {
+          "id": "ksuggestion_9c4865242e034b6398c6b1734ffefb81",
+          "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+          "title": "Receipts must be submitted within 30 days",
+          "suggestion_type": "warning",
+          "status": "pending",
+          "payload": {
+            "description": "Expense reimbursement is only available when receipts are provided within 30 days. Keep and submit receipts promptly."
+          },
+          "source_refs": [
+            {
+              "document": "expenses.md",
+              "bucket_id": "expense_policy",
+              "source_excerpt": "Expense reimbursement requires receipts within 30 days."
+            }
+          ],
+          "reason": "The expense policy requires receipts within 30 days; missing this deadline may prevent reimbursement.",
+          "created_at": "2026-10-15T13:55:02.328185",
+          "updated_at": "2026-10-15T13:55:02.328187",
+          "tenant_id": "pd-acceptance",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d"
+        },
+        {
+          "id": "ksuggestion_d2f3365cec6449369f93785bca6dea9f",
+          "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+          "title": "Manager approval is required for every expense claim",
+          "suggestion_type": "warning",
+          "status": "pending",
+          "payload": {
+            "description": "Every expense claim must receive manager approval to be valid under the expense policy."
+          },
+          "source_refs": [
+            {
+              "document": "expenses.md",
+              "bucket_id": "expense_policy",
+              "source_excerpt": "A manager approves every expense claim."
+            }
+          ],
+          "reason": "The policy states that a manager approves every expense claim, so claims without approval may not be reimbursed.",
+          "created_at": "2026-10-15T13:55:02.329533",
+          "updated_at": "2026-10-15T13:55:02.329535",
+          "tenant_id": "pd-acceptance",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d"
+        },
+        {
+          "id": "ksuggestion_a693ddb33137422c9f0ddd75d07164dc",
+          "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+          "title": "Submit an expense claim for reimbursement",
+          "suggestion_type": "procedure",
+          "status": "pending",
+          "payload": {
+            "description": "Steps to request reimbursement under the expense policy.",
+            "steps": [
+              "Collect receipts for each expense.",
+              "Submit the expense claim with receipts within 30 days of the expense.",
+              "Obtain manager approval for the claim."
+            ]
+          },
+          "source_refs": [
+            {
+              "document": "expenses.md",
+              "bucket_id": "expense_policy",
+              "source_excerpt": "Expense reimbursement requires receipts within 30 days. ... A manager approves every expense claim."
+            }
+          ],
+          "reason": "The policy defines the reimbursement conditions: receipts within 30 days and manager approval. A clear procedure helps ensure compliance.",
+          "created_at": "2026-10-15T13:55:02.329660",
+          "updated_at": "2026-10-15T13:55:02.329661",
+          "tenant_id": "pd-acceptance",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d"
+        }
+      ]
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/knowledge-bases/kb_4bbd42e7056642ad9ea14a3ac0783a49/concepts?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": [
+        {
+          "id": "kconcept_7fca2c2e12814f819f6d718f0ca17d45",
+          "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+          "concept_id": "sources/expenses",
+          "concept_type": "Source Document",
+          "title": "expenses",
+          "content_md": "---\ntype: \"Source Document\"\ntitle: \"expenses\"\ndescription: \"# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.\"\nresource: \"ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a\"\ntags: [\"source\", \"business-knowledge\"]\ntimestamp: \"2026-10-15T13:55:02.290474\"\n---\n\n# Summary\n\n# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.\n\n# Outline\n\n- [Expense policy](/sources/expenses/sections/sec-1.md) - # Expense policy Expense reimbursement requires receipts within 30 days.\n- [Approval](/sources/expenses/sections/sec-2.md) - ## Approval A manager approves every expense claim.\n\n# Knowledge Buckets\n\n- [Expense policy](/topics/expense-policy.md) - # Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a)\n",
+          "links": [
+            {
+              "label": "Expense policy",
+              "target": "/sources/expenses/sections/sec-1.md"
+            },
+            {
+              "label": "Approval",
+              "target": "/sources/expenses/sections/sec-2.md"
+            },
+            {
+              "label": "Expense policy",
+              "target": "/topics/expense-policy.md"
+            },
+            {
+              "label": "Original document",
+              "target": "ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a"
+            }
+          ],
+          "citations": [
+            {
+              "index": 1,
+              "label": "Original document",
+              "target": "ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a"
+            }
+          ],
+          "source_refs": [
+            {
+              "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+              "filename": "expenses.md"
+            }
+          ],
+          "created_at": "2026-10-15T13:55:02.325492",
+          "updated_at": "2026-10-15T13:55:02.325496",
+          "tenant_id": "pd-acceptance",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+          "frontmatter": {
+            "type": "Source Document",
+            "title": "expenses",
+            "description": "# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.",
+            "resource": "ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+            "tags": [
+              "source",
+              "business-knowledge"
+            ],
+            "timestamp": "2026-10-15T13:55:02.290474"
+          },
+          "description": "# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.",
+          "status": "active"
+        },
+        {
+          "id": "kconcept_8426deacdcda470b8388751ff426c004",
+          "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+          "concept_id": "sources/expenses/sections/sec-1",
+          "concept_type": "Source Section",
+          "title": "Expense policy",
+          "content_md": "---\ntype: \"Source Section\"\ntitle: \"Expense policy\"\ndescription: \"# Expense policy Expense reimbursement requires receipts within 30 days.\"\nresource: \"ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a#section=sec_1\"\ntags: [\"source-section\"]\ntimestamp: \"2026-10-15T13:55:02.290474\"\nsource_document: \"sources/expenses\"\nsection_path: \"Expense policy\"\n---\n\n# Summary\n\n# Expense policy Expense reimbursement requires receipts within 30 days.\n\n# Content\n\n# Expense policy\n\nExpense reimbursement requires receipts within 30 days.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a)\n",
+          "links": [
+            {
+              "label": "Original document",
+              "target": "ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a"
+            }
+          ],
+          "citations": [
+            {
+              "index": 1,
+              "label": "Original document",
+              "target": "ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a"
+            }
+          ],
+          "source_refs": [
+            {
+              "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+              "section_id": "sec_1",
+              "section_path": "Expense policy"
+            }
+          ],
+          "created_at": "2026-10-15T13:55:02.326494",
+          "updated_at": "2026-10-15T13:55:02.326496",
+          "tenant_id": "pd-acceptance",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+          "frontmatter": {
+            "type": "Source Section",
+            "title": "Expense policy",
+            "description": "# Expense policy Expense reimbursement requires receipts within 30 days.",
+            "resource": "ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a#section=sec_1",
+            "tags": [
+              "source-section"
+            ],
+            "timestamp": "2026-10-15T13:55:02.290474",
+            "source_document": "sources/expenses",
+            "section_path": "Expense policy"
+          },
+          "description": "# Expense policy Expense reimbursement requires receipts within 30 days.",
+          "status": "active"
+        },
+        {
+          "id": "kconcept_8204ccdc0b79463c808c89defdd1b952",
+          "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+          "concept_id": "sources/expenses/sections/sec-2",
+          "concept_type": "Source Section",
+          "title": "Expense policy / Approval",
+          "content_md": "---\ntype: \"Source Section\"\ntitle: \"Expense policy / Approval\"\ndescription: \"## Approval A manager approves every expense claim.\"\nresource: \"ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a#section=sec_2\"\ntags: [\"source-section\"]\ntimestamp: \"2026-10-15T13:55:02.290474\"\nsource_document: \"sources/expenses\"\nsection_path: \"Expense policy / Approval\"\n---\n\n# Summary\n\n## Approval A manager approves every expense claim.\n\n# Content\n\n## Approval\n\nA manager approves every expense claim.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a)\n",
+          "links": [
+            {
+              "label": "Original document",
+              "target": "ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a"
+            }
+          ],
+          "citations": [
+            {
+              "index": 1,
+              "label": "Original document",
+              "target": "ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a"
+            }
+          ],
+          "source_refs": [
+            {
+              "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+              "section_id": "sec_2",
+              "section_path": "Expense policy / Approval"
+            }
+          ],
+          "created_at": "2026-10-15T13:55:02.326954",
+          "updated_at": "2026-10-15T13:55:02.326955",
+          "tenant_id": "pd-acceptance",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+          "frontmatter": {
+            "type": "Source Section",
+            "title": "Expense policy / Approval",
+            "description": "## Approval A manager approves every expense claim.",
+            "resource": "ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a#section=sec_2",
+            "tags": [
+              "source-section"
+            ],
+            "timestamp": "2026-10-15T13:55:02.290474",
+            "source_document": "sources/expenses",
+            "section_path": "Expense policy / Approval"
+          },
+          "description": "## Approval A manager approves every expense claim.",
+          "status": "active"
+        },
+        {
+          "id": "kconcept_363cc67ba9ed4478afae7ce1c42fb52b",
+          "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+          "concept_id": "topics/expense-policy",
+          "concept_type": "Topic",
+          "title": "Expense policy",
+          "content_md": "---\ntype: \"Topic\"\ntitle: \"Expense policy\"\ndescription: \"# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.\"\nresource: \"ultrarag://knowledge/buckets/kbucket_95ba85afc5894cbeb865dc07480edb75\"\ntags: [\"knowledge-bucket\", \"structure\"]\ntimestamp: \"2026-10-15T13:55:02.290474\"\nsource_document: \"sources/expenses\"\n---\n\n# Summary\n\n# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.\n\n# Source Sections\n\n- [Expense policy](/sources/expenses/sections/sec-1.md)\n- [Expense policy / Approval](/sources/expenses/sections/sec-2.md)\n\n# Notes\n\n# Expense policy\n\nExpense reimbursement requires receipts within 30 days.\n\n## Approval\n\nA manager approves every expense claim.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a)\n",
+          "links": [
+            {
+              "label": "Expense policy",
+              "target": "/sources/expenses/sections/sec-1.md"
+            },
+            {
+              "label": "Expense policy / Approval",
+              "target": "/sources/expenses/sections/sec-2.md"
+            },
+            {
+              "label": "Original document",
+              "target": "ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a"
+            }
+          ],
+          "citations": [
+            {
+              "index": 1,
+              "label": "Original document",
+              "target": "ultrarag://knowledge/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a"
+            }
+          ],
+          "source_refs": [
+            {
+              "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+              "bucket_id": "kbucket_95ba85afc5894cbeb865dc07480edb75",
+              "bucket_key": "expense_policy"
+            }
+          ],
+          "created_at": "2026-10-15T13:55:02.327379",
+          "updated_at": "2026-10-15T13:55:02.327380",
+          "tenant_id": "pd-acceptance",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+          "frontmatter": {
+            "type": "Topic",
+            "title": "Expense policy",
+            "description": "# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.",
+            "resource": "ultrarag://knowledge/buckets/kbucket_95ba85afc5894cbeb865dc07480edb75",
+            "tags": [
+              "knowledge-bucket",
+              "structure"
+            ],
+            "timestamp": "2026-10-15T13:55:02.290474",
+            "source_document": "sources/expenses"
+          },
+          "description": "# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.",
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": {
+        "id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+        "filename": "expenses.md",
+        "file_type": "md",
+        "title": "expenses",
+        "status": "ready",
+        "metadata": {
+          "capability_scope": "general",
+          "km_model_id": "provider1/deepseek-v4-flash-0731",
+          "creator_id": "pd-owner",
+          "creator_name": "pd-owner",
+          "raw_text": "# Expense policy\n\nExpense reimbursement requires receipts within 30 days.\n\n## Approval\n\nA manager approves every expense claim.",
+          "document_card": {
+            "title": "expenses",
+            "filename": "expenses.md",
+            "file_type": "md",
+            "summary": "# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.",
+            "outline": [
+              {
+                "section_id": "sec_1",
+                "title": "Expense policy",
+                "path": "Expense policy",
+                "level": 1,
+                "summary": "# Expense policy Expense reimbursement requires receipts within 30 days."
+              },
+              {
+                "section_id": "sec_2",
+                "title": "Approval",
+                "path": "Expense policy / Approval",
+                "level": 2,
+                "summary": "## Approval A manager approves every expense claim."
+              }
+            ],
+            "applicable_scenarios": [
+              "Expense policy",
+              "Approval"
+            ],
+            "key_entities": [
+              "Expense",
+              "policy",
+              "reimbursement",
+              "requires",
+              "receipts",
+              "within",
+              "days",
+              "Approval",
+              "manager",
+              "approves",
+              "every",
+              "expense",
+              "claim"
+            ],
+            "char_count": 127,
+            "section_count": 2
+          },
+          "section_tree": [
+            {
+              "section_id": "sec_1",
+              "related_section_id": "sec_1",
+              "node_type": "section",
+              "level": 1,
+              "title": "Expense policy",
+              "parent_id": null,
+              "path": "Expense policy",
+              "section_order": 1,
+              "summary": "# Expense policy Expense reimbursement requires receipts within 30 days.",
+              "content": "# Expense policy\n\nExpense reimbursement requires receipts within 30 days.",
+              "source_span": {
+                "start_paragraph": 0,
+                "end_paragraph": 1
+              },
+              "anchor_entities": [
+                "Expense",
+                "policy",
+                "reimbursement",
+                "requires",
+                "receipts",
+                "within",
+                "days"
+              ]
+            },
+            {
+              "section_id": "sec_2",
+              "related_section_id": "sec_2",
+              "node_type": "section",
+              "level": 2,
+              "title": "Approval",
+              "parent_id": "sec_1",
+              "path": "Expense policy / Approval",
+              "section_order": 2,
+              "summary": "## Approval A manager approves every expense claim.",
+              "content": "## Approval\n\nA manager approves every expense claim.",
+              "source_span": {
+                "start_paragraph": 2,
+                "end_paragraph": 3
+              },
+              "anchor_entities": [
+                "Approval",
+                "manager",
+                "approves",
+                "every",
+                "expense",
+                "claim"
+              ]
+            }
+          ],
+          "ingest_schema_version": 2,
+          "char_count": 127,
+          "section_stats": {
+            "section_count": 2,
+            "paragraph_count": 4
+          },
+          "chunk_stats": {
+            "total_chunks": 2,
+            "chunk_count": 2,
+            "target_chars": 900,
+            "section_target_chars": 1400
+          },
+          "bucket_quality": [
+            {
+              "bucket_id": "kbucket_95ba85afc5894cbeb865dc07480edb75",
+              "title": "Expense policy",
+              "quality": {
+                "status": "ready",
+                "warnings": [],
+                "has_source_sections": true,
+                "has_summary": true,
+                "content_chars": 127
+              }
+            }
+          ],
+          "okf": {
+            "version": "0.1",
+            "concept_count": 4,
+            "concept_types": [
+              "Source Document",
+              "Source Section",
+              "Topic"
+            ]
+          }
+        },
+        "bucket_count": 1,
+        "chunk_count": 2,
+        "created_at": "2026-10-15T13:55:02.290474",
+        "updated_at": "2026-10-15T13:55:02.290474",
+        "tenant_id": "pd-acceptance",
+        "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+        "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+        "error": null
+      }
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a/buckets?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": [
+        {
+          "id": "kbucket_95ba85afc5894cbeb865dc07480edb75",
+          "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+          "title": "Expense policy",
+          "summary": "# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim.",
+          "metadata": {
+            "ingest_schema_version": 2,
+            "content": "# Expense policy\n\nExpense reimbursement requires receipts within 30 days.\n\n## Approval\n\nA manager approves every expense claim.",
+            "bucket_type": "structure",
+            "concept_type": "Topic",
+            "section_ids": [
+              "sec_1",
+              "sec_2"
+            ],
+            "section_paths": [
+              "Expense policy",
+              "Expense policy / Approval"
+            ],
+            "applicable_query_types": [
+              "answer",
+              "policy_check"
+            ],
+            "quality": {
+              "status": "ready",
+              "warnings": [],
+              "has_source_sections": true,
+              "has_summary": true,
+              "content_chars": 127
+            },
+            "document_card": {
+              "title": "expenses",
+              "summary": "# Expense policy Expense reimbursement requires receipts within 30 days. ## Approval A manager approves every expense claim."
+            },
+            "representative_chunk_ids": [
+              "kchunk_3c729ccfcebd444492932100c64fe0b8",
+              "kchunk_dd3eda1adfb049219b4ab87d30728582"
+            ],
+            "chunk_count": 2
+          },
+          "created_at": "2026-10-15T13:55:02.290474",
+          "updated_at": "2026-10-15T13:55:02.290474",
+          "tenant_id": "pd-acceptance",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d",
+          "bucket_key": "expense_policy",
+          "token_estimate": 63,
+          "chunk_count": 2
+        }
+      ]
+    },
+    {
+      "url": "http://127.0.0.1:18872/api/modules/knowledge/core/documents/kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a/chunks?space_id=pd-space",
+      "method": "GET",
+      "status": 200,
+      "body": null,
+      "response": [
+        {
+          "id": "kchunk_3c729ccfcebd444492932100c64fe0b8",
+          "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+          "bucket_id": "kbucket_95ba85afc5894cbeb865dc07480edb75",
+          "chunk_index": 0,
+          "content": "Expense reimbursement requires receipts within 30 days.",
+          "summary": "Expense reimbursement requires receipts within 30 days.",
+          "source_ref": "expenses.md / Expense policy / evidence 1",
+          "metadata": {
+            "ingest_schema_version": 2,
+            "node_type": "evidence_chunk",
+            "related_group_id": null,
+            "related_chunk_index": 0,
+            "section_id": "sec_1",
+            "section_path": "Expense policy",
+            "section_title": "Expense policy",
+            "bucket_title": "Expense policy",
+            "source_span": {
+              "start_paragraph": 0,
+              "end_paragraph": 1
+            },
+            "context_window": "# Expense policy Expense reimbursement requires receipts within 30 days.",
+            "related_chunk_ids": [],
+            "related_chunk_count": 0,
+            "related_previous_chunk_id": null,
+            "related_next_chunk_id": null
+          },
+          "created_at": "2026-10-15T13:55:02.290474",
+          "updated_at": "2026-10-15T13:55:02.290474",
+          "tenant_id": "pd-acceptance",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d"
+        },
+        {
+          "id": "kchunk_dd3eda1adfb049219b4ab87d30728582",
+          "document_id": "kdoc_039e2d3d480f4bf2ab5b94bd8e17ea1a",
+          "bucket_id": "kbucket_95ba85afc5894cbeb865dc07480edb75",
+          "chunk_index": 1,
+          "content": "A manager approves every expense claim.",
+          "summary": "A manager approves every expense claim.",
+          "source_ref": "expenses.md / Expense policy / Approval / evidence 2",
+          "metadata": {
+            "ingest_schema_version": 2,
+            "node_type": "evidence_chunk",
+            "related_group_id": null,
+            "related_chunk_index": 0,
+            "section_id": "sec_2",
+            "section_path": "Expense policy / Approval",
+            "section_title": "Approval",
+            "bucket_title": "Expense policy",
+            "source_span": {
+              "start_paragraph": 2,
+              "end_paragraph": 3
+            },
+            "context_window": "## Approval A manager approves every expense claim.",
+            "related_chunk_ids": [],
+            "related_chunk_count": 0,
+            "related_previous_chunk_id": null,
+            "related_next_chunk_id": null
+          },
+          "created_at": "2026-10-15T13:55:02.290474",
+          "updated_at": "2026-10-15T13:55:02.290474",
+          "tenant_id": "pd-acceptance",
+          "knowledge_base_id": "kb_4bbd42e7056642ad9ea14a3ac0783a49",
+          "knowledge_base_version_id": "kbver_215d26bf71f4487a9467f40ff3c5d66d"
+        }
+      ]
+    }
+  ],
+  "modelProbe": [
+    {
+      "id": "provider1/deepseek-v4-flash-0731",
+      "provider": "provider1",
+      "model": "deepseek-v4-flash-0731",
+      "status": "passed",
+      "valid_result": true
+    }
+  ],
+  "selectedModel": {
+    "id": "provider1/deepseek-v4-flash-0731",
+    "provider": "provider1",
+    "model": "deepseek-v4-flash-0731"
+  },
+  "pageErrors": [],
+  "error": "locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByLabel('编辑主题', { exact: true }).first()\u001b[22m\n\u001b[2m    - locator resolved to <button disabled title=\"编辑主题\" aria-label=\"编辑主题\" class=\"icon-button\">…</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is not enabled\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    56 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is not enabled\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n    at runKnowledgeAcceptance (/private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-4Lm20H/browser-acceptance.mjs:79:58)\n    at async file:///Users/a1/.codex/worktrees/standalone-alpha1-decouple-km-1013/PilotDeck/scripts/km-plugin-acceptance.mjs:145:20",
+  "frameState": [
+    {
+      "url": "http://127.0.0.1:18872/knowledge",
+      "text": "New conversation\n◆\nSkills\n◆\nKnowledge\n◆\nNew knowledge base\nProjects\nNo projects found\nConversations\nNo sessions yet\nSettings\nKnowledge"
+    },
+    {
+      "url": "http://127.0.0.1:18872/km-ui/ui/v1/index.html#channel=cd81899b-038f-4491-84a9-2fc35ac9d89f",
+      "text": "Knowledge\nPilotDeck acceptance\n默认模型\nKimi K3\nclaude-sonnet-5\ndeepseek-v4-flash-0731\nqwen3.6-flash-distill\nCLAUDE_5boy00\nclaude-sonnet-5\nep-glm52\nep-hackthondsv4flash\nep-hackthondsv4vision\nep-hackthonglm53\nep-hackthonhy3\nep-hackthonm3\nmodel\n知识库\nAcceptance 1792072471682\nAcceptance 1792072471682\n1 文档 · 4 Wiki · modified\n上传\nexpenses.md\n完成\n文档\nWiki\n关系图\n检索\n版本\n发现建议\nexpenses\n2 引用 · ready\nexpenses\n预览\n主题与片段\nExpense policy\nExpense policy\n\nExpense reimbursement requires receipts within 30 days.\n\nApproval\n\nA manager approves every expense claim.\n\nexpenses.md / Expense policy / evidence 1\n\nExpense reimbursement requires receipts within 30 days.\n\nexpenses.md / Expense policy / Approval / evidence 2\n\nA manager approves every expense claim."
+    }
+  ],
+  "lifecycle": [
+    {
+      "name": "km",
+      "exitCode": null,
+      "signal": "SIGTERM",
+      "forced": false
+    },
+    {
+      "name": "pilotdeck-bootstrap",
+      "exitCode": 0,
+      "signal": null,
+      "forced": false
+    },
+    {
+      "name": "pilotdeck",
+      "exitCode": 0,
+      "signal": null,
+      "forced": false
+    },
+    {
+      "name": "gateway",
+      "exitCode": 0,
+      "signal": null,
+      "forced": false
+    }
+  ]
+}

@@ -9,7 +9,7 @@ import {
   Paginator as DefaultPaginator, ResourceImportDialog as DefaultResourceImportDialog, SelectContent as DefaultSelectContent,
   SelectItem as DefaultSelectItem, SelectTrigger as DefaultSelectTrigger, SelectValue as DefaultSelectValue,
   StatusBadge as DefaultStatusBadge, UIButton as DefaultUIButton,
-} from './SkillsPageHost';
+} from '../../knowledge-ui/src/Primitives';
 
 export type EnterpriseAuthUser = { id?: string; username?: string; tenant_id?: string; role?: string; is_admin?: boolean };
 export type AgentProfileRead = Record<string, any> & { id: string; name?: string; is_overall?: boolean; active?: boolean };

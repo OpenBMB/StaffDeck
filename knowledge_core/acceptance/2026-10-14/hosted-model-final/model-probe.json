@@ -1,0 +1,53 @@
+{
+  "status": "available",
+  "source": "existing PilotDeck config via loadPilotConfig",
+  "attempts": [
+    {
+      "config_id": "provider2/CLAUDE_5boy00",
+      "provider": "provider2",
+      "model": "CLAUDE_5boy00",
+      "is_default": true,
+      "status": "failed",
+      "error_type": "HTTPException",
+      "error_code": "MODEL_CONFIG_VERIFICATION_REQUIRED"
+    },
+    {
+      "config_id": "TestProvider/model",
+      "provider": "TestProvider",
+      "model": "model",
+      "is_default": false,
+      "status": "failed",
+      "error_type": "LLMError",
+      "error_code": null
+    },
+    {
+      "config_id": "moonshot/kimi-k3",
+      "provider": "moonshot",
+      "model": "kimi-k3",
+      "is_default": false,
+      "status": "failed",
+      "error_type": "LLMError",
+      "error_code": null
+    },
+    {
+      "config_id": "provider1/claude-sonnet-5",
+      "provider": "provider1",
+      "model": "claude-sonnet-5",
+      "is_default": false,
+      "status": "failed",
+      "error_type": "LLMError",
+      "error_code": null
+    },
+    {
+      "config_id": "provider1/deepseek-v4-flash-0731",
+      "provider": "provider1",
+      "model": "deepseek-v4-flash-0731",
+      "is_default": false,
+      "status": "passed",
+      "result": {
+        "km_acceptance": true
+      }
+    }
+  ],
+  "selected_model_id": "provider1/deepseek-v4-flash-0731"
+}

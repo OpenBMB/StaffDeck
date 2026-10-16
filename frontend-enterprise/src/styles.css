@@ -6957,6 +6957,13 @@ body,
 
 /* SD1 responsive hardening: keep management pages inside the current content column. */
 @media (max-width: 760px) {
+  .app-shell.is-knowledge-plugin {
+    --sidebar-width: 72px !important;
+    --sidebar-width-icon: 72px !important;
+  }
+  .is-knowledge-plugin .content {
+    padding: 0 !important;
+  }
   .content {
     min-width: 0 !important;
     padding-right: 14px !important;

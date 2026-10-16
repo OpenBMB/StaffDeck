@@ -507,7 +507,7 @@ function Shell({
           "--sidebar-width-icon": "72px",
         } as CSSProperties
       }
-      className={`app-shell ${sidebarExpanded ? "sidebar-expanded" : "sidebar-collapsed"} ${isAgentRosterRoute ? "is-agent-roster" : ""}`}
+      className={`app-shell ${sidebarExpanded ? "sidebar-expanded" : "sidebar-collapsed"} ${isAgentRosterRoute ? "is-agent-roster" : ""} ${selected.startsWith('/enterprise/knowledge') ? 'is-knowledge-plugin' : ''}`}
     >
       <AppSidebar
         selected={selected}

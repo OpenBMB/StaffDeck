@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "FastAPI MVP for an enterprise Skill Agent Loop service"
 requires-python = ">=3.11"
 dependencies = [
+  "knowledge-core==0.1.0",
   "anthropic>=0.117.0,<0.121.0",
   # cryptography 49 macOS wheels dynamically link their bundled OpenSSL. PyInstaller
   # can then select Python's older libssl.3.dylib with the same basename, producing
@@ -50,6 +51,9 @@ packaging = [
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+knowledge-core = { path = "../knowledge_core" }
 
 [tool.setuptools]
 py-modules = ["desktop_launcher", "feishu_connector_worker", "single_port_app", "channel_scope_service"]

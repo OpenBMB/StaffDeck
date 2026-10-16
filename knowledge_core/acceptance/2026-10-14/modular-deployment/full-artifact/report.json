@@ -1,0 +1,59 @@
+{
+  "status": "passed",
+  "wheel": "knowledge_core-0.1.0-py3-none-any.whl",
+  "browser": {
+    "origin": "http://127.0.0.1:18787",
+    "name": "Acceptance 1791988012181",
+    "workflow": [
+      "create",
+      "upload",
+      "edit",
+      "bucket-edit",
+      "chunk-edit",
+      "wiki-edit",
+      "search",
+      "citation",
+      "copy",
+      "publish",
+      "rollback",
+      "sync",
+      "rename",
+      "hide",
+      "restore",
+      "graph",
+      "okf-lint",
+      "okf-export",
+      "okf-import",
+      "mobile"
+    ],
+    "pageErrors": []
+  },
+  "isolation": {
+    "package": "/private/var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-artifact-tkticu_u/venv/lib/python3.12/site-packages/knowledge_core/__init__.py",
+    "tables": [
+      "km_documents",
+      "km_buckets",
+      "km_chunks",
+      "km_ingest_jobs",
+      "km_citation_snapshots",
+      "km_schema_versions",
+      "km_spaces",
+      "km_space_contents",
+      "km_catalog_space_bindings",
+      "km_version_spaces",
+      "km_branch_spaces",
+      "km_catalogs",
+      "km_catalog_contents",
+      "km_versions",
+      "km_branches",
+      "km_branch_contents",
+      "km_concepts",
+      "km_concept_contexts",
+      "km_suggestions",
+      "km_suggestion_contexts",
+      "km_publications"
+    ],
+    "host_imports": []
+  },
+  "service_exit_code": -15
+}

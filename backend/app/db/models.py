@@ -534,180 +534,32 @@ class GeneralSkill(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
-class KnowledgeBase(SQLModel, table=True):
-    __tablename__ = "knowledge_bases"
-    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_knowledge_base_tenant_name"),)
 
-    id: str = Field(default_factory=lambda: new_id("kb"), primary_key=True)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class KnowledgePublicationReceipt(SQLModel, table=True):
+    __tablename__ = "knowledge_publication_receipts"
+    id: str = Field(primary_key=True)
     tenant_id: str = Field(index=True)
-    name: str
-    description: Optional[str] = None
-    status: str = Field(default="active", index=True)
-    capability_scope: str = Field(default="general", index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    suggestion_id: str = Field(index=True)
+    idempotency_key: str = Field(unique=True)
+    target_reference_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-
-
-class KnowledgeBaseVersion(SQLModel, table=True):
-    __tablename__ = "knowledge_base_versions"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "knowledge_base_id", "version", name="uq_knowledge_base_version"),
-    )
-
-    id: str = Field(default_factory=lambda: new_id("kbver"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    knowledge_base_id: str = Field(index=True)
-    version: str = Field(default="1.0.0", index=True)
-    name: str
-    description: Optional[str] = None
-    status: str = Field(default="active", index=True)
-    capability_scope: str = Field(default="general", index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-
-
-class AgentKnowledgeBranch(SQLModel, table=True):
-    __tablename__ = "agent_knowledge_branches"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "agent_id", "knowledge_base_id", name="uq_agent_knowledge_branch"),
-    )
-
-    id: str = Field(default_factory=lambda: new_id("agentkb"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    agent_id: str = Field(index=True)
-    knowledge_base_id: str = Field(index=True)
-    base_version: str = "1.0.0"
-    head_version: str = "1.0.0"
-    status: str = Field(default="active", index=True)
-    sync_state: str = Field(default="synced", index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-
-
-class KnowledgeDocument(SQLModel, table=True):
-    __tablename__ = "knowledge_documents"
-
-    id: str = Field(default_factory=lambda: new_id("kdoc"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    knowledge_base_id: str = Field(index=True)
-    knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
-    filename: str
-    file_type: str = Field(index=True)
-    title: Optional[str] = None
-    status: str = Field(default="processing", index=True)
-    bucket_count: int = 0
-    chunk_count: int = 0
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    error: Optional[str] = None
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-
-
-class KnowledgeBucket(SQLModel, table=True):
-    __tablename__ = "knowledge_buckets"
-
-    id: str = Field(default_factory=lambda: new_id("kbucket"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    knowledge_base_id: str = Field(index=True)
-    knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
-    document_id: str = Field(index=True)
-    bucket_key: str = Field(index=True)
-    title: str
-    summary: str
-    token_estimate: int = 0
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-
-
-class KnowledgeChunk(SQLModel, table=True):
-    __tablename__ = "knowledge_chunks"
-
-    id: str = Field(default_factory=lambda: new_id("kchunk"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    knowledge_base_id: str = Field(index=True)
-    knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
-    document_id: str = Field(index=True)
-    bucket_id: str = Field(index=True)
-    chunk_index: int = Field(index=True)
-    content: str
-    summary: Optional[str] = None
-    source_ref: Optional[str] = None
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-
-
-class KnowledgeConcept(SQLModel, table=True):
-    __tablename__ = "knowledge_concepts"
-    __table_args__ = (
-        UniqueConstraint(
-            "tenant_id",
-            "knowledge_base_version_id",
-            "concept_id",
-            name="uq_knowledge_concept_version_path",
-        ),
-    )
-
-    id: str = Field(default_factory=lambda: new_id("kconcept"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    knowledge_base_id: str = Field(index=True)
-    knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
-    document_id: Optional[str] = Field(default=None, index=True)
-    concept_id: str = Field(index=True)
-    concept_type: str = Field(index=True)
-    title: str
-    description: Optional[str] = None
-    content_md: str
-    frontmatter_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    links_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    citations_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    source_refs_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    status: str = Field(default="active", index=True)
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-
-
-class KnowledgeDiscoverySuggestion(SQLModel, table=True):
-    __tablename__ = "knowledge_discovery_suggestions"
-
-    id: str = Field(default_factory=lambda: new_id("kdisc"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    knowledge_base_id: str = Field(index=True)
-    knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
-    document_id: str = Field(index=True)
-    bucket_id: Optional[str] = Field(default=None, index=True)
-    suggestion_type: str = Field(index=True)
-    title: str
-    status: str = Field(default="pending", index=True)
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    source_refs_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    reason: Optional[str] = None
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-
-
-class KnowledgeIngestJob(SQLModel, table=True):
-    __tablename__ = "knowledge_ingest_jobs"
-
-    id: str = Field(default_factory=lambda: new_id("kjob"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    knowledge_base_id: str = Field(index=True)
-    knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
-    document_id: Optional[str] = Field(default=None, index=True)
-    filename: str
-    status: str = Field(default="queued", index=True)
-    stage: str = "queued"
-    progress: float = 0.0
-    error: Optional[str] = None
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    created_at: datetime = Field(default_factory=utc_now)
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class ModelConfig(SQLModel, table=True):

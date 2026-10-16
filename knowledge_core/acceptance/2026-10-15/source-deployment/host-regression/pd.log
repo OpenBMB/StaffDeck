@@ -1,0 +1,400 @@
+TAP version 13
+# (node:88857) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: Agent tools default to query and never acquire management from runtime methods
+ok 1 - Agent tools default to query and never acquire management from runtime methods
+  ---
+  duration_ms: 0.620416
+  type: 'test'
+  ...
+# Subtest: Agent configuration requires explicit supported runtime declarations and permits disabling all tools
+ok 2 - Agent configuration requires explicit supported runtime declarations and permits disabling all tools
+  ---
+  duration_ms: 0.809958
+  type: 'test'
+  ...
+# Subtest: Agent management uses full Wiki aliases, explicit revisions and the trusted space
+ok 3 - Agent management uses full Wiki aliases, explicit revisions and the trusted space
+  ---
+  duration_ms: 25.992958
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: identity
+ok 4 - explicit KM operation: identity
+  ---
+  duration_ms: 2.3605
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_models
+ok 5 - explicit KM operation: list_models
+  ---
+  duration_ms: 0.283458
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_spaces
+ok 6 - explicit KM operation: list_spaces
+  ---
+  duration_ms: 0.785709
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: create_space
+ok 7 - explicit KM operation: create_space
+  ---
+  duration_ms: 0.276375
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_bindings
+ok 8 - explicit KM operation: list_bindings
+  ---
+  duration_ms: 0.386916
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: bind_base
+ok 9 - explicit KM operation: bind_base
+  ---
+  duration_ms: 0.140334
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: update_binding
+ok 10 - explicit KM operation: update_binding
+  ---
+  duration_ms: 0.358791
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_bases
+ok 11 - explicit KM operation: list_bases
+  ---
+  duration_ms: 0.384042
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: create_base
+ok 12 - explicit KM operation: create_base
+  ---
+  duration_ms: 0.89775
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: get_base
+ok 13 - explicit KM operation: get_base
+  ---
+  duration_ms: 0.506791
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: update_base
+ok 14 - explicit KM operation: update_base
+  ---
+  duration_ms: 0.187458
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: delete_base
+ok 15 - explicit KM operation: delete_base
+  ---
+  duration_ms: 0.064958
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_versions
+ok 16 - explicit KM operation: list_versions
+  ---
+  duration_ms: 0.173709
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: get_branch
+ok 17 - explicit KM operation: get_branch
+  ---
+  duration_ms: 0.099083
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: copy_version
+ok 18 - explicit KM operation: copy_version
+  ---
+  duration_ms: 0.141542
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: sync_base
+ok 19 - explicit KM operation: sync_base
+  ---
+  duration_ms: 0.1245
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: publish_version
+ok 20 - explicit KM operation: publish_version
+  ---
+  duration_ms: 0.127167
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: rollback_version
+ok 21 - explicit KM operation: rollback_version
+  ---
+  duration_ms: 0.379459
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: update_branch
+ok 22 - explicit KM operation: update_branch
+  ---
+  duration_ms: 0.78575
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_documents
+ok 23 - explicit KM operation: list_documents
+  ---
+  duration_ms: 0.225292
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: get_document
+ok 24 - explicit KM operation: get_document
+  ---
+  duration_ms: 0.189959
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: import_document
+ok 25 - explicit KM operation: import_document
+  ---
+  duration_ms: 0.319916
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: import_okf
+ok 26 - explicit KM operation: import_okf
+  ---
+  duration_ms: 0.293833
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: update_document
+ok 27 - explicit KM operation: update_document
+  ---
+  duration_ms: 0.188084
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: delete_document
+ok 28 - explicit KM operation: delete_document
+  ---
+  duration_ms: 0.301875
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_document_buckets
+ok 29 - explicit KM operation: list_document_buckets
+  ---
+  duration_ms: 0.145459
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: update_bucket
+ok 30 - explicit KM operation: update_bucket
+  ---
+  duration_ms: 0.0875
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_bucket_chunks
+ok 31 - explicit KM operation: list_bucket_chunks
+  ---
+  duration_ms: 0.090958
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_document_chunks
+ok 32 - explicit KM operation: list_document_chunks
+  ---
+  duration_ms: 0.081
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: update_chunk
+ok 33 - explicit KM operation: update_chunk
+  ---
+  duration_ms: 0.07775
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: get_job
+ok 34 - explicit KM operation: get_job
+  ---
+  duration_ms: 0.090209
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_jobs
+ok 35 - explicit KM operation: list_jobs
+  ---
+  duration_ms: 0.07325
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: cancel_job
+ok 36 - explicit KM operation: cancel_job
+  ---
+  duration_ms: 0.085458
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_okf_concepts
+ok 37 - explicit KM operation: list_okf_concepts
+  ---
+  duration_ms: 0.1205
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: get_okf_concept
+ok 38 - explicit KM operation: get_okf_concept
+  ---
+  duration_ms: 0.214667
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: get_bucket
+ok 39 - explicit KM operation: get_bucket
+  ---
+  duration_ms: 0.159
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: get_chunk
+ok 40 - explicit KM operation: get_chunk
+  ---
+  duration_ms: 0.3395
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: get_concept
+ok 41 - explicit KM operation: get_concept
+  ---
+  duration_ms: 0.241208
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: get_discovery
+ok 42 - explicit KM operation: get_discovery
+  ---
+  duration_ms: 0.288375
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: upsert_okf_concept
+ok 43 - explicit KM operation: upsert_okf_concept
+  ---
+  duration_ms: 0.222292
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: update_concept
+ok 44 - explicit KM operation: update_concept
+  ---
+  duration_ms: 0.618167
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_concepts
+ok 45 - explicit KM operation: list_concepts
+  ---
+  duration_ms: 0.388542
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: upsert_concept
+ok 46 - explicit KM operation: upsert_concept
+  ---
+  duration_ms: 0.224292
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: export_okf
+ok 47 - explicit KM operation: export_okf
+  ---
+  duration_ms: 0.274875
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: lint_okf
+ok 48 - explicit KM operation: lint_okf
+  ---
+  duration_ms: 0.262417
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: list_discoveries
+ok 49 - explicit KM operation: list_discoveries
+  ---
+  duration_ms: 0.29
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: confirm_discovery
+ok 50 - explicit KM operation: confirm_discovery
+  ---
+  duration_ms: 0.133708
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: review_discovery
+ok 51 - explicit KM operation: review_discovery
+  ---
+  duration_ms: 0.442458
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: reject_discovery
+ok 52 - explicit KM operation: reject_discovery
+  ---
+  duration_ms: 0.120584
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: export_discovery
+ok 53 - explicit KM operation: export_discovery
+  ---
+  duration_ms: 0.100333
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: publish_discovery
+ok 54 - explicit KM operation: publish_discovery
+  ---
+  duration_ms: 0.094916
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: query
+ok 55 - explicit KM operation: query
+  ---
+  duration_ms: 0.094875
+  type: 'test'
+  ...
+# Subtest: explicit KM operation: resolve_citation
+ok 56 - explicit KM operation: resolve_citation
+  ---
+  duration_ms: 0.099833
+  type: 'test'
+  ...
+# Subtest: unknown operations, identity and scope overrides, missing edit versions are rejected
+ok 57 - unknown operations, identity and scope overrides, missing edit versions are rejected
+  ---
+  duration_ms: 0.311708
+  type: 'test'
+  ...
+# (node:88859) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: unsupported independent methods are rejected during configuration
+ok 58 - unsupported independent methods are rejected during configuration
+  ---
+  duration_ms: 0.821292
+  type: 'test'
+  ...
+# Subtest: runtime space directory is limited to the binding even with a broad service credential
+ok 59 - runtime space directory is limited to the binding even with a broad service credential
+  ---
+  duration_ms: 18.609542
+  type: 'test'
+  ...
+# Subtest: independent KM config and runtime query need no StaffDeck identity or service
+ok 60 - independent KM config and runtime query need no StaffDeck identity or service
+  ---
+  duration_ms: 12.8495
+  type: 'test'
+  ...
+# Subtest: independent KM port propagates upstream failure and timeout
+ok 61 - independent KM port propagates upstream failure and timeout
+  ---
+  duration_ms: 32.321917
+  type: 'test'
+  ...
+# (node:88860) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: catalog upload body belongs to the advertised route and partial contexts survive proxy dispatch
+ok 62 - catalog upload body belongs to the advertised route and partial contexts survive proxy dispatch
+  ---
+  duration_ms: 1.190375
+  type: 'test'
+  ...
+# Subtest: minimal capability negotiation uses instance scope and refuses disabled methods and parameters
+ok 63 - minimal capability negotiation uses instance scope and refuses disabled methods and parameters
+  ---
+  duration_ms: 24.171167
+  type: 'test'
+  ...
+# Subtest: normal module transport sends account credential server-side and no caller actor
+ok 64 - normal module transport sends account credential server-side and no caller actor
+  ---
+  duration_ms: 30.214708
+  type: 'test'
+  ...
+1..64
+# tests 64
+# suites 0
+# pass 64
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 529.217041

@@ -5,7 +5,7 @@ from sqlmodel import Session
 
 from app.api import module_knowledge as native
 from app.db import get_session
-from app.db.models import KnowledgeBucket, KnowledgeChunk, KnowledgeDocument, KnowledgeDiscoverySuggestion, KnowledgeIngestJob
+from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter
 from app.public_api.auth import PublicPrincipal, require_scopes
 from app.public_api.errors import PublicAPIError
 from app.public_api.knowledge_pep import enforce_public_knowledge_pep
@@ -34,21 +34,23 @@ def call(agent_id: str, body: native.ModuleCallEnvelope,
             if any(raw.get(name) not in (None, expected) for name in names):
                 raise PublicAPIError(403, "PROJECT_BINDING_SCOPE_MISMATCH", "Knowledge belongs to another project.")
         base = raw.get('knowledgeBaseId', raw.get('knowledge_base_id'))
+        enforce_public_knowledge_pep(db, principal, agent_id, write=write, knowledge_base_id=base)
+        adapter = StaffDeckKnowledgeAdapter(db, principal.tenant_id, agent_id,
+                                             principal.actor_user, write=write)
         # Native direct calls bypass route dependencies: validate every resource owner here.
-        resources = ((KnowledgeDocument, ('documentId', 'document_id')),
-                     (KnowledgeBucket, ('bucketId', 'bucket_id')),
-                     (KnowledgeChunk, ('chunkId', 'chunk_id')),
-                     (KnowledgeDiscoverySuggestion, ('suggestionId', 'suggestion_id')),
-                     (KnowledgeIngestJob, ('jobId', 'job_id')))
-        for model, names in resources:
+        resources = (('documents', ('documentId', 'document_id')),
+                     ('buckets', ('bucketId', 'bucket_id')),
+                     ('chunks', ('chunkId', 'chunk_id')),
+                     ('suggestions', ('suggestionId', 'suggestion_id')),
+                     ('jobs', ('jobId', 'job_id')))
+        for collection, names in resources:
             identifier = next((raw.get(name) for name in names if raw.get(name)), None)
             if identifier:
-                row = db.get(model, identifier)
-                if row is None or row.tenant_id != principal.tenant_id:
+                row = adapter.call('GET', f'/{collection}/{identifier}')
+                if row is None or row['tenant_id'] != principal.tenant_id:
                     raise PublicAPIError(404, "RESOURCE_NOT_FOUND", "Knowledge resource is unavailable.")
-                resource_base = row.knowledge_base_id
+                resource_base = row['knowledge_base_id']
                 enforce_public_knowledge_pep(db, principal, agent_id, write=write, knowledge_base_id=resource_base)
-        enforce_public_knowledge_pep(db, principal, agent_id, write=write, knowledge_base_id=base)
         for identifier in raw.get('knowledgeBaseIds', raw.get('knowledge_base_ids', [])) or []:
             enforce_public_knowledge_pep(db, principal, agent_id, knowledge_base_id=identifier)
         value = {**raw, 'tenantId': principal.tenant_id, 'tenant_id': principal.tenant_id,

@@ -1,0 +1,9 @@
+(node:43464) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+[pilotdeck] Could not migrate legacy skill '__migration__': Bundled skills root is missing or contains no skills; legacy copies were left untouched.
+PilotDeck server listening: http://127.0.0.1:18874
+WebSocket: ws://127.0.0.1:18874/ws
+Token: /var/folders/xd/mml9c6fj2g95x40hgf_n6lrr0000gn/T/km-pd-plugin-4Lm20H/pd-home/server-token
+[telemetry] shutdown snapshot {"queued":0,"sent":0,"sendFailures":0,"retries":0,"dropped":0,"queueDepth":0}

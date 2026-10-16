@@ -1,0 +1,32 @@
+body { margin: 0; }
+.identity-entry { max-width: 360px; margin: 80px auto; padding: 20px; }
+.identity-entry h1 { font-size: 28px; }
+.identity-entry form, .identity-entry label { display: grid; gap: 12px; }
+.identity-entry input { min-width: 0; padding: 10px; }
+.identity-entry button { padding: 10px; cursor: pointer; }
+.minimal-km { max-width: 1440px; margin: 0 auto; padding: 24px; color: #24282b; background: #fff; min-height: 100vh; font: 14px system-ui; }
+.minimal-km h1 { font-size: 24px; margin: 0; }
+.minimal-km h2 { font-size: 16px; margin: 18px 0 12px; }
+.minimal-km h3 { font-size: 14px; margin: 0 0 8px; }
+.minimal-km header, .km-actions, .km-editor-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.minimal-km button, .upload-button, .minimal-km select { border: 1px solid #d4d9dd; border-radius: 4px; background: #fff; color: #24282b; padding: 8px; cursor: pointer; }
+.km-actions { justify-content: flex-end; flex-wrap: wrap; }
+.upload-button { display: flex; align-items: center; gap: 8px; }
+.upload-button input { width: 1px; height: 1px; position: absolute; opacity: 0; }
+.km-search { display: flex; gap: 8px; margin: 24px 0; }
+.km-search input { flex: 1; min-width: 0; border: 1px solid #d4d9dd; padding: 10px; border-radius: 4px; }
+.km-workspace { display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); border-top: 1px solid #d4d9dd; }
+.km-workspace aside { border-right: 1px solid #d4d9dd; padding-right: 18px; }
+.km-workspace section { padding: 0 0 0 24px; min-width: 0; }
+.km-workspace aside > button { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; text-align: left; margin: 4px 0; }
+.km-workspace aside > button.active { background: #e7f3ed; color: #186540; }
+.km-workspace aside span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.minimal-km small { color: #667078; }
+.minimal-km textarea { width: 100%; min-height: 240px; box-sizing: border-box; padding: 12px; border: 1px solid #d4d9dd; border-radius: 4px; resize: vertical; font: 13px monospace; }
+.minimal-km article { border-bottom: 1px solid #e7eaec; padding: 14px 0; overflow-wrap: anywhere; }
+.km-task { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 0; }
+.minimal-km [role=alert] { color: #a52d35; padding: 12px 0; }
+.km-source-overlay { position: fixed; inset: 0; background: #0005; display: grid; place-items: center; padding: 16px; z-index: 50; }
+.km-source-overlay section { background: #fff; padding: 20px; border-radius: 6px; width: min(680px, 100%); max-height: 80vh; overflow: auto; box-sizing: border-box; }
+.km-source-overlay p { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .minimal-km { padding: 16px; } .minimal-km header { align-items: flex-start; flex-wrap: wrap; } .km-workspace { grid-template-columns: 1fr; } .km-workspace aside { border-right: 0; border-bottom: 1px solid #d4d9dd; padding: 0 0 16px; } .km-workspace section { padding: 0; } }

@@ -29,7 +29,7 @@ RESOURCE_MODELS = {
     "general_skill": (models.GeneralSkill, "slug", ("slug",)),
     "tool": (models.Tool, "id", ("tool_id",)),
     "mcp_server": (models.MCPServer, "id", ("server_id",)),
-    "knowledge_base": (models.KnowledgeBase, "id", ("knowledge_base_id", "base_id")),
+    "knowledge_base": (None, "id", ("knowledge_base_id", "base_id")),
     "team": (models.Team, "id", ("team_id",)),
     "channel": (models.ChannelBinding, "id", ("binding_id",)),
     "model_config": (models.ModelConfig, "id", ("model_id", "config_id")),
@@ -37,7 +37,21 @@ RESOURCE_MODELS = {
 }
 
 
-def resource_ref(db: Session, tenant_id: str, kind: str, identifier: str) -> ResourceRef | None:
+def resource_ref(db: Session, tenant_id: str, kind: str, identifier: str, agent_id=None) -> ResourceRef | None:
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+    if kind == "knowledge_base":
+        try:
+            row = StaffDeckKnowledgeAdapter(db, tenant_id, agent_id).call(
+                "GET", f"/knowledge-bases/{identifier}",
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        return ResourceRef(type=kind, id=row["id"], tenant_id=tenant_id, attributes={
+            "owner_user_id": row.get("metadata", {}).get("owner_id"),
+            "status": row["status"], "enabled": row["status"] == "active",
+        })
     model, field, _ = RESOURCE_MODELS[kind]
     row = db.exec(
         select(model).where(model.tenant_id == tenant_id, getattr(model, field) == identifier)
@@ -99,25 +113,19 @@ def module_policy(kind: str, *, use_endpoints: tuple[str, ...] = ()):
         refs = []
         for key in RESOURCE_MODELS[kind][2]:
             if values.get(key):
-                ref = resource_ref(db, tenant_id, kind, str(values[key]))
+                ref = await run_in_threadpool(resource_ref, db, tenant_id, kind, str(values[key]), values.get("agent_id"))
                 if ref is not None:
                     refs.append(ref)
         if kind == "knowledge_base":
-            for key, model in (
-                ("document_id", models.KnowledgeDocument),
-                ("bucket_id", models.KnowledgeBucket),
-                ("chunk_id", models.KnowledgeChunk),
-            ):
+            for key in ("document_id", "bucket_id", "chunk_id"):
                 if values.get(key):
-                    row = db.get(model, str(values[key]))
-                    if (
-                        row is not None
-                        and row.tenant_id == tenant_id
-                        and getattr(row, "knowledge_base_id", None)
-                    ):
-                        ref = resource_ref(db, tenant_id, kind, row.knowledge_base_id)
-                        if ref:
-                            refs.append(ref)
+                    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+                    adapter = StaffDeckKnowledgeAdapter(db, tenant_id, values.get("agent_id"), user)
+                    collection = {"document_id": "documents", "bucket_id": "buckets", "chunk_id": "chunks"}[key]
+                    row = await run_in_threadpool(adapter.call, "GET", f"/{collection}/{values[key]}")
+                    ref = await run_in_threadpool(resource_ref, db, tenant_id, kind, row["knowledge_base_id"], values.get("agent_id"))
+                    if ref:
+                        refs.append(ref)
         for ref in refs:
             await run_in_threadpool(
                 require_resource, user, ref, action, module=kind, local_checked=True
@@ -160,7 +168,7 @@ def install_response_filters(app: Any) -> None:
                 indexed = []
                 for index, item in enumerate(payload):
                     if isinstance(item, dict) and (item.get(field) or item.get('id')):
-                        ref = resource_ref(db, tenant_id, kind, str(item.get(field) or item['id']))
+                        ref = resource_ref(db, tenant_id, kind, str(item.get(field) or item['id']), request.query_params.get("agent_id"))
                         if ref is not None: indexed.append((index, ref))
                 allowed = visible_resources(user, [ref for _, ref in indexed], module=kind) if indexed else []
                 denied = {index for (index, _), keep in zip(indexed, allowed) if not keep}

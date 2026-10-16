@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "ui_command": "PATH=/Users/a1/.nvm/versions/node/v22.23.1/bin:$PATH NODE_OPTIONS='' npm run build",
+  "ui_workdir": "packages/knowledge-ui",
+  "ui_result": "tsc --noEmit and vite build passed; 1914 modules transformed",
+  "ui_entry": "index-K0NntbWG.js",
+  "wheel_command": "pip3 wheel --no-deps ./knowledge_core -w knowledge_core/acceptance/2026-10-14/artifacts",
+  "wheel": "knowledge_core-0.1.0-py3-none-any.whl",
+  "wheel_result": "Successfully built knowledge-core",
+  "artifact_verification": "../independent-final/report.json"
+}

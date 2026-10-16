@@ -13,9 +13,7 @@ from app.api import knowledge_bases as internal_knowledge_bases
 from app.api import scheduled_tasks as internal_scheduled_tasks
 from app.api import tools as internal_tools
 from app.db import get_session
-from app.db.models import (
-    APIJob, AgentResourceBinding, KnowledgeDocument, KnowledgeIngestJob, Tool, utc_now,
-)
+from app.db.models import APIJob, AgentResourceBinding, Tool, utc_now
 from app.general_skills.schema import GeneralSkillImportRequest, GeneralSkillRunRequest
 from app.knowledge.schema import (
     KnowledgeBaseCreateRequest,
@@ -262,48 +260,26 @@ def list_knowledge_documents(
     return {"data": [_dump(row) for row in rows], "next_cursor": None}
 
 
-@router.patch("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}", response_model=dict)
-def update_knowledge_document(
-    agent_id: str,
-    knowledge_base_id: str,
-    document_id: str,
-    body: dict[str, Any],
-    principal: PublicPrincipal = Depends(require_scopes("knowledge:write")),
-    db: Session = Depends(get_session),
-) -> dict:
+@router.patch('/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}', response_model=dict)
+def update_knowledge_document(agent_id: str, knowledge_base_id: str, document_id: str, body: dict[str, Any], principal: PublicPrincipal=Depends(require_scopes('knowledge:write')), db: Session=Depends(get_session)) -> dict:
     enforce_public_knowledge_pep(db, principal, agent_id, write=True, knowledge_base_id=knowledge_base_id, document_id=document_id)
-    reject_public_scope_override(body, "tenant_id", "agent_id", "knowledge_base_id", "document_id")
-    # The URL's base and employee must own the document version being edited.
-    # Internal update_document otherwise defaults to the open-gallery scope.
-    version = internal_knowledge_bases._visible_knowledge_version(
-        db, principal.tenant_id, knowledge_base_id, agent_id
-    )
-    document = db.get(KnowledgeDocument, document_id)
-    if (
-        not document
-        or document.tenant_id != principal.tenant_id
-        or document.knowledge_base_id != knowledge_base_id
-    ):
-        raise PublicAPIError(404, "KNOWLEDGE_DOCUMENT_NOT_FOUND", "Knowledge document not found.")
+    reject_public_scope_override(body, 'tenant_id', 'agent_id', 'knowledge_base_id', 'document_id')
+    from app.knowledge.http_adapter import StaffDeckKnowledgeAdapter, enabled
+    from types import SimpleNamespace
+    adapter = StaffDeckKnowledgeAdapter(db, principal.tenant_id, agent_id, principal.actor_user)
+    remote_base = adapter.call('GET', f'/knowledge-bases/{knowledge_base_id}')
+    remote_document = adapter.call('GET', f'/documents/{document_id}')
+    version = SimpleNamespace(id=remote_base['branch']['head_version_id'])
+    document = SimpleNamespace(**remote_document)
+    if not document or document.tenant_id != principal.tenant_id or document.knowledge_base_id != knowledge_base_id:
+        raise PublicAPIError(404, 'KNOWLEDGE_DOCUMENT_NOT_FOUND', 'Knowledge document not found.')
     if document.knowledge_base_version_id != version.id:
-        # Updates clone documents into a new head, leaving the old ID/timestamp
-        # intact. Recognize a stale read only within this employee's visible
-        # version history; another employee's private version remains a 404.
-        history = internal_knowledge_bases.list_knowledge_base_versions(
-            knowledge_base_id, principal.tenant_id, agent_id, db
-        )
-        if not any(item["id"] == document.knowledge_base_version_id for item in history):
-            raise PublicAPIError(
-                404, "KNOWLEDGE_DOCUMENT_NOT_FOUND", "Knowledge document not found."
-            )
-        raise PublicAPIError(
-            409, "KNOWLEDGE_DOCUMENT_CONFLICT",
-            "The knowledge base version has changed. Reload documents before editing.",
-        )
+        history = internal_knowledge_bases.list_knowledge_base_versions(knowledge_base_id, principal.tenant_id, agent_id, db)
+        if not any((item['id'] == document.knowledge_base_version_id for item in history)):
+            raise PublicAPIError(404, 'KNOWLEDGE_DOCUMENT_NOT_FOUND', 'Knowledge document not found.')
+        raise PublicAPIError(409, 'KNOWLEDGE_DOCUMENT_CONFLICT', 'The knowledge base version has changed. Reload documents before editing.')
     request = KnowledgeDocumentUpdateRequest(tenant_id=principal.tenant_id, **body)
-    return _dump(internal_knowledge.update_document(
-        document_id, request, db, principal.actor_user, agent_id=agent_id
-    ))
+    return _dump(internal_knowledge.update_document(document_id, request, db, principal.actor_user, agent_id=agent_id))
 
 
 @router.post("/agents/{agent_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}:archive", response_model=dict)
@@ -371,7 +347,7 @@ def execute_knowledge_ingest(db: Session, job: APIJob) -> dict[str, Any]:
         )
         while True:
             db.expire_all()
-            current = db.get(KnowledgeIngestJob, inner.id)
+            current = internal_knowledge.get_job(inner.id, job.tenant_id, job.agent_id, db)
             if not current:
                 raise RuntimeError("Knowledge ingest job disappeared")
             if current.status in {"succeeded", "failed", "cancelled"}:

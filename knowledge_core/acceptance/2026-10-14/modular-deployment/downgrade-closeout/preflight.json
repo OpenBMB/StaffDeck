@@ -1,0 +1,47 @@
+{
+  "ok": true,
+  "errors": [],
+  "source": "/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/knowledge_core/acceptance/2026-10-14/modular-deployment/downgrade-closeout/knowledge.sqlite",
+  "target": {
+    "protocol": "knowledge-config/v1",
+    "preset": "minimal",
+    "modules": {
+      "authentication": false,
+      "spaces": false,
+      "catalog": false,
+      "versions": false,
+      "concepts": false,
+      "discovery": false,
+      "publication": false
+    }
+  },
+  "counts": {
+    "spaces": 2,
+    "catalogs": 2,
+    "branches": 3,
+    "current_documents": 4,
+    "tasks": 0
+  },
+  "source_tables": [
+    "km_branch_contents",
+    "km_branch_spaces",
+    "km_branches",
+    "km_buckets",
+    "km_catalog_contents",
+    "km_catalog_space_bindings",
+    "km_catalogs",
+    "km_chunks",
+    "km_citation_snapshots",
+    "km_concept_contexts",
+    "km_concepts",
+    "km_documents",
+    "km_ingest_jobs",
+    "km_schema_versions",
+    "km_space_contents",
+    "km_spaces",
+    "km_suggestion_contexts",
+    "km_suggestions",
+    "km_version_spaces",
+    "km_versions"
+  ]
+}

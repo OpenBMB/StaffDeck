@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "checks": [
+    "review remains local",
+    "duplicate publication returns the same target",
+    "rejected suggestion cannot publish",
+    "external success and lost response retries idempotently",
+    "historical unknown target is never republished"
+  ]
+}

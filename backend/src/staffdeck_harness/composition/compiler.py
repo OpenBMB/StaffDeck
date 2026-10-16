@@ -259,6 +259,15 @@ class CompositionCompiler:
                 continue  # only reachable through a SOP slot
             mid, ver = provider_for(op, cap.metadata)
             grants.append(CapabilityGrant(operation=op, resource_type=cap.resource_type, resource_id=cap.resource_id, name=cap.name, binding_id=cap.binding_id, scope="general", provider_module_id=mid, provider_version=ver, resource_digest=cap.metadata.get("resource_digest"), provider_config=dict(cap.metadata.get("provider_config") or {})))
+            if cap.resource_type == 'knowledge_base' and op == 'knowledge.search/v1':
+                from app.knowledge.agent_tools import configured_methods, operation
+                if 'query' not in configured_methods(): grants.pop()
+                for method in configured_methods():
+                    if method == 'query': continue
+                    extra = operation(method)
+                    provider_id, provider_version = provider_for(extra, {})
+                    grants.append(CapabilityGrant(operation=extra, resource_type='knowledge_base', resource_id=cap.resource_id,
+                        name=cap.name, binding_id=cap.binding_id, scope='general', provider_module_id=provider_id, provider_version=provider_version))
 
         # L2 SOPs: logical slots -> Staff bindings, plus sub-SOP graph validation.
         sop_edges: dict[str, list[str]] = {}

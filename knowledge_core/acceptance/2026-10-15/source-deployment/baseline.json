@@ -1,0 +1,14 @@
+{
+  "status": "gaps_found",
+  "baseline": {"staffdeck": "874a5de8", "pilotdeck": "ed01ca4d2"},
+  "checks": [
+    {"name": "independent_full_ui", "status": "passed", "evidence": "baseline-browser/report.json", "steps": 20},
+    {"name": "pd_real_model_and_agent", "status": "failed", "evidence": "baseline-pd-agent/report.json", "reason": "Model probe passed; browser bucket edit remained disabled, so Agent phase did not execute"},
+    {"name": "agent_management", "status": "missing", "reason": "PD session registers knowledge_query only; SD proxy exposes knowledge_search only"},
+    {"name": "conditional_document_delete", "status": "missing", "reason": "DELETE cannot take expected_updated_at; archive update is unconditional"},
+    {"name": "persistent_source_service", "status": "missing", "reason": "No fixed source service directory and start/stop/restart/status commands"},
+    {"name": "graph_without_publication", "status": "missing", "reason": "Disabling publication selects modular UI; ConceptsPanel has no relationship graph"},
+    {"name": "delete_and_historical_citation", "status": "not_executed"},
+    {"name": "source_restart_and_task_interruption", "status": "not_executed"}
+  ]
+}

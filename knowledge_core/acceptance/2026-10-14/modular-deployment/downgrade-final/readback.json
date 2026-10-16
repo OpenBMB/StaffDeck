@@ -1,0 +1,754 @@
+{
+  "documents": [
+    {
+      "id": "original",
+      "filename": "same.md",
+      "file_type": "md",
+      "title": "Same title",
+      "status": "ready",
+      "content": "# Expenses\n\nExpense receipts from revision one.",
+      "metadata": {
+        "raw_text": "# Expenses\n\nExpense receipts from revision one.",
+        "document_card": {
+          "title": "Same title",
+          "filename": "same.md",
+          "file_type": "md",
+          "summary": "# Expenses Expense receipts from revision one.",
+          "outline": [
+            {
+              "section_id": "sec_1",
+              "title": "Expenses",
+              "path": "Expenses",
+              "level": 1,
+              "summary": "# Expenses Expense receipts from revision one."
+            }
+          ],
+          "applicable_scenarios": [
+            "Expenses"
+          ],
+          "key_entities": [
+            "Expenses",
+            "Expense",
+            "receipts",
+            "from",
+            "revision",
+            "one"
+          ],
+          "char_count": 47,
+          "section_count": 1
+        },
+        "section_tree": [
+          {
+            "section_id": "sec_1",
+            "related_section_id": "sec_1",
+            "node_type": "section",
+            "level": 1,
+            "title": "Expenses",
+            "parent_id": null,
+            "path": "Expenses",
+            "section_order": 1,
+            "summary": "# Expenses Expense receipts from revision one.",
+            "content": "# Expenses\n\nExpense receipts from revision one.",
+            "source_span": {
+              "start_paragraph": 0,
+              "end_paragraph": 1
+            },
+            "anchor_entities": [
+              "Expenses",
+              "Expense",
+              "receipts",
+              "from",
+              "revision",
+              "one"
+            ]
+          }
+        ],
+        "route_trace": [],
+        "ingest_schema_version": 2,
+        "char_count": 47,
+        "section_stats": {
+          "section_count": 1,
+          "paragraph_count": 2
+        },
+        "chunk_stats": {
+          "total_chunks": 1,
+          "chunk_count": 1,
+          "target_chars": 900,
+          "section_target_chars": 1400
+        },
+        "bucket_quality": [
+          {
+            "bucket_id": "kbucket_9adb53ec15994333a22d5481d7cac799",
+            "title": "Expenses",
+            "quality": {
+              "status": "ready",
+              "warnings": [],
+              "has_source_sections": true,
+              "has_summary": true,
+              "content_chars": 47
+            }
+          }
+        ],
+        "okf": {
+          "version": "0.1",
+          "concept_count": 3,
+          "concept_types": [
+            "Source Document",
+            "Source Section",
+            "Topic"
+          ]
+        }
+      },
+      "bucket_count": 1,
+      "chunk_count": 1,
+      "created_at": "2026-10-14T14:06:11.349693",
+      "updated_at": "2026-10-14T14:06:11.349693"
+    },
+    {
+      "id": "second-base",
+      "filename": "same.md",
+      "file_type": "md",
+      "title": "Same title",
+      "status": "ready",
+      "content": "# Expenses\n\nExpense approvals for another knowledge base.",
+      "metadata": {
+        "raw_text": "# Expenses\n\nExpense approvals for another knowledge base.",
+        "document_card": {
+          "title": "Same title",
+          "filename": "same.md",
+          "file_type": "md",
+          "summary": "# Expenses Expense approvals for another knowledge base.",
+          "outline": [
+            {
+              "section_id": "sec_1",
+              "title": "Expenses",
+              "path": "Expenses",
+              "level": 1,
+              "summary": "# Expenses Expense approvals for another knowledge base."
+            }
+          ],
+          "applicable_scenarios": [
+            "Expenses"
+          ],
+          "key_entities": [
+            "Expenses",
+            "Expense",
+            "approvals",
+            "for",
+            "another",
+            "knowledge",
+            "base"
+          ],
+          "char_count": 57,
+          "section_count": 1
+        },
+        "section_tree": [
+          {
+            "section_id": "sec_1",
+            "related_section_id": "sec_1",
+            "node_type": "section",
+            "level": 1,
+            "title": "Expenses",
+            "parent_id": null,
+            "path": "Expenses",
+            "section_order": 1,
+            "summary": "# Expenses Expense approvals for another knowledge base.",
+            "content": "# Expenses\n\nExpense approvals for another knowledge base.",
+            "source_span": {
+              "start_paragraph": 0,
+              "end_paragraph": 1
+            },
+            "anchor_entities": [
+              "Expenses",
+              "Expense",
+              "approvals",
+              "for",
+              "another",
+              "knowledge",
+              "base"
+            ]
+          }
+        ],
+        "route_trace": [],
+        "ingest_schema_version": 2,
+        "char_count": 57,
+        "section_stats": {
+          "section_count": 1,
+          "paragraph_count": 2
+        },
+        "chunk_stats": {
+          "total_chunks": 1,
+          "chunk_count": 1,
+          "target_chars": 900,
+          "section_target_chars": 1400
+        },
+        "bucket_quality": [
+          {
+            "bucket_id": "kbucket_f12b79acbf7a4ab88b1645f7813d406e",
+            "title": "Expenses",
+            "quality": {
+              "status": "ready",
+              "warnings": [],
+              "has_source_sections": true,
+              "has_summary": true,
+              "content_chars": 57
+            }
+          }
+        ],
+        "okf": {
+          "version": "0.1",
+          "concept_count": 3,
+          "concept_types": [
+            "Source Document",
+            "Source Section",
+            "Topic"
+          ]
+        }
+      },
+      "bucket_count": 1,
+      "chunk_count": 1,
+      "created_at": "2026-10-14T14:06:11.375373",
+      "updated_at": "2026-10-14T14:06:11.375373"
+    },
+    {
+      "id": "kdoc_54ee595831424430841b76c756d322b6",
+      "filename": "same.md",
+      "file_type": "md",
+      "title": "Same title",
+      "status": "ready",
+      "content": "# Expenses\n\nExpense receipts differ on branch two.",
+      "metadata": {
+        "raw_text": "# Expenses\n\nExpense receipts differ on branch two.",
+        "document_card": {
+          "title": "Same title",
+          "filename": "same.md",
+          "file_type": "md",
+          "summary": "# Expenses Expense receipts differ on branch two.",
+          "outline": [
+            {
+              "section_id": "sec_1",
+              "title": "Expenses",
+              "path": "Expenses",
+              "level": 1,
+              "summary": "# Expenses Expense receipts differ on branch two."
+            }
+          ],
+          "applicable_scenarios": [
+            "Expenses"
+          ],
+          "key_entities": [
+            "Expenses",
+            "Expense",
+            "receipts",
+            "differ",
+            "branch",
+            "two"
+          ],
+          "char_count": 50,
+          "section_count": 1
+        },
+        "section_tree": [
+          {
+            "section_id": "sec_1",
+            "related_section_id": "sec_1",
+            "node_type": "section",
+            "level": 1,
+            "title": "Expenses",
+            "parent_id": null,
+            "path": "Expenses",
+            "section_order": 1,
+            "summary": "# Expenses Expense receipts differ on branch two.",
+            "content": "# Expenses\n\nExpense receipts differ on branch two.",
+            "source_span": {
+              "start_paragraph": 0,
+              "end_paragraph": 1
+            },
+            "anchor_entities": [
+              "Expenses",
+              "Expense",
+              "receipts",
+              "differ",
+              "branch",
+              "two"
+            ]
+          }
+        ],
+        "route_trace": [],
+        "ingest_schema_version": 2,
+        "char_count": 50,
+        "section_stats": {
+          "section_count": 1,
+          "paragraph_count": 2
+        },
+        "chunk_stats": {
+          "total_chunks": 1,
+          "chunk_count": 1,
+          "target_chars": 900,
+          "section_target_chars": 1400
+        },
+        "bucket_quality": [
+          {
+            "bucket_id": "kbucket_363c10ec784946128686503612c78b55",
+            "title": "Expenses",
+            "quality": {
+              "status": "ready",
+              "warnings": [],
+              "has_source_sections": true,
+              "has_summary": true,
+              "content_chars": 50
+            }
+          }
+        ],
+        "okf": {
+          "version": "0.1",
+          "concept_count": 3,
+          "concept_types": [
+            "Source Document",
+            "Source Section",
+            "Topic"
+          ]
+        },
+        "revision_source_id": "original"
+      },
+      "bucket_count": 1,
+      "chunk_count": 1,
+      "created_at": "2026-10-14T14:06:11.383854",
+      "updated_at": "2026-10-14T14:06:11.390250"
+    }
+  ],
+  "query": {
+    "chunks": [
+      {
+        "id": "kchunk_1cee63d6427e4ca88933abe013cd5641",
+        "document_id": "kdoc_54ee595831424430841b76c756d322b6",
+        "bucket_id": "kbucket_363c10ec784946128686503612c78b55",
+        "chunk_index": 0,
+        "content": "Expense receipts differ on branch two.",
+        "summary": "Expense receipts differ on branch two.",
+        "source_ref": "same.md / Expenses / evidence 1",
+        "metadata": {
+          "ingest_schema_version": 2,
+          "node_type": "evidence_chunk",
+          "related_group_id": null,
+          "related_chunk_index": 0,
+          "section_id": "sec_1",
+          "section_path": "Expenses",
+          "section_title": "Expenses",
+          "bucket_title": "Expenses",
+          "source_span": {
+            "start_paragraph": 0,
+            "end_paragraph": 1
+          },
+          "context_window": "# Expenses Expense receipts differ on branch two.",
+          "related_chunk_ids": [],
+          "related_chunk_count": 0,
+          "related_previous_chunk_id": null,
+          "related_next_chunk_id": null
+        },
+        "created_at": "2026-10-14T14:06:11.390250",
+        "updated_at": "2026-10-14T14:06:11.390250"
+      },
+      {
+        "id": "kchunk_5d5bade295bb47899d8768e3a27b05da",
+        "document_id": "original",
+        "bucket_id": "kbucket_9adb53ec15994333a22d5481d7cac799",
+        "chunk_index": 0,
+        "content": "Expense receipts from revision one.",
+        "summary": "Expense receipts from revision one.",
+        "source_ref": "same.md / Expenses / evidence 1",
+        "metadata": {
+          "ingest_schema_version": 2,
+          "node_type": "evidence_chunk",
+          "related_group_id": null,
+          "related_chunk_index": 0,
+          "section_id": "sec_1",
+          "section_path": "Expenses",
+          "section_title": "Expenses",
+          "bucket_title": "Expenses",
+          "source_span": {
+            "start_paragraph": 0,
+            "end_paragraph": 1
+          },
+          "context_window": "# Expenses Expense receipts from revision one.",
+          "related_chunk_ids": [],
+          "related_chunk_count": 0,
+          "related_previous_chunk_id": null,
+          "related_next_chunk_id": null
+        },
+        "created_at": "2026-10-14T14:06:11.349693",
+        "updated_at": "2026-10-14T14:06:11.349693"
+      },
+      {
+        "id": "kchunk_afbc9314bee646e197f1ab82c8da487b",
+        "document_id": "second-base",
+        "bucket_id": "kbucket_f12b79acbf7a4ab88b1645f7813d406e",
+        "chunk_index": 0,
+        "content": "Expense approvals for another knowledge base.",
+        "summary": "Expense approvals for another knowledge base.",
+        "source_ref": "same.md / Expenses / evidence 1",
+        "metadata": {
+          "ingest_schema_version": 2,
+          "node_type": "evidence_chunk",
+          "related_group_id": null,
+          "related_chunk_index": 0,
+          "section_id": "sec_1",
+          "section_path": "Expenses",
+          "section_title": "Expenses",
+          "bucket_title": "Expenses",
+          "source_span": {
+            "start_paragraph": 0,
+            "end_paragraph": 1
+          },
+          "context_window": "# Expenses Expense approvals for another knowledge base.",
+          "related_chunk_ids": [],
+          "related_chunk_count": 0,
+          "related_previous_chunk_id": null,
+          "related_next_chunk_id": null
+        },
+        "created_at": "2026-10-14T14:06:11.375373",
+        "updated_at": "2026-10-14T14:06:11.375373"
+      }
+    ],
+    "buckets": [
+      {
+        "id": "kbucket_363c10ec784946128686503612c78b55",
+        "document_id": "kdoc_54ee595831424430841b76c756d322b6",
+        "title": "Expenses",
+        "summary": "# Expenses Expense receipts differ on branch two.",
+        "content": "# Expenses\n\nExpense receipts differ on branch two.",
+        "metadata": {
+          "ingest_schema_version": 2,
+          "bucket_key": "expenses",
+          "content": "# Expenses\n\nExpense receipts differ on branch two.",
+          "bucket_type": "structure",
+          "concept_type": "Topic",
+          "section_ids": [
+            "sec_1"
+          ],
+          "section_paths": [
+            "Expenses"
+          ],
+          "applicable_query_types": [
+            "answer",
+            "policy_check"
+          ],
+          "quality": {
+            "status": "ready",
+            "warnings": [],
+            "has_source_sections": true,
+            "has_summary": true,
+            "content_chars": 50
+          },
+          "document_card": {
+            "title": "Same title",
+            "summary": "# Expenses Expense receipts differ on branch two."
+          },
+          "representative_chunk_ids": [
+            "kchunk_1cee63d6427e4ca88933abe013cd5641"
+          ],
+          "chunk_count": 1
+        },
+        "created_at": "2026-10-14T14:06:11.390250",
+        "updated_at": "2026-10-14T14:06:11.390250"
+      },
+      {
+        "id": "kbucket_9adb53ec15994333a22d5481d7cac799",
+        "document_id": "original",
+        "title": "Expenses",
+        "summary": "# Expenses Expense receipts from revision one.",
+        "content": "# Expenses\n\nExpense receipts from revision one.",
+        "metadata": {
+          "ingest_schema_version": 2,
+          "bucket_key": "expenses",
+          "content": "# Expenses\n\nExpense receipts from revision one.",
+          "bucket_type": "structure",
+          "concept_type": "Topic",
+          "section_ids": [
+            "sec_1"
+          ],
+          "section_paths": [
+            "Expenses"
+          ],
+          "applicable_query_types": [
+            "answer",
+            "policy_check"
+          ],
+          "quality": {
+            "status": "ready",
+            "warnings": [],
+            "has_source_sections": true,
+            "has_summary": true,
+            "content_chars": 47
+          },
+          "document_card": {
+            "title": "Same title",
+            "summary": "# Expenses Expense receipts from revision one."
+          },
+          "representative_chunk_ids": [
+            "kchunk_5d5bade295bb47899d8768e3a27b05da"
+          ],
+          "chunk_count": 1
+        },
+        "created_at": "2026-10-14T14:06:11.349693",
+        "updated_at": "2026-10-14T14:06:11.349693"
+      },
+      {
+        "id": "kbucket_f12b79acbf7a4ab88b1645f7813d406e",
+        "document_id": "second-base",
+        "title": "Expenses",
+        "summary": "# Expenses Expense approvals for another knowledge base.",
+        "content": "# Expenses\n\nExpense approvals for another knowledge base.",
+        "metadata": {
+          "ingest_schema_version": 2,
+          "bucket_key": "expenses",
+          "content": "# Expenses\n\nExpense approvals for another knowledge base.",
+          "bucket_type": "structure",
+          "concept_type": "Topic",
+          "section_ids": [
+            "sec_1"
+          ],
+          "section_paths": [
+            "Expenses"
+          ],
+          "applicable_query_types": [
+            "answer",
+            "policy_check"
+          ],
+          "quality": {
+            "status": "ready",
+            "warnings": [],
+            "has_source_sections": true,
+            "has_summary": true,
+            "content_chars": 57
+          },
+          "document_card": {
+            "title": "Same title",
+            "summary": "# Expenses Expense approvals for another knowledge base."
+          },
+          "representative_chunk_ids": [
+            "kchunk_afbc9314bee646e197f1ab82c8da487b"
+          ],
+          "chunk_count": 1
+        },
+        "created_at": "2026-10-14T14:06:11.375373",
+        "updated_at": "2026-10-14T14:06:11.375373"
+      }
+    ],
+    "evidence_pack": [
+      {
+        "chunk_id": "kchunk_1cee63d6427e4ca88933abe013cd5641",
+        "related_group_id": null,
+        "related_chunk_ids": [],
+        "related_chunk_index": 0,
+        "document_id": "kdoc_54ee595831424430841b76c756d322b6",
+        "bucket_id": "kbucket_363c10ec784946128686503612c78b55",
+        "source_path": "same.md / Expenses / evidence 1",
+        "section_path": "Expenses",
+        "summary": "Expense receipts differ on branch two.",
+        "content": "Expense receipts differ on branch two.",
+        "excerpt": "Expense receipts differ on branch two.",
+        "relevance_score": 12.36,
+        "confidence_reason": "\u5f15\u7528\u6765\u6e90\u6458\u8981\u3001\u7ae0\u8282\u8def\u5f84\u6216\u6b63\u6587\u4e0e\u67e5\u8be2\u76f8\u5173"
+      },
+      {
+        "chunk_id": "kchunk_5d5bade295bb47899d8768e3a27b05da",
+        "related_group_id": null,
+        "related_chunk_ids": [],
+        "related_chunk_index": 0,
+        "document_id": "original",
+        "bucket_id": "kbucket_9adb53ec15994333a22d5481d7cac799",
+        "source_path": "same.md / Expenses / evidence 1",
+        "section_path": "Expenses",
+        "summary": "Expense receipts from revision one.",
+        "content": "Expense receipts from revision one.",
+        "excerpt": "Expense receipts from revision one.",
+        "relevance_score": 12.36,
+        "confidence_reason": "\u5f15\u7528\u6765\u6e90\u6458\u8981\u3001\u7ae0\u8282\u8def\u5f84\u6216\u6b63\u6587\u4e0e\u67e5\u8be2\u76f8\u5173"
+      },
+      {
+        "chunk_id": "kchunk_afbc9314bee646e197f1ab82c8da487b",
+        "related_group_id": null,
+        "related_chunk_ids": [],
+        "related_chunk_index": 0,
+        "document_id": "second-base",
+        "bucket_id": "kbucket_f12b79acbf7a4ab88b1645f7813d406e",
+        "source_path": "same.md / Expenses / evidence 1",
+        "section_path": "Expenses",
+        "summary": "Expense approvals for another knowledge base.",
+        "content": "Expense approvals for another knowledge base.",
+        "excerpt": "Expense approvals for another knowledge base.",
+        "relevance_score": 3.68,
+        "confidence_reason": "\u5f15\u7528\u6765\u6e90\u6458\u8981\u3001\u7ae0\u8282\u8def\u5f84\u6216\u6b63\u6587\u4e0e\u67e5\u8be2\u76f8\u5173"
+      }
+    ],
+    "expanded_sections": [
+      {
+        "document_id": "kdoc_54ee595831424430841b76c756d322b6",
+        "section_id": "sec_1",
+        "title": "Expenses",
+        "path": "Expenses",
+        "summary": "# Expenses Expense receipts differ on branch two.",
+        "level": 1,
+        "source_span": {
+          "start_paragraph": 0,
+          "end_paragraph": 1
+        },
+        "reason": "\u547d\u4e2d\u5185\u90e8\u7d22\u5f15\uff1aExpenses"
+      },
+      {
+        "document_id": "original",
+        "section_id": "sec_1",
+        "title": "Expenses",
+        "path": "Expenses",
+        "summary": "# Expenses Expense receipts from revision one.",
+        "level": 1,
+        "source_span": {
+          "start_paragraph": 0,
+          "end_paragraph": 1
+        },
+        "reason": "\u547d\u4e2d\u5185\u90e8\u7d22\u5f15\uff1aExpenses"
+      },
+      {
+        "document_id": "second-base",
+        "section_id": "sec_1",
+        "title": "Expenses",
+        "path": "Expenses",
+        "summary": "# Expenses Expense approvals for another knowledge base.",
+        "level": 1,
+        "source_span": {
+          "start_paragraph": 0,
+          "end_paragraph": 1
+        },
+        "reason": "\u547d\u4e2d\u5185\u90e8\u7d22\u5f15\uff1aExpenses"
+      }
+    ],
+    "route_trace": [
+      {
+        "phase": "document_route",
+        "candidate_count": 3,
+        "message": "\u6b63\u5728\u9009\u62e9\u77e5\u8bc6\u6587\u6863",
+        "mode": "auto"
+      },
+      {
+        "phase": "document_route_lexical",
+        "message": "\u6309\u68c0\u7d22\u76f8\u5173\u6027\u9009\u62e9\u77e5\u8bc6\u6587\u6863",
+        "selected_count": 3
+      },
+      {
+        "phase": "bucket_route",
+        "candidate_count": 3,
+        "message": "\u6b63\u5728\u9009\u62e9\u5185\u90e8\u7d22\u5f15",
+        "selected_document_ids": [
+          "original",
+          "kdoc_54ee595831424430841b76c756d322b6",
+          "second-base"
+        ]
+      },
+      {
+        "phase": "bucket_route_lexical",
+        "message": "\u6309\u68c0\u7d22\u76f8\u5173\u6027\u9009\u62e9\u5185\u90e8\u7d22\u5f15",
+        "selected_count": 3
+      },
+      {
+        "phase": "section_expand",
+        "section_count": 3,
+        "message": "\u6b63\u5728\u5c55\u5f00\u7ae0\u8282"
+      },
+      {
+        "phase": "read_chunks",
+        "message": "\u8bfb\u53d6\u5f15\u7528\u6765\u6e90",
+        "chunk_count": 3
+      },
+      {
+        "phase": "evidence_pack",
+        "evidence_count": 3,
+        "message": "\u6574\u7406\u5f15\u7528\u6765\u6e90\u5305"
+      }
+    ],
+    "selected_concepts": [],
+    "selected_documents": [
+      {
+        "id": "original",
+        "title": "Same title",
+        "filename": "same.md",
+        "file_type": "md",
+        "summary": "# Expenses Expense receipts from revision one.",
+        "outline": [
+          {
+            "section_id": "sec_1",
+            "title": "Expenses",
+            "path": "Expenses",
+            "level": 1,
+            "summary": "# Expenses Expense receipts from revision one."
+          }
+        ],
+        "key_entities": [
+          "Expenses",
+          "Expense",
+          "receipts",
+          "from",
+          "revision",
+          "one"
+        ],
+        "section_count": 1,
+        "chunk_count": 1,
+        "updated_at": "2026-10-14T14:06:11.349693"
+      },
+      {
+        "id": "kdoc_54ee595831424430841b76c756d322b6",
+        "title": "Same title",
+        "filename": "same.md",
+        "file_type": "md",
+        "summary": "# Expenses Expense receipts differ on branch two.",
+        "outline": [
+          {
+            "section_id": "sec_1",
+            "title": "Expenses",
+            "path": "Expenses",
+            "level": 1,
+            "summary": "# Expenses Expense receipts differ on branch two."
+          }
+        ],
+        "key_entities": [
+          "Expenses",
+          "Expense",
+          "receipts",
+          "differ",
+          "branch",
+          "two"
+        ],
+        "section_count": 1,
+        "chunk_count": 1,
+        "updated_at": "2026-10-14T14:06:11.390250"
+      },
+      {
+        "id": "second-base",
+        "title": "Same title",
+        "filename": "same.md",
+        "file_type": "md",
+        "summary": "# Expenses Expense approvals for another knowledge base.",
+        "outline": [
+          {
+            "section_id": "sec_1",
+            "title": "Expenses",
+            "path": "Expenses",
+            "level": 1,
+            "summary": "# Expenses Expense approvals for another knowledge base."
+          }
+        ],
+        "key_entities": [
+          "Expenses",
+          "Expense",
+          "approvals",
+          "for",
+          "another",
+          "knowledge",
+          "base"
+        ],
+        "section_count": 1,
+        "chunk_count": 1,
+        "updated_at": "2026-10-14T14:06:11.375373"
+      }
+    ]
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "status": "passed",
+  "checks": [
+    {
+      "name": "minimal",
+      "status": "passed",
+      "reason": "",
+      "evidence": [
+        "composition-closeout/minimal.json"
+      ]
+    },
+    {
+      "name": "full",
+      "status": "passed",
+      "reason": "",
+      "evidence": [
+        "composition-closeout/full.json"
+      ]
+    },
+    {
+      "name": "authentication",
+      "status": "passed",
+      "reason": "",
+      "evidence": [
+        "composition-closeout/authentication.json"
+      ]
+    },
+    {
+      "name": "catalog",
+      "status": "passed",
+      "reason": "",
+      "evidence": [
+        "composition-closeout/catalog.json"
+      ]
+    },
+    {
+      "name": "catalog_versions",
+      "status": "passed",
+      "reason": "",
+      "evidence": [
+        "composition-closeout/catalog_versions.json"
+      ]
+    },
+    {
+      "name": "concepts",
+      "status": "passed",
+      "reason": "",
+      "evidence": [
+        "composition-closeout/concepts.json"
+      ]
+    },
+    {
+      "name": "discovery",
+      "status": "passed",
+      "reason": "",
+      "evidence": [
+        "composition-closeout/discovery.json"
+      ]
+    },
+    {
+      "name": "concepts_discovery",
+      "status": "passed",
+      "reason": "",
+      "evidence": [
+        "composition-closeout/concepts_discovery.json"
+      ]
+    },
+    {
+      "name": "spaces_catalog_versions",
+      "status": "passed",
+      "reason": "",
+      "evidence": [
+        "composition-closeout/spaces_catalog_versions.json"
+      ]
+    }
+  ]
+}

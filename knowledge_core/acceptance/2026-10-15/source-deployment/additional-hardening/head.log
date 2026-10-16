@@ -1,0 +1,346 @@
+..F..FFFFF..............F                                                [100%]
+=================================== FAILURES ===================================
+____ test_detached_host_uses_shared_tracker_and_revalidates_binding[False] _____
+
+db = <sqlmodel.orm.session.Session object at 0x10a34eb10>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a34c1d0>
+disable_before_worker = False
+
+    @pytest.mark.parametrize("disable_before_worker", [False, True])
+    def test_detached_host_uses_shared_tracker_and_revalidates_binding(db, monkeypatch, disable_before_worker):
+        from app.db.models import ChatSession, ExternalBusinessTask
+        from app.tools.external_tasks import poll_due_external_tasks
+        from app.tools.tool_schema import ToolResult
+        from staffdeck_harness.modules.builtin import LocalCapabilityProvider
+        tool = _tool(db, "async_tool")
+        tool.config_json = {"execution": {"execution_mode": "detached", "timeout_seconds": 10}}
+        ensure_private_resource_binding(db, "t1", "a1", "tool", tool.id)
+        db.add(tool)
+        db.add(ChatSession(id="s1", tenant_id="t1", agent_id="a1", user_id="u1"))
+        db.commit()
+        _install_registry(monkeypatch, LocalCapabilityProvider())
+        snap = CompositionCompiler(hooks=()).compile(_staff([_cap("tool", tool.id)]))
+        host = _host(db, snap)
+        monkeypatch.setattr("staffdeck_harness.security.profile.get_profile", lambda: host.guard.profile)
+        sends = []
+        monkeypatch.setattr("app.tools.tool_executor.ToolExecutor.execute_sync_http",
+            lambda self, row, args: sends.append(dict(args)) or ToolResult(tool_name=row.name, success=True, data={"done": True}))
+        result, _ = host.invoke(ModuleInvocation("async-1", "tool", "tool.invoke/v1",
+            {"tool_id": tool.id, "order_id": "B1"}, _ctx(), binding_id=tool.id))
+        assert result.success, result.error
+        assert result.data["detached"] and sends == []
+        task = db.get(ExternalBusinessTask, result.data["task_id"])
+        assert task.status_config_json["_runtime"]["module_id"] == "tool.fake"
+        assert "headers" not in task.status_config_json["_runtime"]
+        if disable_before_worker:
+            tool.enabled = False
+            db.add(tool)
+            db.commit()
+        poll_due_external_tasks(db)
+        db.refresh(task)
+        if disable_before_worker:
+            assert task.status == "tracking_blocked" and sends == []
+            assert task.error_json['code'] != 'POLL_ERROR'
+        else:
+>           assert task.status == "completed", task.error_json
+E           AssertionError: {'code': 'RESULT_POLICY_UNAVAILABLE', 'message': '异步结果未通过当前身份或结果监管，已停止跟踪；不会重放业务调用。', 'retryable': False, 'business_replay_allowed': False}
+E           assert 'tracking_blocked' == 'completed'
+E             
+E             - completed
+E             + tracking_blocked
+
+backend/tests_harness/test_capability_host_hardening.py:185: AssertionError
+_______ test_http_provider_never_implements_a_second_transport[detached] _______
+
+db = <sqlmodel.orm.session.Session object at 0x10a67e030>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a2e96a0>
+mode = 'detached'
+
+    @pytest.mark.parametrize('mode', ['sync', 'detached'])
+    def test_http_provider_never_implements_a_second_transport(db, monkeypatch, mode):
+        from app.db.models import ChatSession
+        from app.tools.external_tasks import poll_due_external_tasks
+        from app.tools.tool_schema import ToolResult
+        from staffdeck_harness.modules.builtin import LocalCapabilityProvider
+        from staffdeck_harness.contracts.http_task import ResolvedHttpTool
+        class Provider(LocalCapabilityProvider):
+            def invoke(self, *args):
+                pytest.fail('HTTP transport must be owned by the common executor')
+        tool = _tool(db, 'common-http')
+        tool.config_json = {'execution': {'execution_mode': mode, 'timeout_seconds': 10}}
+        ensure_private_resource_binding(db, 't1', 'a1', 'tool', tool.id)
+        db.add_all([tool, ChatSession(id='s1', tenant_id='t1', agent_id='a1', user_id='u1')])
+        db.commit()
+        _install_registry(monkeypatch, Provider())
+        host = _host(db, CompositionCompiler(hooks=()).compile(_staff([_cap('tool', tool.id)])))
+        monkeypatch.setattr('staffdeck_harness.security.profile.get_profile', lambda: host.guard.profile)
+        calls = []
+        def execute(self, definition, arguments, **kwargs):
+            assert isinstance(definition, ResolvedHttpTool)
+            calls.append(arguments)
+            return ToolResult(tool_name=definition.name, success=True, data={'ok': True})
+        monkeypatch.setattr('app.tools.tool_executor.ToolExecutor.execute_sync_http', execute)
+        result, _ = host.invoke(ModuleInvocation('common-http-call', 'tool', 'tool.invoke/v1',
+            {'order_id': 'once'}, _ctx(), binding_id=tool.id))
+        assert result.success, result.error
+        if mode == 'detached':
+            assert calls == []
+            poll_due_external_tasks(db)
+>       assert calls == [{'order_id': 'once'}]
+E       AssertionError: assert [] == [{'order_id': 'once'}]
+E         
+E         Right contains one more item: {'order_id': 'once'}
+E         Use -v to get more diff
+
+backend/tests_harness/test_capability_host_hardening.py:220: AssertionError
+_ test_async_final_result_is_projected_before_api_events_and_sop[worker-False] _
+
+db = <sqlmodel.orm.session.Session object at 0x109e01d90>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a959cd0>
+deny = False, delivery = 'worker'
+
+    @pytest.mark.parametrize('deny', [False, True])
+    @pytest.mark.parametrize('delivery', ['worker', 'callback'])
+    def test_async_final_result_is_projected_before_api_events_and_sop(db, monkeypatch, deny, delivery):
+        import json
+        from app.db.models import ChatSession, ExternalBusinessTask, ExternalBusinessTaskEvent, HarnessTaskFrameRecord
+        from sqlmodel import select
+        from app.api.external_business_tasks import task_read
+        from app.tools.external_tasks import apply_task_event, poll_due_external_tasks
+        from app.tools.tool_schema import ToolResult
+        from staffdeck_harness.modules.builtin import LocalCapabilityProvider
+        from staffdeck_harness.contracts.manifest import HookContribution
+        tool = _tool(db, 'reviewed-async')
+        tool.config_json = {'execution': {'execution_mode': 'detached', 'timeout_seconds': 10}}
+        ensure_private_resource_binding(db, 't1', 'a1', 'tool', tool.id)
+        db.add_all([tool, ChatSession(id='s1', tenant_id='t1', agent_id='a1', user_id='u1')])
+        db.commit()
+        reg = _install_registry(monkeypatch, LocalCapabilityProvider())
+        observed = []
+        def policy(ctx, state):
+            assert ctx.payload['name'] == 'tool_invoke'
+            observed.append(ctx.payload['data'])
+            if isinstance(ctx.payload['data'], dict) and ctx.payload['data'].get('detached'):
+                return HookDecision.passthrough()
+            return HookDecision.deny('sensitive output') if deny else HookDecision(kind='modify', replacement=ModuleResult.ok({'safe': True}))
+        monkeypatch.setattr(reg, 'hooks', lambda *args, **kw: (HookContribution(point='post_tool',handler='test.redact',critical=True),))
+        monkeypatch.setattr(reg, 'hook_handlers', lambda *args, **kw: {'test.redact':policy})
+        host = _host(db, CompositionCompiler(hooks=()).compile(_staff([_cap('tool', tool.id)])))
+        monkeypatch.setattr('staffdeck_harness.security.profile.get_profile', lambda: host.guard.profile)
+        result, _ = host.invoke(ModuleInvocation('reviewed-call', 'tool', 'tool.invoke/v1', {}, _ctx(),
+            binding_id=tool.id, metadata={'proxy_name':'tool_invoke'}))
+        assert result.success
+        task = db.get(ExternalBusinessTask, result.data['task_id'])
+        frame = HarnessTaskFrameRecord(tenant_id='t1', session_id='s1', source_turn_id='turn1', task_id='tf1',
+            kind='sop', status='waiting_external_task', result_json={'structured_result': {'task_id':task.id}})
+        db.add(frame)
+        db.commit()
+        secret = 'AUDIT_SYNTHETIC_SECRET'
+        if delivery == 'worker':
+            monkeypatch.setattr('app.tools.tool_executor.ToolExecutor.execute_sync_http', lambda self, tool, args:
+                ToolResult(tool_name=tool.name,success=True,data={'private':secret}))
+            poll_due_external_tasks(db)
+        else:
+            apply_task_event(db, task,event_id='callback-final',event_type='result',status='completed',data={'result':{'private':secret},'raw_copy':secret})
+        db.refresh(task)
+        db.refresh(frame)
+>       assert observed == [{'private':secret}]
+E       AssertionError: assert [] == [{'private': ...ETIC_SECRET'}]
+E         
+E         Right contains one more item: {'private': 'AUDIT_SYNTHETIC_SECRET'}
+E         Use -v to get more diff
+
+backend/tests_harness/test_capability_host_hardening.py:268: AssertionError
+_ test_async_final_result_is_projected_before_api_events_and_sop[worker-True] __
+
+db = <sqlmodel.orm.session.Session object at 0x10a959ee0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10add2540>
+deny = True, delivery = 'worker'
+
+    @pytest.mark.parametrize('deny', [False, True])
+    @pytest.mark.parametrize('delivery', ['worker', 'callback'])
+    def test_async_final_result_is_projected_before_api_events_and_sop(db, monkeypatch, deny, delivery):
+        import json
+        from app.db.models import ChatSession, ExternalBusinessTask, ExternalBusinessTaskEvent, HarnessTaskFrameRecord
+        from sqlmodel import select
+        from app.api.external_business_tasks import task_read
+        from app.tools.external_tasks import apply_task_event, poll_due_external_tasks
+        from app.tools.tool_schema import ToolResult
+        from staffdeck_harness.modules.builtin import LocalCapabilityProvider
+        from staffdeck_harness.contracts.manifest import HookContribution
+        tool = _tool(db, 'reviewed-async')
+        tool.config_json = {'execution': {'execution_mode': 'detached', 'timeout_seconds': 10}}
+        ensure_private_resource_binding(db, 't1', 'a1', 'tool', tool.id)
+        db.add_all([tool, ChatSession(id='s1', tenant_id='t1', agent_id='a1', user_id='u1')])
+        db.commit()
+        reg = _install_registry(monkeypatch, LocalCapabilityProvider())
+        observed = []
+        def policy(ctx, state):
+            assert ctx.payload['name'] == 'tool_invoke'
+            observed.append(ctx.payload['data'])
+            if isinstance(ctx.payload['data'], dict) and ctx.payload['data'].get('detached'):
+                return HookDecision.passthrough()
+            return HookDecision.deny('sensitive output') if deny else HookDecision(kind='modify', replacement=ModuleResult.ok({'safe': True}))
+        monkeypatch.setattr(reg, 'hooks', lambda *args, **kw: (HookContribution(point='post_tool',handler='test.redact',critical=True),))
+        monkeypatch.setattr(reg, 'hook_handlers', lambda *args, **kw: {'test.redact':policy})
+        host = _host(db, CompositionCompiler(hooks=()).compile(_staff([_cap('tool', tool.id)])))
+        monkeypatch.setattr('staffdeck_harness.security.profile.get_profile', lambda: host.guard.profile)
+        result, _ = host.invoke(ModuleInvocation('reviewed-call', 'tool', 'tool.invoke/v1', {}, _ctx(),
+            binding_id=tool.id, metadata={'proxy_name':'tool_invoke'}))
+        assert result.success
+        task = db.get(ExternalBusinessTask, result.data['task_id'])
+        frame = HarnessTaskFrameRecord(tenant_id='t1', session_id='s1', source_turn_id='turn1', task_id='tf1',
+            kind='sop', status='waiting_external_task', result_json={'structured_result': {'task_id':task.id}})
+        db.add(frame)
+        db.commit()
+        secret = 'AUDIT_SYNTHETIC_SECRET'
+        if delivery == 'worker':
+            monkeypatch.setattr('app.tools.tool_executor.ToolExecutor.execute_sync_http', lambda self, tool, args:
+                ToolResult(tool_name=tool.name,success=True,data={'private':secret}))
+            poll_due_external_tasks(db)
+        else:
+            apply_task_event(db, task,event_id='callback-final',event_type='result',status='completed',data={'result':{'private':secret},'raw_copy':secret})
+        db.refresh(task)
+        db.refresh(frame)
+>       assert observed == [{'private':secret}]
+E       AssertionError: assert [] == [{'private': ...ETIC_SECRET'}]
+E         
+E         Right contains one more item: {'private': 'AUDIT_SYNTHETIC_SECRET'}
+E         Use -v to get more diff
+
+backend/tests_harness/test_capability_host_hardening.py:268: AssertionError
+_ test_async_final_result_is_projected_before_api_events_and_sop[callback-False] _
+
+db = <sqlmodel.orm.session.Session object at 0x10aec9a90>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10b916ae0>
+deny = False, delivery = 'callback'
+
+    @pytest.mark.parametrize('deny', [False, True])
+    @pytest.mark.parametrize('delivery', ['worker', 'callback'])
+    def test_async_final_result_is_projected_before_api_events_and_sop(db, monkeypatch, deny, delivery):
+        import json
+        from app.db.models import ChatSession, ExternalBusinessTask, ExternalBusinessTaskEvent, HarnessTaskFrameRecord
+        from sqlmodel import select
+        from app.api.external_business_tasks import task_read
+        from app.tools.external_tasks import apply_task_event, poll_due_external_tasks
+        from app.tools.tool_schema import ToolResult
+        from staffdeck_harness.modules.builtin import LocalCapabilityProvider
+        from staffdeck_harness.contracts.manifest import HookContribution
+        tool = _tool(db, 'reviewed-async')
+        tool.config_json = {'execution': {'execution_mode': 'detached', 'timeout_seconds': 10}}
+        ensure_private_resource_binding(db, 't1', 'a1', 'tool', tool.id)
+        db.add_all([tool, ChatSession(id='s1', tenant_id='t1', agent_id='a1', user_id='u1')])
+        db.commit()
+        reg = _install_registry(monkeypatch, LocalCapabilityProvider())
+        observed = []
+        def policy(ctx, state):
+            assert ctx.payload['name'] == 'tool_invoke'
+            observed.append(ctx.payload['data'])
+            if isinstance(ctx.payload['data'], dict) and ctx.payload['data'].get('detached'):
+                return HookDecision.passthrough()
+            return HookDecision.deny('sensitive output') if deny else HookDecision(kind='modify', replacement=ModuleResult.ok({'safe': True}))
+        monkeypatch.setattr(reg, 'hooks', lambda *args, **kw: (HookContribution(point='post_tool',handler='test.redact',critical=True),))
+        monkeypatch.setattr(reg, 'hook_handlers', lambda *args, **kw: {'test.redact':policy})
+        host = _host(db, CompositionCompiler(hooks=()).compile(_staff([_cap('tool', tool.id)])))
+        monkeypatch.setattr('staffdeck_harness.security.profile.get_profile', lambda: host.guard.profile)
+        result, _ = host.invoke(ModuleInvocation('reviewed-call', 'tool', 'tool.invoke/v1', {}, _ctx(),
+            binding_id=tool.id, metadata={'proxy_name':'tool_invoke'}))
+        assert result.success
+        task = db.get(ExternalBusinessTask, result.data['task_id'])
+        frame = HarnessTaskFrameRecord(tenant_id='t1', session_id='s1', source_turn_id='turn1', task_id='tf1',
+            kind='sop', status='waiting_external_task', result_json={'structured_result': {'task_id':task.id}})
+        db.add(frame)
+        db.commit()
+        secret = 'AUDIT_SYNTHETIC_SECRET'
+        if delivery == 'worker':
+            monkeypatch.setattr('app.tools.tool_executor.ToolExecutor.execute_sync_http', lambda self, tool, args:
+                ToolResult(tool_name=tool.name,success=True,data={'private':secret}))
+            poll_due_external_tasks(db)
+        else:
+            apply_task_event(db, task,event_id='callback-final',event_type='result',status='completed',data={'result':{'private':secret},'raw_copy':secret})
+        db.refresh(task)
+        db.refresh(frame)
+>       assert observed == [{'private':secret}]
+E       AssertionError: assert [] == [{'private': ...ETIC_SECRET'}]
+E         
+E         Right contains one more item: {'private': 'AUDIT_SYNTHETIC_SECRET'}
+E         Use -v to get more diff
+
+backend/tests_harness/test_capability_host_hardening.py:268: AssertionError
+_ test_async_final_result_is_projected_before_api_events_and_sop[callback-True] _
+
+db = <sqlmodel.orm.session.Session object at 0x10ae8fda0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10aec99d0>
+deny = True, delivery = 'callback'
+
+    @pytest.mark.parametrize('deny', [False, True])
+    @pytest.mark.parametrize('delivery', ['worker', 'callback'])
+    def test_async_final_result_is_projected_before_api_events_and_sop(db, monkeypatch, deny, delivery):
+        import json
+        from app.db.models import ChatSession, ExternalBusinessTask, ExternalBusinessTaskEvent, HarnessTaskFrameRecord
+        from sqlmodel import select
+        from app.api.external_business_tasks import task_read
+        from app.tools.external_tasks import apply_task_event, poll_due_external_tasks
+        from app.tools.tool_schema import ToolResult
+        from staffdeck_harness.modules.builtin import LocalCapabilityProvider
+        from staffdeck_harness.contracts.manifest import HookContribution
+        tool = _tool(db, 'reviewed-async')
+        tool.config_json = {'execution': {'execution_mode': 'detached', 'timeout_seconds': 10}}
+        ensure_private_resource_binding(db, 't1', 'a1', 'tool', tool.id)
+        db.add_all([tool, ChatSession(id='s1', tenant_id='t1', agent_id='a1', user_id='u1')])
+        db.commit()
+        reg = _install_registry(monkeypatch, LocalCapabilityProvider())
+        observed = []
+        def policy(ctx, state):
+            assert ctx.payload['name'] == 'tool_invoke'
+            observed.append(ctx.payload['data'])
+            if isinstance(ctx.payload['data'], dict) and ctx.payload['data'].get('detached'):
+                return HookDecision.passthrough()
+            return HookDecision.deny('sensitive output') if deny else HookDecision(kind='modify', replacement=ModuleResult.ok({'safe': True}))
+        monkeypatch.setattr(reg, 'hooks', lambda *args, **kw: (HookContribution(point='post_tool',handler='test.redact',critical=True),))
+        monkeypatch.setattr(reg, 'hook_handlers', lambda *args, **kw: {'test.redact':policy})
+        host = _host(db, CompositionCompiler(hooks=()).compile(_staff([_cap('tool', tool.id)])))
+        monkeypatch.setattr('staffdeck_harness.security.profile.get_profile', lambda: host.guard.profile)
+        result, _ = host.invoke(ModuleInvocation('reviewed-call', 'tool', 'tool.invoke/v1', {}, _ctx(),
+            binding_id=tool.id, metadata={'proxy_name':'tool_invoke'}))
+        assert result.success
+        task = db.get(ExternalBusinessTask, result.data['task_id'])
+        frame = HarnessTaskFrameRecord(tenant_id='t1', session_id='s1', source_turn_id='turn1', task_id='tf1',
+            kind='sop', status='waiting_external_task', result_json={'structured_result': {'task_id':task.id}})
+        db.add(frame)
+        db.commit()
+        secret = 'AUDIT_SYNTHETIC_SECRET'
+        if delivery == 'worker':
+            monkeypatch.setattr('app.tools.tool_executor.ToolExecutor.execute_sync_http', lambda self, tool, args:
+                ToolResult(tool_name=tool.name,success=True,data={'private':secret}))
+            poll_due_external_tasks(db)
+        else:
+            apply_task_event(db, task,event_id='callback-final',event_type='result',status='completed',data={'result':{'private':secret},'raw_copy':secret})
+        db.refresh(task)
+        db.refresh(frame)
+>       assert observed == [{'private':secret}]
+E       AssertionError: assert [] == [{'private': ...ETIC_SECRET'}]
+E         
+E         Right contains one more item: {'private': 'AUDIT_SYNTHETIC_SECRET'}
+E         Use -v to get more diff
+
+backend/tests_harness/test_capability_host_hardening.py:268: AssertionError
+___ test_knowledge_pin_covers_all_activated_bases_and_conflicts_fail_closed ____
+
+db = <sqlmodel.orm.session.Session object at 0x10e020530>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10e171970>
+
+    def test_knowledge_pin_covers_all_activated_bases_and_conflicts_fail_closed(db, monkeypatch):
+>       from app.db.models import KnowledgeBase
+E       ImportError: cannot import name 'KnowledgeBase' from 'app.db.models' (/Users/a1/.codex/worktrees/standalone-alpha1-20261013/StaffDeck/backend/app/db/models.py)
+
+backend/tests_harness/test_capability_host_hardening.py:513: ImportError
+=========================== short test summary info ============================
+FAILED backend/tests_harness/test_capability_host_hardening.py::test_detached_host_uses_shared_tracker_and_revalidates_binding[False]
+FAILED backend/tests_harness/test_capability_host_hardening.py::test_http_provider_never_implements_a_second_transport[detached]
+FAILED backend/tests_harness/test_capability_host_hardening.py::test_async_final_result_is_projected_before_api_events_and_sop[worker-False]
+FAILED backend/tests_harness/test_capability_host_hardening.py::test_async_final_result_is_projected_before_api_events_and_sop[worker-True]
+FAILED backend/tests_harness/test_capability_host_hardening.py::test_async_final_result_is_projected_before_api_events_and_sop[callback-False]
+FAILED backend/tests_harness/test_capability_host_hardening.py::test_async_final_result_is_projected_before_api_events_and_sop[callback-True]
+FAILED backend/tests_harness/test_capability_host_hardening.py::test_knowledge_pin_covers_all_activated_bases_and_conflicts_fail_closed
+7 failed, 18 passed in 2.87s

@@ -1,0 +1,35 @@
+INFO:     Started server process [17493]
+INFO:     Waiting for application startup.
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:61482 (Press CTRL+C to quit)
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:18897 (Press CTRL+C to quit)
+INFO:     127.0.0.1:61484 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61485 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61485 - "POST /api/chat/turn HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61485 - "POST /api/chat/turn HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61485 - "POST /api/chat/turn HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61485 - "POST /api/chat/turn HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61485 - "POST /api/chat/turn HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61485 - "POST /api/chat/turn HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61485 - "POST /api/chat/turn HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61485 - "GET /api/chat/sessions/session_c7502674a0ce63ca/events?tenant_id=tenant_demo HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+ERROR:    ASGI callable returned without completing response.
+ERROR:    ASGI callable returned without completing response.
+ERROR:    ASGI callable returned without completing response.
+ERROR:    ASGI callable returned without completing response.
+ERROR:    ASGI callable returned without completing response.
+ERROR:    ASGI callable returned without completing response.
+ERROR:    ASGI callable returned without completing response.
+ERROR:    ASGI callable returned without completing response.
+ERROR:    ASGI callable returned without completing response.
+ERROR:    ASGI callable returned without completing response.
+ERROR:    ASGI callable returned without completing response.
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [17493]

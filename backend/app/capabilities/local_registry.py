@@ -9,7 +9,6 @@ from app.capabilities.registry import (
     CapabilityRegistry,
     DurableCapabilityBinding,
 )
-from app.knowledge import KnowledgeService
 
 LOCAL_KNOWLEDGE_DEPLOYMENT = "local-process"
 LOCAL_KNOWLEDGE_CONFIG_REVISION = "legacy-local-v1"
@@ -33,7 +32,7 @@ def build_local_capability_registry(
     db: Any,
     model_config: Any | None = None,
     *,
-    service_factory: Any = KnowledgeService,
+    service_factory: Any = None,
 ) -> CapabilityRegistry:
     """Build explicit Local bindings; this function does not touch AgentLoop."""
 

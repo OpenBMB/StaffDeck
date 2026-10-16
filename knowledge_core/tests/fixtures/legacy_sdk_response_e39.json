@@ -1,0 +1,1458 @@
+{
+  "source_commit": "e39ec532",
+  "source_checkout": "historical checkout pinned at source_commit",
+  "method_count": 13,
+  "responses": [
+    {
+      "method": "POST",
+      "path": "/agents/agent_api/knowledge-bases",
+      "status": 201,
+      "body": {
+        "branch_base_version": null,
+        "branch_head_version": null,
+        "branch_sync_state": null,
+        "bucket_count": 0,
+        "capability_scope": "general",
+        "chunk_count": 0,
+        "created_at": "<timestamp>",
+        "description": null,
+        "document_count": 0,
+        "id": "<id>",
+        "metadata": {
+          "created_by": "api_admin",
+          "created_by_display_name": "api_admin",
+          "created_by_user_id": "user_api_admin",
+          "created_by_username": "api_admin",
+          "created_from_agent": true,
+          "creator_name": "api_admin",
+          "owner_agent_id": "agent_api",
+          "owner_display_name": "api_admin",
+          "owner_user_id": "user_api_admin",
+          "owner_username": "api_admin",
+          "scope": "agent_private",
+          "visibility": "agent_private"
+        },
+        "name": "Fixture Knowledge",
+        "status": "active",
+        "updated_at": "<timestamp>",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/agents/agent_api/knowledge-bases",
+      "status": 200,
+      "body": {
+        "data": [
+          {
+            "branch_base_version": "1.0.0",
+            "branch_head_version": "1.0.0",
+            "branch_sync_state": "synced",
+            "bucket_count": 0,
+            "capability_scope": "general",
+            "chunk_count": 0,
+            "created_at": "<timestamp>",
+            "description": null,
+            "document_count": 0,
+            "id": "<id>",
+            "metadata": {
+              "created_by": "api_admin",
+              "created_by_display_name": "api_admin",
+              "created_by_user_id": "user_api_admin",
+              "created_by_username": "api_admin",
+              "created_from_agent": true,
+              "creator_name": "api_admin",
+              "owner_agent_id": "agent_api",
+              "owner_display_name": "api_admin",
+              "owner_user_id": "user_api_admin",
+              "owner_username": "api_admin",
+              "scope": "agent_private",
+              "visibility": "agent_private"
+            },
+            "name": "Fixture Knowledge",
+            "status": "active",
+            "updated_at": "<timestamp>",
+            "version": "1.0.0"
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "method": "PATCH",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9",
+      "status": 200,
+      "body": {
+        "branch_base_version": "1.0.0",
+        "branch_head_version": "1.0.0-branch.agent_api.1",
+        "branch_sync_state": "diverged",
+        "bucket_count": 0,
+        "capability_scope": "general",
+        "chunk_count": 0,
+        "created_at": "<timestamp>",
+        "description": "Fixture updated",
+        "document_count": 0,
+        "id": "<id>",
+        "metadata": {
+          "created_by": "api_admin",
+          "created_by_display_name": "api_admin",
+          "created_by_user_id": "user_api_admin",
+          "created_by_username": "api_admin",
+          "created_from_agent": true,
+          "creator_name": "api_admin",
+          "owner_agent_id": "agent_api",
+          "owner_display_name": "api_admin",
+          "owner_user_id": "user_api_admin",
+          "owner_username": "api_admin",
+          "scope": "agent_private",
+          "visibility": "agent_private"
+        },
+        "name": "Fixture Knowledge",
+        "status": "active",
+        "updated_at": "<timestamp>",
+        "version": "1.0.0-branch.agent_api.1"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9/entries",
+      "status": 202,
+      "body": {
+        "agent_id": "agent_api",
+        "created_at": "<timestamp>",
+        "error": {},
+        "finished_at": null,
+        "id": "apijob_59740e0373044501",
+        "kind": "knowledge.ingest",
+        "progress": 0.0,
+        "retryable": false,
+        "session_id": null,
+        "stage": "queued",
+        "started_at": null,
+        "status": "queued",
+        "updated_at": "<timestamp>"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs/apijob_59740e0373044501",
+      "status": 200,
+      "body": {
+        "agent_id": "agent_api",
+        "created_at": "<timestamp>",
+        "error": {},
+        "finished_at": "<timestamp>",
+        "id": "apijob_59740e0373044501",
+        "kind": "knowledge.ingest",
+        "progress": 1.0,
+        "retryable": false,
+        "session_id": null,
+        "stage": "completed",
+        "started_at": "<timestamp>",
+        "status": "succeeded",
+        "updated_at": "<timestamp>"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs/apijob_59740e0373044501/result",
+      "status": 200,
+      "body": {
+        "error": {},
+        "job": {
+          "agent_id": "agent_api",
+          "created_at": "<timestamp>",
+          "error": {},
+          "finished_at": "<timestamp>",
+          "id": "apijob_59740e0373044501",
+          "kind": "knowledge.ingest",
+          "progress": 1.0,
+          "retryable": false,
+          "session_id": null,
+          "stage": "completed",
+          "started_at": "<timestamp>",
+          "status": "succeeded",
+          "updated_at": "<timestamp>"
+        },
+        "result": {
+          "documents": [
+            {
+              "document_id": "<id>",
+              "external_id": null,
+              "job_id": "kjob_33b0744566f04b0b",
+              "retryable": false,
+              "stage": "done",
+              "status": "succeeded"
+            }
+          ],
+          "knowledge_base_id": "<id>"
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9/documents",
+      "status": 200,
+      "body": {
+        "data": [
+          {
+            "bucket_count": 1,
+            "chunk_count": 1,
+            "created_at": "<timestamp>",
+            "error": null,
+            "file_type": "md",
+            "filename": "apijob_59740e0373044501-0.md",
+            "id": "<id>",
+            "knowledge_base_id": "<id>",
+            "knowledge_base_version_id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_2",
+            "metadata": {
+              "bucket_quality": [
+                {
+                  "bucket_id": "<id>",
+                  "quality": {
+                    "content_chars": 24,
+                    "has_source_sections": true,
+                    "has_summary": true,
+                    "status": "warning",
+                    "warnings": [
+                      "content_too_short"
+                    ]
+                  },
+                  "title": "Policy"
+                }
+              ],
+              "char_count": 23,
+              "chunk_stats": {
+                "chunk_count": 1,
+                "section_target_chars": 1400,
+                "target_chars": 900,
+                "total_chunks": 1
+              },
+              "created_by": "api_admin",
+              "created_by_display_name": "api_admin",
+              "created_by_user_id": "user_api_admin",
+              "created_by_username": "api_admin",
+              "creator_name": "api_admin",
+              "document_card": {
+                "applicable_scenarios": [
+                  "Policy"
+                ],
+                "char_count": 23,
+                "file_type": "md",
+                "filename": "apijob_59740e0373044501-0.md",
+                "key_entities": [
+                  "Policy",
+                  "Keep",
+                  "receipts"
+                ],
+                "outline": [
+                  {
+                    "level": 1,
+                    "path": "Policy",
+                    "section_id": "sec_1",
+                    "summary": "# Policy Keep receipts.",
+                    "title": "Policy"
+                  }
+                ],
+                "section_count": 1,
+                "summary": "# Policy Keep receipts.",
+                "title": "Policy"
+              },
+              "external_id": null,
+              "ingest_schema_version": 2,
+              "okf": {
+                "concept_count": 3,
+                "concept_types": [
+                  "Source Document",
+                  "Source Section",
+                  "Topic"
+                ],
+                "version": "0.1"
+              },
+              "owner_display_name": "api_admin",
+              "owner_user_id": "user_api_admin",
+              "owner_username": "api_admin",
+              "section_stats": {
+                "paragraph_count": 2,
+                "section_count": 1
+              },
+              "section_tree": [
+                {
+                  "anchor_entities": [
+                    "Policy",
+                    "Keep",
+                    "receipts"
+                  ],
+                  "content": "# Policy\n\nKeep receipts.",
+                  "level": 1,
+                  "node_type": "section",
+                  "parent_id": null,
+                  "path": "Policy",
+                  "related_section_id": "sec_1",
+                  "section_id": "sec_1",
+                  "section_order": 1,
+                  "source_span": {
+                    "end_paragraph": 1,
+                    "start_paragraph": 0
+                  },
+                  "summary": "# Policy Keep receipts.",
+                  "title": "Policy"
+                }
+              ],
+              "source_ref": null
+            },
+            "status": "ready",
+            "title": "Policy",
+            "updated_at": "<timestamp>"
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9/documents",
+      "status": 200,
+      "body": {
+        "data": [
+          {
+            "bucket_count": 1,
+            "chunk_count": 1,
+            "created_at": "<timestamp>",
+            "error": null,
+            "file_type": "md",
+            "filename": "apijob_59740e0373044501-0.md",
+            "id": "<id>",
+            "knowledge_base_id": "<id>",
+            "knowledge_base_version_id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_2",
+            "metadata": {
+              "bucket_quality": [
+                {
+                  "bucket_id": "<id>",
+                  "quality": {
+                    "content_chars": 24,
+                    "has_source_sections": true,
+                    "has_summary": true,
+                    "status": "warning",
+                    "warnings": [
+                      "content_too_short"
+                    ]
+                  },
+                  "title": "Policy"
+                }
+              ],
+              "char_count": 23,
+              "chunk_stats": {
+                "chunk_count": 1,
+                "section_target_chars": 1400,
+                "target_chars": 900,
+                "total_chunks": 1
+              },
+              "created_by": "api_admin",
+              "created_by_display_name": "api_admin",
+              "created_by_user_id": "user_api_admin",
+              "created_by_username": "api_admin",
+              "creator_name": "api_admin",
+              "document_card": {
+                "applicable_scenarios": [
+                  "Policy"
+                ],
+                "char_count": 23,
+                "file_type": "md",
+                "filename": "apijob_59740e0373044501-0.md",
+                "key_entities": [
+                  "Policy",
+                  "Keep",
+                  "receipts"
+                ],
+                "outline": [
+                  {
+                    "level": 1,
+                    "path": "Policy",
+                    "section_id": "sec_1",
+                    "summary": "# Policy Keep receipts.",
+                    "title": "Policy"
+                  }
+                ],
+                "section_count": 1,
+                "summary": "# Policy Keep receipts.",
+                "title": "Policy"
+              },
+              "external_id": null,
+              "ingest_schema_version": 2,
+              "okf": {
+                "concept_count": 3,
+                "concept_types": [
+                  "Source Document",
+                  "Source Section",
+                  "Topic"
+                ],
+                "version": "0.1"
+              },
+              "owner_display_name": "api_admin",
+              "owner_user_id": "user_api_admin",
+              "owner_username": "api_admin",
+              "section_stats": {
+                "paragraph_count": 2,
+                "section_count": 1
+              },
+              "section_tree": [
+                {
+                  "anchor_entities": [
+                    "Policy",
+                    "Keep",
+                    "receipts"
+                  ],
+                  "content": "# Policy\n\nKeep receipts.",
+                  "level": 1,
+                  "node_type": "section",
+                  "parent_id": null,
+                  "path": "Policy",
+                  "related_section_id": "sec_1",
+                  "section_id": "sec_1",
+                  "section_order": 1,
+                  "source_span": {
+                    "end_paragraph": 1,
+                    "start_paragraph": 0
+                  },
+                  "summary": "# Policy Keep receipts.",
+                  "title": "Policy"
+                }
+              ],
+              "source_ref": null
+            },
+            "status": "ready",
+            "title": "Policy",
+            "updated_at": "<timestamp>"
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "method": "PATCH",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9/documents/kdoc_8aa66790b9da4fd3",
+      "status": 200,
+      "body": {
+        "bucket_count": 1,
+        "chunk_count": 1,
+        "created_at": "<timestamp>",
+        "error": null,
+        "file_type": "md",
+        "filename": "apijob_59740e0373044501-0.md",
+        "id": "<id>",
+        "knowledge_base_id": "<id>",
+        "knowledge_base_version_id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_3",
+        "metadata": {
+          "bucket_quality": [
+            {
+              "bucket_id": "<id>",
+              "quality": {
+                "content_chars": 33,
+                "has_source_sections": true,
+                "has_summary": true,
+                "status": "warning",
+                "warnings": [
+                  "content_too_short"
+                ]
+              },
+              "title": "Policy"
+            }
+          ],
+          "char_count": 32,
+          "chunk_stats": {
+            "chunk_count": 1,
+            "section_target_chars": 1400,
+            "target_chars": 900,
+            "total_chunks": 1
+          },
+          "created_by": "api_admin",
+          "created_by_display_name": "api_admin",
+          "created_by_user_id": "user_api_admin",
+          "created_by_username": "api_admin",
+          "creator_name": "api_admin",
+          "document_card": {
+            "applicable_scenarios": [
+              "Policy"
+            ],
+            "char_count": 32,
+            "file_type": "md",
+            "filename": "apijob_59740e0373044501-0.md",
+            "key_entities": [
+              "Policy",
+              "Keep",
+              "original",
+              "receipts"
+            ],
+            "outline": [
+              {
+                "level": 1,
+                "path": "Policy",
+                "section_id": "sec_1",
+                "summary": "# Policy Keep original receipts.",
+                "title": "Policy"
+              }
+            ],
+            "section_count": 1,
+            "summary": "# Policy Keep original receipts.",
+            "title": "Policy"
+          },
+          "external_id": null,
+          "ingest_schema_version": 2,
+          "okf": {
+            "concept_count": 3,
+            "concept_types": [
+              "Source Document",
+              "Source Section",
+              "Topic"
+            ],
+            "version": "0.1"
+          },
+          "online_edited_at": "<timestamp>",
+          "owner_display_name": "api_admin",
+          "owner_user_id": "user_api_admin",
+          "owner_username": "api_admin",
+          "raw_text": "# Policy\nKeep original receipts.",
+          "section_stats": {
+            "paragraph_count": 2,
+            "section_count": 1
+          },
+          "section_tree": [
+            {
+              "anchor_entities": [
+                "Policy",
+                "Keep",
+                "original",
+                "receipts"
+              ],
+              "content": "# Policy\n\nKeep original receipts.",
+              "level": 1,
+              "node_type": "section",
+              "parent_id": null,
+              "path": "Policy",
+              "related_section_id": "sec_1",
+              "section_id": "sec_1",
+              "section_order": 1,
+              "source_span": {
+                "end_paragraph": 1,
+                "start_paragraph": 0
+              },
+              "summary": "# Policy Keep original receipts.",
+              "title": "Policy"
+            }
+          ],
+          "source_ref": null
+        },
+        "status": "ready",
+        "title": "Policy",
+        "updated_at": "<timestamp>"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9:search",
+      "status": 200,
+      "body": {
+        "chunks": [
+          {
+            "bucket_id": "<id>",
+            "chunk_index": 0,
+            "content": "Keep original receipts.",
+            "created_at": "<timestamp>",
+            "document_id": "<id>",
+            "id": "<id>",
+            "knowledge_base_id": "<id>",
+            "metadata": {
+              "bucket_title": "Policy",
+              "context_window": "# Policy Keep original receipts.",
+              "ingest_schema_version": 2,
+              "node_type": "evidence_chunk",
+              "related_chunk_count": 0,
+              "related_chunk_ids": [],
+              "related_chunk_index": 0,
+              "related_group_id": null,
+              "related_next_chunk_id": null,
+              "related_previous_chunk_id": null,
+              "section_id": "sec_1",
+              "section_path": "Policy",
+              "section_title": "Policy",
+              "source_span": {
+                "end_paragraph": 1,
+                "start_paragraph": 0
+              }
+            },
+            "source_ref": "apijob_59740e0373044501-0.md / Policy / evidence 1",
+            "summary": "Keep original receipts.",
+            "tenant_id": "tenant_api",
+            "updated_at": "<timestamp>"
+          }
+        ],
+        "citations": [
+          {
+            "concept_id": "topics/policy",
+            "label": "Original document",
+            "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a",
+            "title": "Policy"
+          },
+          {
+            "concept_id": "sources/policy/sections/sec-1",
+            "label": "Original document",
+            "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a",
+            "title": "Policy"
+          },
+          {
+            "concept_id": "sources/policy",
+            "label": "Original document",
+            "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a",
+            "title": "Policy"
+          }
+        ],
+        "evidence_pack": [
+          {
+            "bucket_id": "<id>",
+            "chunk_id": "<id>",
+            "confidence_reason": "引用来源摘要、章节路径或正文与查询相关",
+            "content": "Keep original receipts.",
+            "document_id": "<id>",
+            "excerpt": "Keep original receipts.",
+            "related_chunk_ids": [],
+            "related_chunk_index": 0,
+            "related_group_id": null,
+            "relevance_score": 8.68,
+            "section_path": "Policy",
+            "source_path": "apijob_59740e0373044501-0.md / Policy / evidence 1",
+            "summary": "Keep original receipts."
+          }
+        ],
+        "expanded_sections": [
+          {
+            "document_id": "<id>",
+            "level": 1,
+            "path": "Policy",
+            "reason": "命中内部索引：Policy",
+            "section_id": "sec_1",
+            "source_span": {
+              "end_paragraph": 1,
+              "start_paragraph": 0
+            },
+            "summary": "# Policy Keep original receipts.",
+            "title": "Policy"
+          }
+        ],
+        "okf_citations": [
+          {
+            "concept_id": "topics/policy",
+            "label": "Original document",
+            "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a",
+            "title": "Policy"
+          },
+          {
+            "concept_id": "sources/policy/sections/sec-1",
+            "label": "Original document",
+            "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a",
+            "title": "Policy"
+          },
+          {
+            "concept_id": "sources/policy",
+            "label": "Original document",
+            "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a",
+            "title": "Policy"
+          }
+        ],
+        "route_trace": [
+          {
+            "candidate_count": 3,
+            "message": "正在选择 OKF Wiki 页面",
+            "phase": "okf_concept_route",
+            "selected_count": 3
+          },
+          {
+            "candidate_count": 1,
+            "message": "正在选择知识文档",
+            "mode": "chat",
+            "phase": "document_route"
+          },
+          {
+            "message": "按检索相关性选择知识文档",
+            "phase": "document_route_lexical",
+            "selected_count": 1
+          },
+          {
+            "candidate_count": 1,
+            "message": "正在选择内部索引",
+            "phase": "bucket_route",
+            "selected_document_ids": [
+              "<id>"
+            ]
+          },
+          {
+            "message": "按检索相关性选择内部索引",
+            "phase": "bucket_route_lexical",
+            "selected_count": 1
+          },
+          {
+            "message": "正在展开章节",
+            "phase": "section_expand",
+            "section_count": 1
+          },
+          {
+            "chunk_count": 1,
+            "message": "读取引用来源",
+            "phase": "read_chunks"
+          },
+          {
+            "evidence_count": 1,
+            "message": "整理引用来源包",
+            "phase": "evidence_pack"
+          }
+        ],
+        "selected_buckets": [
+          {
+            "bucket_key": "policy",
+            "chunk_count": 1,
+            "created_at": "<timestamp>",
+            "document_id": "<id>",
+            "id": "<id>",
+            "knowledge_base_id": "<id>",
+            "metadata": {
+              "applicable_query_types": [
+                "answer",
+                "policy_check"
+              ],
+              "bucket_type": "structure",
+              "chunk_count": 1,
+              "concept_type": "Topic",
+              "content": "# Policy\n\nKeep original receipts.",
+              "document_card": {
+                "summary": "# Policy Keep original receipts.",
+                "title": "Policy"
+              },
+              "ingest_schema_version": 2,
+              "quality": {
+                "content_chars": 33,
+                "has_source_sections": true,
+                "has_summary": true,
+                "status": "warning",
+                "warnings": [
+                  "content_too_short"
+                ]
+              },
+              "representative_chunk_ids": [
+                "<id>"
+              ],
+              "section_ids": [
+                "sec_1"
+              ],
+              "section_paths": [
+                "Policy"
+              ]
+            },
+            "status": "ready",
+            "summary": "# Policy Keep original receipts.",
+            "tenant_id": "tenant_api",
+            "title": "Policy",
+            "token_estimate": 16,
+            "updated_at": "<timestamp>"
+          }
+        ],
+        "selected_concepts": [
+          {
+            "citations": [
+              {
+                "index": 1,
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "concept_id": "topics/policy",
+            "content": "# Summary\n\n# Policy Keep original receipts.\n\n# Source Sections\n\n- [Policy](/sources/policy/sections/sec-1.md)\n\n# Notes\n\n# Policy\n\nKeep original receipts.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_b92810c67a2f454a)",
+            "description": "# Policy Keep original receipts.",
+            "id": "kconcept_1176621f244f4d75",
+            "links": [
+              {
+                "label": "Policy",
+                "target": "/sources/policy/sections/sec-1.md"
+              },
+              {
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "source_refs": [
+              {
+                "bucket_id": "<id>",
+                "bucket_key": "policy",
+                "document_id": "<id>"
+              }
+            ],
+            "title": "Policy",
+            "type": "Topic"
+          },
+          {
+            "citations": [
+              {
+                "index": 1,
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "concept_id": "sources/policy/sections/sec-1",
+            "content": "# Summary\n\n# Policy Keep original receipts.\n\n# Content\n\n# Policy\n\nKeep original receipts.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_b92810c67a2f454a)",
+            "description": "# Policy Keep original receipts.",
+            "id": "kconcept_fa8dab4fadf94bb3",
+            "links": [
+              {
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "source_refs": [
+              {
+                "document_id": "<id>",
+                "section_id": "sec_1",
+                "section_path": "Policy"
+              }
+            ],
+            "title": "Policy",
+            "type": "Source Section"
+          },
+          {
+            "citations": [
+              {
+                "index": 1,
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "concept_id": "sources/policy",
+            "content": "# Summary\n\n# Policy Keep original receipts.\n\n# Outline\n\n- [Policy](/sources/policy/sections/sec-1.md) - # Policy Keep original receipts.\n\n# Knowledge Buckets\n\n- [Policy](/topics/policy.md) - # Policy Keep original receipts.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_b92810c67a2f454a)",
+            "description": "# Policy Keep original receipts.",
+            "id": "kconcept_f68c9359da404c9e",
+            "links": [
+              {
+                "label": "Policy",
+                "target": "/sources/policy/sections/sec-1.md"
+              },
+              {
+                "label": "Policy",
+                "target": "/topics/policy.md"
+              },
+              {
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "source_refs": [
+              {
+                "document_id": "<id>",
+                "filename": "apijob_59740e0373044501-0.md"
+              }
+            ],
+            "title": "Policy",
+            "type": "Source Document"
+          }
+        ],
+        "selected_documents": [
+          {
+            "chunk_count": 1,
+            "file_type": "md",
+            "filename": "apijob_59740e0373044501-0.md",
+            "id": "<id>",
+            "key_entities": [
+              "Policy",
+              "Keep",
+              "original",
+              "receipts"
+            ],
+            "knowledge_base_id": "<id>",
+            "outline": [
+              {
+                "level": 1,
+                "path": "Policy",
+                "section_id": "sec_1",
+                "summary": "# Policy Keep original receipts.",
+                "title": "Policy"
+              }
+            ],
+            "section_count": 1,
+            "summary": "# Policy Keep original receipts.",
+            "title": "Policy",
+            "updated_at": "<timestamp>"
+          }
+        ],
+        "trace": [
+          {
+            "candidate_count": 3,
+            "message": "正在选择 OKF Wiki 页面",
+            "phase": "okf_concept_route",
+            "selected_count": 3
+          },
+          {
+            "candidate_count": 1,
+            "message": "正在选择知识文档",
+            "mode": "chat",
+            "phase": "document_route"
+          },
+          {
+            "message": "按检索相关性选择知识文档",
+            "phase": "document_route_lexical",
+            "selected_count": 1
+          },
+          {
+            "candidate_count": 1,
+            "message": "正在选择内部索引",
+            "phase": "bucket_route",
+            "selected_document_ids": [
+              "<id>"
+            ]
+          },
+          {
+            "message": "按检索相关性选择内部索引",
+            "phase": "bucket_route_lexical",
+            "selected_count": 1
+          },
+          {
+            "message": "正在展开章节",
+            "phase": "section_expand",
+            "section_count": 1
+          },
+          {
+            "chunk_count": 1,
+            "message": "读取引用来源",
+            "phase": "read_chunks"
+          },
+          {
+            "evidence_count": 1,
+            "message": "整理引用来源包",
+            "phase": "evidence_pack"
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9/documents",
+      "status": 202,
+      "body": {
+        "agent_id": "agent_api",
+        "created_at": "<timestamp>",
+        "error": {},
+        "finished_at": null,
+        "id": "apijob_92f32acde3574ddb",
+        "kind": "knowledge.ingest",
+        "progress": 0.0,
+        "retryable": false,
+        "session_id": null,
+        "stage": "queued",
+        "started_at": null,
+        "status": "queued",
+        "updated_at": "<timestamp>"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs/apijob_92f32acde3574ddb",
+      "status": 200,
+      "body": {
+        "agent_id": "agent_api",
+        "created_at": "<timestamp>",
+        "error": {},
+        "finished_at": "<timestamp>",
+        "id": "apijob_92f32acde3574ddb",
+        "kind": "knowledge.ingest",
+        "progress": 1.0,
+        "retryable": false,
+        "session_id": null,
+        "stage": "completed",
+        "started_at": "<timestamp>",
+        "status": "succeeded",
+        "updated_at": "<timestamp>"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/jobs/apijob_92f32acde3574ddb/result",
+      "status": 200,
+      "body": {
+        "error": {},
+        "job": {
+          "agent_id": "agent_api",
+          "created_at": "<timestamp>",
+          "error": {},
+          "finished_at": "<timestamp>",
+          "id": "apijob_92f32acde3574ddb",
+          "kind": "knowledge.ingest",
+          "progress": 1.0,
+          "retryable": false,
+          "session_id": null,
+          "stage": "completed",
+          "started_at": "<timestamp>",
+          "status": "succeeded",
+          "updated_at": "<timestamp>"
+        },
+        "result": {
+          "documents": [
+            {
+              "document_id": "<id>",
+              "external_id": null,
+              "job_id": "kjob_32234eeaf1454462",
+              "retryable": false,
+              "stage": "done",
+              "status": "succeeded"
+            }
+          ],
+          "knowledge_base_id": "<id>"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9/documents/kdoc_8aa66790b9da4fd3:archive",
+      "status": 404,
+      "body": {
+        "code": "KNOWLEDGE_DOCUMENT_NOT_FOUND",
+        "detail": "Knowledge document not found.",
+        "request_id": "req_83bf51104c324558bf6598fe2186770d",
+        "status": 404,
+        "title": "KNOWLEDGE_DOCUMENT_NOT_FOUND",
+        "type": "urn:staffdeck:error:knowledge_document_not_found"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9/versions",
+      "status": 200,
+      "body": {
+        "data": [
+          {
+            "capability_scope": "general",
+            "created_at": "<timestamp>",
+            "description": null,
+            "id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_4",
+            "is_base": false,
+            "is_head": true,
+            "name": "Fixture Knowledge",
+            "status": "active",
+            "updated_at": "<timestamp>",
+            "version": "1.0.0-branch.agent_api.4"
+          },
+          {
+            "capability_scope": "general",
+            "created_at": "<timestamp>",
+            "description": null,
+            "id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_3",
+            "is_base": false,
+            "is_head": false,
+            "name": "Fixture Knowledge",
+            "status": "active",
+            "updated_at": "<timestamp>",
+            "version": "1.0.0-branch.agent_api.3"
+          },
+          {
+            "capability_scope": "general",
+            "created_at": "<timestamp>",
+            "description": null,
+            "id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_2",
+            "is_base": false,
+            "is_head": false,
+            "name": "Fixture Knowledge",
+            "status": "active",
+            "updated_at": "<timestamp>",
+            "version": "1.0.0-branch.agent_api.2"
+          },
+          {
+            "capability_scope": "general",
+            "created_at": "<timestamp>",
+            "description": "Fixture updated",
+            "id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_1",
+            "is_base": false,
+            "is_head": false,
+            "name": "Fixture Knowledge",
+            "status": "active",
+            "updated_at": "<timestamp>",
+            "version": "1.0.0-branch.agent_api.1"
+          },
+          {
+            "capability_scope": "general",
+            "created_at": "<timestamp>",
+            "description": null,
+            "id": "kbver_kb_05c61ecb3ad942d9_1_0_0",
+            "is_base": true,
+            "is_head": false,
+            "name": "Fixture Knowledge",
+            "status": "active",
+            "updated_at": "<timestamp>",
+            "version": "1.0.0"
+          }
+        ]
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9/concepts",
+      "status": 200,
+      "body": {
+        "data": [
+          {
+            "citations": [
+              {
+                "index": 1,
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_1c88da97d6464a97"
+              }
+            ],
+            "concept_id": "sources/leave",
+            "concept_type": "Source Document",
+            "content_md": "---\ntype: \"Source Document\"\ntitle: \"Leave\"\ndescription: \"# Leave Annual leave is paid.\"\nresource: \"ultrarag://knowledge/documents/kdoc_1c88da97d6464a97\"\ntags: [\"source\", \"business-knowledge\"]\ntimestamp: \"2026-10-14T00:15:33.776554\"\n---\n\n# Summary\n\n# Leave Annual leave is paid.\n\n# Outline\n\n- [Leave](/sources/leave/sections/sec-1.md) - # Leave Annual leave is paid.\n\n# Knowledge Buckets\n\n- [Leave](/topics/leave.md) - # Leave Annual leave is paid.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_1c88da97d6464a97)\n",
+            "created_at": "<timestamp>",
+            "description": "# Leave Annual leave is paid.",
+            "document_id": "<id>",
+            "frontmatter": {
+              "description": "# Leave Annual leave is paid.",
+              "resource": "ultrarag://knowledge/documents/kdoc_1c88da97d6464a97",
+              "tags": [
+                "source",
+                "business-knowledge"
+              ],
+              "timestamp": "<timestamp>",
+              "title": "Leave",
+              "type": "Source Document"
+            },
+            "id": "kconcept_60638d2c74294e0f",
+            "knowledge_base_id": "<id>",
+            "knowledge_base_version_id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_4",
+            "links": [
+              {
+                "label": "Leave",
+                "target": "/sources/leave/sections/sec-1.md"
+              },
+              {
+                "label": "Leave",
+                "target": "/topics/leave.md"
+              },
+              {
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_1c88da97d6464a97"
+              }
+            ],
+            "source_refs": [
+              {
+                "document_id": "<id>",
+                "filename": "legacy-fixture.md"
+              }
+            ],
+            "status": "active",
+            "title": "Leave",
+            "updated_at": "<timestamp>"
+          },
+          {
+            "citations": [
+              {
+                "index": 1,
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "concept_id": "sources/policy",
+            "concept_type": "Source Document",
+            "content_md": "---\ntype: \"Source Document\"\ntitle: \"Policy\"\ndescription: \"# Policy Keep original receipts.\"\nresource: \"ultrarag://knowledge/documents/kdoc_b92810c67a2f454a\"\ntags: [\"source\", \"business-knowledge\"]\ntimestamp: \"2026-10-14T00:15:33.739967\"\n---\n\n# Summary\n\n# Policy Keep original receipts.\n\n# Outline\n\n- [Policy](/sources/policy/sections/sec-1.md) - # Policy Keep original receipts.\n\n# Knowledge Buckets\n\n- [Policy](/topics/policy.md) - # Policy Keep original receipts.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_b92810c67a2f454a)\n",
+            "created_at": "<timestamp>",
+            "description": "# Policy Keep original receipts.",
+            "document_id": "<id>",
+            "frontmatter": {
+              "description": "# Policy Keep original receipts.",
+              "resource": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a",
+              "tags": [
+                "source",
+                "business-knowledge"
+              ],
+              "timestamp": "<timestamp>",
+              "title": "Policy",
+              "type": "Source Document"
+            },
+            "id": "kconcept_127725ec609145d8",
+            "knowledge_base_id": "<id>",
+            "knowledge_base_version_id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_4",
+            "links": [
+              {
+                "label": "Policy",
+                "target": "/sources/policy/sections/sec-1.md"
+              },
+              {
+                "label": "Policy",
+                "target": "/topics/policy.md"
+              },
+              {
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "source_refs": [
+              {
+                "document_id": "<id>",
+                "filename": "apijob_59740e0373044501-0.md"
+              }
+            ],
+            "status": "active",
+            "title": "Policy",
+            "updated_at": "<timestamp>"
+          },
+          {
+            "citations": [
+              {
+                "index": 1,
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_1c88da97d6464a97"
+              }
+            ],
+            "concept_id": "sources/leave/sections/sec-1",
+            "concept_type": "Source Section",
+            "content_md": "---\ntype: \"Source Section\"\ntitle: \"Leave\"\ndescription: \"# Leave Annual leave is paid.\"\nresource: \"ultrarag://knowledge/documents/kdoc_1c88da97d6464a97#section=sec_1\"\ntags: [\"source-section\"]\ntimestamp: \"2026-10-14T00:15:33.776554\"\nsource_document: \"sources/leave\"\nsection_path: \"Leave\"\n---\n\n# Summary\n\n# Leave Annual leave is paid.\n\n# Content\n\n# Leave\n\nAnnual leave is paid.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_1c88da97d6464a97)\n",
+            "created_at": "<timestamp>",
+            "description": "# Leave Annual leave is paid.",
+            "document_id": "<id>",
+            "frontmatter": {
+              "description": "# Leave Annual leave is paid.",
+              "resource": "ultrarag://knowledge/documents/kdoc_1c88da97d6464a97#section=sec_1",
+              "section_path": "Leave",
+              "source_document": "sources/leave",
+              "tags": [
+                "source-section"
+              ],
+              "timestamp": "<timestamp>",
+              "title": "Leave",
+              "type": "Source Section"
+            },
+            "id": "kconcept_15f207e506494e82",
+            "knowledge_base_id": "<id>",
+            "knowledge_base_version_id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_4",
+            "links": [
+              {
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_1c88da97d6464a97"
+              }
+            ],
+            "source_refs": [
+              {
+                "document_id": "<id>",
+                "section_id": "sec_1",
+                "section_path": "Leave"
+              }
+            ],
+            "status": "active",
+            "title": "Leave",
+            "updated_at": "<timestamp>"
+          },
+          {
+            "citations": [
+              {
+                "index": 1,
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "concept_id": "sources/policy/sections/sec-1",
+            "concept_type": "Source Section",
+            "content_md": "---\ntype: \"Source Section\"\ntitle: \"Policy\"\ndescription: \"# Policy Keep original receipts.\"\nresource: \"ultrarag://knowledge/documents/kdoc_b92810c67a2f454a#section=sec_1\"\ntags: [\"source-section\"]\ntimestamp: \"2026-10-14T00:15:33.739967\"\nsource_document: \"sources/policy\"\nsection_path: \"Policy\"\n---\n\n# Summary\n\n# Policy Keep original receipts.\n\n# Content\n\n# Policy\n\nKeep original receipts.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_b92810c67a2f454a)\n",
+            "created_at": "<timestamp>",
+            "description": "# Policy Keep original receipts.",
+            "document_id": "<id>",
+            "frontmatter": {
+              "description": "# Policy Keep original receipts.",
+              "resource": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a#section=sec_1",
+              "section_path": "Policy",
+              "source_document": "sources/policy",
+              "tags": [
+                "source-section"
+              ],
+              "timestamp": "<timestamp>",
+              "title": "Policy",
+              "type": "Source Section"
+            },
+            "id": "kconcept_1f9d2d9719624512",
+            "knowledge_base_id": "<id>",
+            "knowledge_base_version_id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_4",
+            "links": [
+              {
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "source_refs": [
+              {
+                "document_id": "<id>",
+                "section_id": "sec_1",
+                "section_path": "Policy"
+              }
+            ],
+            "status": "active",
+            "title": "Policy",
+            "updated_at": "<timestamp>"
+          },
+          {
+            "citations": [
+              {
+                "index": 1,
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_1c88da97d6464a97"
+              }
+            ],
+            "concept_id": "topics/leave",
+            "concept_type": "Topic",
+            "content_md": "---\ntype: \"Topic\"\ntitle: \"Leave\"\ndescription: \"# Leave Annual leave is paid.\"\nresource: \"ultrarag://knowledge/buckets/kbucket_7c5b5e3d895b4ae4\"\ntags: [\"knowledge-bucket\", \"structure\"]\ntimestamp: \"2026-10-14T00:15:33.782216\"\nsource_document: \"sources/leave\"\n---\n\n# Summary\n\n# Leave Annual leave is paid.\n\n# Source Sections\n\n- [Leave](/sources/leave/sections/sec-1.md)\n\n# Notes\n\n# Leave\n\nAnnual leave is paid.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_1c88da97d6464a97)\n",
+            "created_at": "<timestamp>",
+            "description": "# Leave Annual leave is paid.",
+            "document_id": "<id>",
+            "frontmatter": {
+              "description": "# Leave Annual leave is paid.",
+              "resource": "ultrarag://knowledge/buckets/kbucket_7c5b5e3d895b4ae4",
+              "source_document": "sources/leave",
+              "tags": [
+                "knowledge-bucket",
+                "structure"
+              ],
+              "timestamp": "<timestamp>",
+              "title": "Leave",
+              "type": "Topic"
+            },
+            "id": "kconcept_f1d36c56b2e5443e",
+            "knowledge_base_id": "<id>",
+            "knowledge_base_version_id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_4",
+            "links": [
+              {
+                "label": "Leave",
+                "target": "/sources/leave/sections/sec-1.md"
+              },
+              {
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_1c88da97d6464a97"
+              }
+            ],
+            "source_refs": [
+              {
+                "bucket_id": "<id>",
+                "bucket_key": "leave",
+                "document_id": "<id>"
+              }
+            ],
+            "status": "active",
+            "title": "Leave",
+            "updated_at": "<timestamp>"
+          },
+          {
+            "citations": [
+              {
+                "index": 1,
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "concept_id": "topics/policy",
+            "concept_type": "Topic",
+            "content_md": "---\ntype: \"Topic\"\ntitle: \"Policy\"\ndescription: \"# Policy Keep original receipts.\"\nresource: \"ultrarag://knowledge/buckets/kbucket_ca403a8607374737\"\ntags: [\"knowledge-bucket\", \"structure\"]\ntimestamp: \"2026-10-14T00:15:33.742398\"\nsource_document: \"sources/policy\"\n---\n\n# Summary\n\n# Policy Keep original receipts.\n\n# Source Sections\n\n- [Policy](/sources/policy/sections/sec-1.md)\n\n# Notes\n\n# Policy\n\nKeep original receipts.\n\n# Citations\n\n[1] [Original document](ultrarag://knowledge/documents/kdoc_b92810c67a2f454a)\n",
+            "created_at": "<timestamp>",
+            "description": "# Policy Keep original receipts.",
+            "document_id": "<id>",
+            "frontmatter": {
+              "description": "# Policy Keep original receipts.",
+              "resource": "ultrarag://knowledge/buckets/kbucket_ca403a8607374737",
+              "source_document": "sources/policy",
+              "tags": [
+                "knowledge-bucket",
+                "structure"
+              ],
+              "timestamp": "<timestamp>",
+              "title": "Policy",
+              "type": "Topic"
+            },
+            "id": "kconcept_c94f76e32ac54fed",
+            "knowledge_base_id": "<id>",
+            "knowledge_base_version_id": "kbver_kb_05c61ecb3ad942d9_1_0_0_branch_agent_api_4",
+            "links": [
+              {
+                "label": "Policy",
+                "target": "/sources/policy/sections/sec-1.md"
+              },
+              {
+                "label": "Original document",
+                "target": "ultrarag://knowledge/documents/kdoc_b92810c67a2f454a"
+              }
+            ],
+            "source_refs": [
+              {
+                "bucket_id": "<id>",
+                "bucket_key": "policy",
+                "document_id": "<id>"
+              }
+            ],
+            "status": "active",
+            "title": "Policy",
+            "updated_at": "<timestamp>"
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9:rollback",
+      "status": 200,
+      "body": {
+        "head_version": "1.0.0",
+        "knowledge_base_id": "<id>",
+        "status": "rolled_back"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agents/agent_api/knowledge-bases/kb_05c61ecb3ad942d9:archive",
+      "status": 200,
+      "body": {
+        "branch_base_version": "1.0.0",
+        "branch_head_version": "1.0.0",
+        "branch_sync_state": "synced",
+        "bucket_count": 0,
+        "capability_scope": "general",
+        "chunk_count": 0,
+        "created_at": "<timestamp>",
+        "description": null,
+        "document_count": 0,
+        "id": "<id>",
+        "metadata": {
+          "created_by": "api_admin",
+          "created_by_display_name": "api_admin",
+          "created_by_user_id": "user_api_admin",
+          "created_by_username": "api_admin",
+          "created_from_agent": true,
+          "creator_name": "api_admin",
+          "owner_agent_id": "agent_api",
+          "owner_display_name": "api_admin",
+          "owner_user_id": "user_api_admin",
+          "owner_username": "api_admin",
+          "scope": "agent_private",
+          "visibility": "agent_private"
+        },
+        "name": "Fixture Knowledge",
+        "status": "archived",
+        "updated_at": "<timestamp>",
+        "version": "1.0.0"
+      }
+    }
+  ],
+  "wire_paths_observed": [
+    "",
+    "/jobs/apijob_59740e0373044501",
+    "/jobs/apijob_59740e0373044501/result",
+    "/jobs/apijob_92f32acde3574ddb",
+    "/jobs/apijob_92f32acde3574ddb/result",
+    "/kb_05c61ecb3ad942d9",
+    "/kb_05c61ecb3ad942d9/concepts",
+    "/kb_05c61ecb3ad942d9/documents",
+    "/kb_05c61ecb3ad942d9/documents/kdoc_8aa66790b9da4fd3",
+    "/kb_05c61ecb3ad942d9/documents/kdoc_8aa66790b9da4fd3:archive",
+    "/kb_05c61ecb3ad942d9/entries",
+    "/kb_05c61ecb3ad942d9/versions",
+    "/kb_05c61ecb3ad942d9:archive",
+    "/kb_05c61ecb3ad942d9:rollback",
+    "/kb_05c61ecb3ad942d9:search"
+  ]
+}
