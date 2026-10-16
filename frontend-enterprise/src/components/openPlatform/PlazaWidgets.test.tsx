@@ -29,6 +29,12 @@ const NEWS_PAYLOAD = {
   },
 };
 
+const AGENTS = [
+  { id: 'agent_sales', name: '销售助手', description: '跟进商机', is_overall: false },
+  // 整体宿主不是可添加的岗位员工，应被过滤掉
+  { id: 'agent_overall', name: '整体智能体', description: '', is_overall: true },
+];
+
 function renderWidgets() {
   return render(
     <MemoryRouter>
@@ -40,7 +46,10 @@ function renderWidgets() {
 
 beforeEach(() => {
   window.localStorage.clear();
-  apiGet.mockResolvedValue(NEWS_PAYLOAD);
+  // 按 URL 分流：数字员工候选 / 新闻，避免两个请求互相拿到对方的 payload
+  apiGet.mockImplementation((url: unknown) =>
+    Promise.resolve(String(url).includes('/api/enterprise/agents') ? AGENTS : NEWS_PAYLOAD),
+  );
 });
 
 afterEach(() => {
@@ -92,5 +101,44 @@ describe('PlazaWidgets（「全部」tab 右列组件）', () => {
     fireEvent.click(screen.getByText('取消'));
     expect(screen.getAllByText(/AI PPT Studio/).length).toBeGreaterThan(0);
     expect(window.localStorage.getItem('ultrarag_plaza_home_layout_v1')).toBeNull();
+  });
+
+  it('浏览态添加快捷方式：立即落盘，重新挂载（≈刷新）后仍在', async () => {
+    renderWidgets();
+    await screen.findByText('AI 新闻一');
+
+    fireEvent.click(screen.getByText('+ 添加快捷方式'));
+    // 数字员工候选来自接口；整体宿主（is_overall）不出现
+    const employee = await screen.findByText('销售助手');
+    expect(screen.queryByText('整体智能体')).toBeNull();
+    fireEvent.click(employee.closest('button') as HTMLElement);
+
+    // 关键：浏览态没有「保存」按钮，添加即写 localStorage（此前只改 state，刷新即丢）
+    const stored = JSON.parse(window.localStorage.getItem('ultrarag_plaza_home_layout_v1') || 'null');
+    expect(stored?.chips).toHaveLength(6);
+    expect(stored.chips.some((chip: { kind: string; agentId?: string }) =>
+      chip.kind === 'employee' && chip.agentId === 'agent_sales')).toBe(true);
+    expect(screen.getAllByText('销售助手').length).toBeGreaterThan(0);
+
+    // 模拟刷新：卸载后重新挂载，从 localStorage 恢复
+    cleanup();
+    renderWidgets();
+    await screen.findByText('AI 新闻一');
+    expect(screen.getAllByText('销售助手').length).toBeGreaterThan(0);
+  });
+
+  it('编辑态添加快捷方式：先暂存，点「保存」才落盘（取消则丢弃）', async () => {
+    renderWidgets();
+    await screen.findByText('AI 新闻一');
+    fireEvent.click(screen.getByText('管理 →'));
+
+    fireEvent.click(screen.getByText('+ 添加快捷方式'));
+    fireEvent.click(await screen.findByText('销售助手'));
+    // 编辑态仍走暂存语义：此时还没写盘
+    expect(window.localStorage.getItem('ultrarag_plaza_home_layout_v1')).toBeNull();
+
+    fireEvent.click(screen.getByText('保存'));
+    const stored = JSON.parse(window.localStorage.getItem('ultrarag_plaza_home_layout_v1') || 'null');
+    expect(stored?.chips).toHaveLength(6);
   });
 });

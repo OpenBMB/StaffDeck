@@ -20,6 +20,7 @@ import type { AgentProfileRead } from '@/types';
  *
  * - `QuickAccessTiles`——快捷访问磁贴网格（demo qtile 同款：两列行卡 + 追光 3D 倾斜 +
  *   虚线「添加快捷方式」格）。「管理 →」进入编辑：悬停删除、添加候选、重置；「保存」写 localStorage。
+ *   浏览态点虚线格也能直接添加（无「保存」按钮）→ 那条路径**添加即落盘**，否则刷新即丢。
  * - `NewsPanel`——「AI 圈 / 旅文圈」新闻 TOP，后端按天缓存 RSS 抓取结果，一日一更新；
  *   前端只渲染两组各 3 条（共 6 条，数量按整页排版定）。
  */
@@ -643,10 +644,20 @@ export function QuickAccessTiles() {
     notify.success('已重置为默认布局，保存后生效');
   }, []);
 
-  const addChip = useCallback((chip: PlazaChip) => {
-    setChips((current) => [...current, chip]);
-    setAddOpen(false);
-  }, []);
+  // 浏览态也能点虚线格添加（demo 同款），但那条路径没有「保存」按钮兜底 ——
+  // 只改 state 不落盘，刷新或切 tab 重挂载就回到默认布局。故：浏览态添加即持久化，
+  // 编辑态仍走「保存 / 取消」暂存语义。
+  const addChip = useCallback(
+    (chip: PlazaChip) => {
+      const next = [...chips, chip];
+      setChips(next);
+      setAddOpen(false);
+      if (mode === 'edit') return;
+      saveChips(next);
+      notify.success(`已添加「${chip.name}」到快捷访问`);
+    },
+    [chips, mode],
+  );
 
   const removeChip = useCallback((key: string) => {
     setChips((current) => current.filter((row) => chipKey(row) !== key));
