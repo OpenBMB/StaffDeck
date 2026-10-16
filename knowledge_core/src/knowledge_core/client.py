@@ -297,10 +297,10 @@ class KnowledgeClient:
         ]
 
     @overload
-    def suggestion(self, identifier: str, operation: Literal["review"], space_id="local") -> ReviewResult: ...
+    def suggestion(self, identifier: str, operation: Literal["review", "reject"], space_id="local") -> ReviewResult: ...
 
     @overload
-    def suggestion(self, identifier: str, operation: Literal["reject", "export"], space_id="local") -> KnowledgeDiscoverySuggestion: ...
+    def suggestion(self, identifier: str, operation: Literal["export"], space_id="local") -> KnowledgeDiscoverySuggestion: ...
 
     @overload
     def suggestion(self, identifier: str, operation: Literal["publish"], space_id="local") -> dict[str, Any]: ...
@@ -316,7 +316,7 @@ class KnowledgeClient:
             f"/suggestions/{identifier}/{operation}",
             params={"space_id": space_id},
         )
-        return entity(KnowledgeDiscoverySuggestion, value) if operation in {"reject", "export"} else value
+        return entity(KnowledgeDiscoverySuggestion, value) if operation == "export" else value
 
     def lint(self, identifier: str, space_id="local") -> dict[str, Any]:
         return self.request(

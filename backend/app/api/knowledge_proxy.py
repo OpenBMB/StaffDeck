@@ -84,9 +84,15 @@ def _proxy(path: str, request: Request, body: bytes, db: Session, user: User):
     if isinstance(value, dict) and isinstance(value.get("metadata"), dict):
         value["metadata"].pop("capability_context", None)
         value["metadata"].pop("_pilotdeck_host", None)
-    scope = request.query_params.get("source_space_id") or request.query_params.get("space_id") or (
-        value.get("space_id") if isinstance(value, dict) else None
-    )
+    binding = bool(re.fullmatch(r"knowledge-bases/[^/]+/bindings", path))
+    scopes = request.query_params.getlist("source_space_id") + request.query_params.getlist("space_id")
+    if not binding and isinstance(value, dict) and "space_id" in value:
+        scopes.append(value["space_id"])
+    if any(not isinstance(item, str) or not item for item in scopes):
+        raise HTTPException(422, "Invalid space_id")
+    if len(set(scopes)) > 1:
+        raise HTTPException(422, "Conflicting space selectors")
+    scope = scopes[0] if scopes else None
     write = request.method != "GET" and path != "query"
     if scope:
         prefix = f"sd:{user.tenant_id}:"
@@ -98,6 +104,12 @@ def _proxy(path: str, request: Request, body: bytes, db: Session, user: User):
     else:
         agent_id = None
     adapter = StaffDeckKnowledgeAdapter(db, user.tenant_id, agent_id, user, write=write)
+    body_scoped = request.method == "POST" and (
+        path in {"knowledge-bases", "query", "documents", "okf"}
+        or re.fullmatch(r"knowledge-bases/[^/]+/(?:documents|okf)", path)
+    )
+    if isinstance(value, dict) and not binding and ("space_id" in value or body_scoped):
+        value["space_id"] = adapter.space_id
     if path == "spaces" and request.method == "GET":
         from sqlmodel import select
 
@@ -209,7 +221,7 @@ def _proxy(path: str, request: Request, body: bytes, db: Session, user: User):
     if query:
         from urllib.parse import urlencode
         suffix += "?" + urlencode(query)
-    response = adapter.call(request.method, suffix, value, scoped=scope is not None, raw=True)
+    response = adapter.call(request.method, suffix, value, scoped=True, raw=True)
     return Response(response.content, status_code=response.status_code,
                     media_type=response.headers.get("content-type"),
                     headers={"Content-Disposition": response.headers["Content-Disposition"]}

@@ -75,6 +75,17 @@ class Content:
         if expected is not None:
             metadata = {key: value for key, value in metadata.items() if key != "revision_source_updated_at"}
         with self.runtime.engine.begin() as db:
+            if job_id and context.get('ingest_version_id'):
+                versions = self.runtime.plugins['versions']
+                branch = versions.branch(db, context)
+                # Claim the captured head in the content transaction so version
+                # changes cannot redirect an in-flight ingestion.
+                claimed = db.execute(update(versions.branches).where(
+                    versions.branches.c.id == branch['id'],
+                    versions.branches.c.head_version_id == context['ingest_version_id'],
+                ).values(head_version_id=context['ingest_version_id']))
+                if claimed.rowcount != 1:
+                    raise HTTPException(409, 'Knowledge branch changed during ingestion; retry the upload')
             if expected is not None:
                 before = db.execute(select(s.documents).where(s.documents.c.id == document_id)).mappings().first()
                 if not before or before["updated_at"].isoformat() != expected:

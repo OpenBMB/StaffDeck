@@ -95,6 +95,22 @@ def test_cancel_before_execution_clears_payload(tmp_path):
         assert client.get(f"/api/km/v1/knowledge-bases/{base['id']}/documents").json() == []
 
 
+def test_queued_ingest_does_not_write_into_a_changed_branch(tmp_path):
+    executor = DeferredExecutor()
+    runtime = Runtime(f"sqlite:///{tmp_path / 'branch-race.sqlite'}", executor=executor)
+    with TestClient(create_app(runtime)) as client:
+        base, job = upload(client)
+        copied = client.post(f"/api/km/v1/knowledge-bases/{base['id']}/versions/copy", json={})
+        assert copied.status_code == 200, copied.text
+        assert copied.json()['head_version_id'] != job['knowledge_base_version_id']
+        executor.run()
+        result = client.get(f"/api/km/v1/jobs/{job['id']}").json()
+        assert result['status'] == 'failed', result
+        assert 'branch changed' in result['error']
+        assert result['finished_at'] and result['document_id'] is None
+        assert client.get(f"/api/km/v1/knowledge-bases/{base['id']}/documents").json() == []
+
+
 def test_background_authorization_failure_is_terminal(tmp_path):
     from knowledge_core.identity import SpaceAuthorization
 

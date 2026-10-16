@@ -1,4 +1,5 @@
 import base64
+import pytest
 
 from fastapi.testclient import TestClient
 from knowledge_core.api import create_app
@@ -115,3 +116,37 @@ def test_parser_failure_persists_terminal_state(tmp_path):
         assert job["status"] == "failed"
         assert job["finished_at"]
         assert "content_base64" not in job["metadata"]
+
+
+@pytest.mark.parametrize("operation", ["spaces", "lint"])
+def test_full_maintenance_rejects_space_creation_and_lint_writes(tmp_path, operation):
+    url = f"sqlite:///{tmp_path / 'maintenance.sqlite'}"
+    with TestClient(create_app(Runtime(url))) as client:
+        base = client.post("/api/km/v1/knowledge-bases", json={"name": "Maintenance"}).json()
+    with TestClient(create_app(Runtime(url, read_only=True))) as client:
+        response = (client.post("/api/km/v1/spaces", json={"id": "blocked", "name": "Blocked"})
+                    if operation == "spaces" else
+                    client.post(f"/api/km/v1/knowledge-bases/{base['id']}/okf/lint"))
+        assert response.status_code == 503, response.text
+        assert [row["id"] for row in client.get("/api/km/v1/spaces").json()] == ["local"]
+
+
+def test_detached_concepts_are_independent_across_bases_and_copied_versions(tmp_path):
+    with TestClient(create_app(Runtime(f"sqlite:///{tmp_path / 'concepts.sqlite'}"))) as client:
+        bases = [client.post("/api/km/v1/knowledge-bases", json={"name": name}).json()["id"]
+                 for name in ("First", "Second")]
+        paths = [f"/api/km/v1/knowledge-bases/{base}/concepts/topics/policy" for base in bases]
+        for path, name in zip(paths, ("First", "Second")):
+            response = client.put(path, json={"content_md": f"# {name} policy", "create_only": True})
+            assert response.status_code == 200, response.text
+        first = client.get(paths[0]).json()
+        assert "# First policy" in first["content_md"]
+        assert "# Second policy" in client.get(paths[1]).json()["content_md"]
+        assert client.post(f"/api/km/v1/knowledge-bases/{bases[0]}/versions/copy", json={}).status_code == 200
+        copied = client.get(paths[0]).json()
+        assert copied["id"] != first["id"]
+        response = client.put(paths[0], json={"content_md": "# Revised policy",
+                                            "expected_updated_at": copied["updated_at"]})
+        assert response.status_code == 200, response.text
+        assert "# Revised policy" in client.get(paths[0]).json()["content_md"]
+        assert "# Second policy" in client.get(paths[1]).json()["content_md"]

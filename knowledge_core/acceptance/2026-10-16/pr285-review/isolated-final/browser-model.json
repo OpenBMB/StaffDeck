@@ -1,0 +1,197 @@
+{
+  "status": "passed",
+  "ingestion": [
+    {
+      "phase": "bucket_model",
+      "model": "deepseek-v4-flash-0731",
+      "call_id": "618771d1ad5443678e98acc263e57f6e",
+      "valid_bucket_count": 1
+    }
+  ],
+  "query": {
+    "chunks": [
+      {
+        "id": "kchunk_b430d409f93d4ae39d75f95dde92eb37",
+        "document_id": "kdoc_78c353dcccbe4d3493d08c5d35787008",
+        "bucket_id": "kbucket_c6524477dd5449bfa36bab0566919265",
+        "chunk_index": 0,
+        "content": "Expense receipts chunk edited in standalone UI.",
+        "summary": "Expense reimbursement requires original receipts. Edited in standalone UI.",
+        "source_ref": "minimal-expense.md / Expense policy / evidence 1",
+        "metadata": {
+          "ingest_schema_version": 2,
+          "node_type": "evidence_chunk",
+          "related_group_id": null,
+          "related_chunk_index": 0,
+          "section_id": "sec_1",
+          "section_path": "Expense policy",
+          "section_title": "Expense policy",
+          "bucket_title": "Expense policy",
+          "source_span": {
+            "start_paragraph": 0,
+            "end_paragraph": 1
+          },
+          "context_window": "# Expense policy Expense reimbursement requires original receipts. Edited in standalone UI.",
+          "related_chunk_ids": [],
+          "related_chunk_count": 0,
+          "related_previous_chunk_id": null,
+          "related_next_chunk_id": null
+        },
+        "created_at": "2026-10-16T08:05:14.646723",
+        "updated_at": "2026-10-16T08:05:14.976228",
+        "citation_id": "kchunk_b430d409f93d4ae39d75f95dde92eb37:2026-10-16T08:05:14.976228"
+      }
+    ],
+    "buckets": [
+      {
+        "id": "kbucket_c6524477dd5449bfa36bab0566919265",
+        "document_id": "kdoc_78c353dcccbe4d3493d08c5d35787008",
+        "title": "Expense policy",
+        "summary": "# Expense policy Expense reimbursement requires original receipts. Edited in standalone UI.",
+        "content": "Expense receipts bucket edited in standalone UI.",
+        "metadata": {
+          "ingest_schema_version": 2,
+          "bucket_key": "expense_policy",
+          "content": "Expense receipts bucket edited in standalone UI.",
+          "bucket_type": "structure",
+          "concept_type": "Topic",
+          "section_ids": [
+            "sec_1"
+          ],
+          "section_paths": [
+            "Expense policy"
+          ],
+          "applicable_query_types": [
+            "answer",
+            "policy_check"
+          ],
+          "quality": {
+            "status": "ready",
+            "warnings": [],
+            "has_source_sections": true,
+            "has_summary": true,
+            "content_chars": 92
+          },
+          "document_card": {
+            "title": "Expense policy",
+            "summary": "# Expense policy Expense reimbursement requires original receipts. Edited in standalone UI."
+          },
+          "representative_chunk_ids": [
+            "kchunk_b430d409f93d4ae39d75f95dde92eb37"
+          ],
+          "chunk_count": 1
+        },
+        "created_at": "2026-10-16T08:05:14.646723",
+        "updated_at": "2026-10-16T08:05:14.876413"
+      }
+    ],
+    "evidence_pack": [
+      {
+        "chunk_id": "kchunk_b430d409f93d4ae39d75f95dde92eb37:2026-10-16T08:05:14.976228",
+        "related_group_id": null,
+        "related_chunk_ids": [],
+        "related_chunk_index": 0,
+        "document_id": "kdoc_78c353dcccbe4d3493d08c5d35787008",
+        "bucket_id": "kbucket_c6524477dd5449bfa36bab0566919265",
+        "source_path": "minimal-expense.md / Expense policy / evidence 1",
+        "section_path": "Expense policy",
+        "summary": "Expense reimbursement requires original receipts. Edited in standalone UI.",
+        "content": "Expense receipts chunk edited in standalone UI.",
+        "excerpt": "Expense receipts chunk edited in standalone UI.",
+        "relevance_score": 12.36,
+        "confidence_reason": "引用来源摘要、章节路径或正文与查询相关"
+      }
+    ],
+    "expanded_sections": [
+      {
+        "document_id": "kdoc_78c353dcccbe4d3493d08c5d35787008",
+        "section_id": "sec_1",
+        "title": "Expense policy",
+        "path": "Expense policy",
+        "summary": "# Expense policy Expense reimbursement requires original receipts. Edited in standalone UI.",
+        "level": 1,
+        "source_span": {
+          "start_paragraph": 0,
+          "end_paragraph": 1
+        },
+        "reason": "命中内部索引：Expense policy"
+      }
+    ],
+    "route_trace": [
+      {
+        "phase": "document_route",
+        "candidate_count": 1,
+        "message": "正在选择知识文档",
+        "mode": "auto"
+      },
+      {
+        "phase": "document_route_model",
+        "model": "deepseek-v4-flash-0731",
+        "call_id": "8014dcdc62af40d1b39e50fd8a520fa7",
+        "selected_count": 1
+      },
+      {
+        "phase": "bucket_route",
+        "candidate_count": 1,
+        "message": "正在选择内部索引",
+        "selected_document_ids": [
+          "kdoc_78c353dcccbe4d3493d08c5d35787008"
+        ]
+      },
+      {
+        "phase": "bucket_route_model",
+        "model": "deepseek-v4-flash-0731",
+        "call_id": "108d6a5dcd2848bf828fec65a8760550",
+        "selected_count": 1
+      },
+      {
+        "phase": "section_expand",
+        "section_count": 1,
+        "message": "正在展开章节"
+      },
+      {
+        "phase": "read_chunks",
+        "message": "读取引用来源",
+        "chunk_count": 1
+      },
+      {
+        "phase": "evidence_pack",
+        "evidence_count": 1,
+        "message": "整理引用来源包"
+      }
+    ],
+    "selected_concepts": [],
+    "selected_documents": [
+      {
+        "id": "kdoc_78c353dcccbe4d3493d08c5d35787008",
+        "title": "Expense policy",
+        "filename": "minimal-expense.md",
+        "file_type": "md",
+        "summary": "# Expense policy Expense reimbursement requires original receipts. Edited in standalone UI.",
+        "outline": [
+          {
+            "section_id": "sec_1",
+            "title": "Expense policy",
+            "path": "Expense policy",
+            "level": 1,
+            "summary": "# Expense policy Expense reimbursement requires original receipts. Edited in standalone UI."
+          }
+        ],
+        "key_entities": [
+          "Expense",
+          "policy",
+          "reimbursement",
+          "requires",
+          "original",
+          "receipts",
+          "Edited",
+          "standalone",
+          "UI"
+        ],
+        "section_count": 1,
+        "chunk_count": 1,
+        "updated_at": "2026-10-16T08:05:14.976228"
+      }
+    ]
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "status": "passed",
+  "source": "/private/tmp/staffdeck-pr285-review-final-artifact/isolated-source",
+  "wheel": "/private/tmp/staffdeck-pr285-review-final-artifact/isolated-source/dist/knowledge_core-0.1.0-py3-none-any.whl",
+  "commands": [
+    {
+      "command": [
+        "/Users/a1/.nvm/versions/node/v22.23.1/bin/node",
+        "build.mjs"
+      ],
+      "cwd": "/private/tmp/staffdeck-pr285-review-final-artifact/isolated-source",
+      "log": "build.log"
+    },
+    {
+      "command": [
+        "/Users/a1/.local/bin/uv",
+        "venv",
+        "/private/tmp/staffdeck-pr285-review-final-artifact/venv"
+      ],
+      "cwd": "/private/tmp/staffdeck-pr285-review-final-artifact/isolated-source",
+      "log": "venv.log"
+    },
+    {
+      "command": [
+        "/Users/a1/.local/bin/uv",
+        "pip",
+        "install",
+        "--reinstall",
+        "--python",
+        "/private/tmp/staffdeck-pr285-review-final-artifact/venv/bin/python",
+        "/private/tmp/staffdeck-pr285-review-final-artifact/isolated-source/dist/knowledge_core-0.1.0-py3-none-any.whl"
+      ],
+      "cwd": "/private/tmp/staffdeck-pr285-review-final-artifact/isolated-source",
+      "log": "install.log"
+    },
+    {
+      "command": [
+        "/Users/a1/.nvm/versions/node/v22.23.1/bin/node",
+        "/private/tmp/staffdeck-pr285-review-final-artifact/isolated-source/scripts/minimal_browser.mjs"
+      ],
+      "cwd": "/private/tmp/staffdeck-pr285-review-final-artifact",
+      "log": "browser.log"
+    }
+  ],
+  "database": "/private/tmp/staffdeck-pr285-review-final-artifact/minimal-a2720c7f0b1e4da5b4f27ed74bfd4d7f.sqlite",
+  "shutdown_returncode": -15,
+  "host_source_on_pythonpath": false,
+  "runtime_imports": "runtime-imports.json",
+  "wheel_legacy_runtime_absent": true
+}

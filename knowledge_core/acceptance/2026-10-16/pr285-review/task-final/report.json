@@ -1,0 +1,8 @@
+{
+  "ok": true,
+  "installed_python": "/tmp/staffdeck-pr285-review-final-artifact/venv/bin/python",
+  "running_cancel": "kjob_55e4ca0a237047fcb1fad127384767aa",
+  "hard_restart_interrupted": "kjob_b5ab723b75ce410aa65bb076b80f3686",
+  "partial_documents": 0,
+  "terminal_payload_cleared": true
+}

@@ -1,0 +1,85 @@
+{
+  "status": "passed",
+  "query": {
+    "chunks": [],
+    "buckets": [],
+    "evidence_pack": [],
+    "expanded_sections": [],
+    "route_trace": [
+      {
+        "phase": "document_route",
+        "candidate_count": 0,
+        "message": "正在选择知识文档",
+        "mode": "auto"
+      },
+      {
+        "phase": "document_route_lexical",
+        "message": "按检索相关性选择知识文档",
+        "selected_count": 0
+      },
+      {
+        "phase": "bucket_route",
+        "candidate_count": 0,
+        "message": "正在选择内部索引",
+        "selected_document_ids": []
+      },
+      {
+        "phase": "bucket_route_lexical",
+        "message": "按检索相关性选择内部索引",
+        "selected_count": 0
+      },
+      {
+        "phase": "section_expand",
+        "section_count": 0,
+        "message": "正在展开章节"
+      },
+      {
+        "phase": "read_chunks",
+        "message": "读取引用来源",
+        "chunk_count": 0
+      },
+      {
+        "phase": "evidence_pack",
+        "evidence_count": 0,
+        "message": "整理引用来源包"
+      }
+    ],
+    "selected_concepts": [],
+    "selected_documents": []
+  },
+  "oldCitation": {
+    "id": "kchunk_b430d409f93d4ae39d75f95dde92eb37",
+    "document_id": "kdoc_78c353dcccbe4d3493d08c5d35787008",
+    "bucket_id": "kbucket_c6524477dd5449bfa36bab0566919265",
+    "chunk_index": 0,
+    "content": "Expense receipts chunk edited in standalone UI.",
+    "summary": "Expense reimbursement requires original receipts. Edited in standalone UI.",
+    "source_ref": "minimal-expense.md / Expense policy / evidence 1",
+    "metadata": {
+      "ingest_schema_version": 2,
+      "node_type": "evidence_chunk",
+      "related_group_id": null,
+      "related_chunk_index": 0,
+      "section_id": "sec_1",
+      "section_path": "Expense policy",
+      "section_title": "Expense policy",
+      "bucket_title": "Expense policy",
+      "source_span": {
+        "start_paragraph": 0,
+        "end_paragraph": 1
+      },
+      "context_window": "# Expense policy Expense reimbursement requires original receipts. Edited in standalone UI.",
+      "related_chunk_ids": [],
+      "related_chunk_count": 0,
+      "related_previous_chunk_id": null,
+      "related_next_chunk_id": null
+    },
+    "created_at": "2026-10-16T08:05:14.646723",
+    "updated_at": "2026-10-16T08:05:14.976228",
+    "recovery_contexts": [
+      {
+        "tenant_id": "local"
+      }
+    ]
+  }
+}

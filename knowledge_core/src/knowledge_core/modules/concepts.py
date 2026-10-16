@@ -27,10 +27,16 @@ class Concepts(Plugin):
         self.contexts = Table('km_concept_contexts', self.metadata, Column('concept_id', String, primary_key=True),
             Column('context', JSON, nullable=False))
 
-    def upsert(self, db, value, document_id=None, expected=None):
+    def upsert(self, db, value, document_id=None, expected=None, *, context=None):
         parsed = rules.parse_okf_markdown(value["concept_id"], value["content_md"])
-        before = db.execute(select(self.concepts).where(self.concepts.c.concept_id == value["concept_id"],
-            self.concepts.c.document_id == document_id)).mappings().first()
+        matches = [self.concepts.c.concept_id == parsed.concept_id,
+                   self.concepts.c.document_id == document_id]
+        if document_id is None and context is not None:
+            matches.append(exists(select(self.contexts.c.concept_id).where(
+                self.contexts.c.concept_id == self.concepts.c.id,
+                *(self.contexts.c.context[key].as_string() == context[key]
+                  for key in ('tenant_id', 'space_id', 'knowledge_base_id', 'version_id')))))
+        before = db.execute(select(self.concepts).where(*matches)).mappings().first()
         if before and value.get('create_only'): raise HTTPException(409, "Concept already exists")
         if not before and expected: raise HTTPException(409, "Concept no longer exists at the expected revision")
         if before and (not expected or before["updated_at"].isoformat() != expected): raise HTTPException(409, "Concurrent concept edit")
@@ -44,15 +50,14 @@ class Concepts(Plugin):
                 self.concepts.c.updated_at == before['updated_at']).values(**row))
             if changed.rowcount != 1: raise HTTPException(409, "Concurrent concept edit")
         else:
-            absent = ~exists(select(self.concepts.c.id).where(self.concepts.c.concept_id == row['concept_id'],
-                self.concepts.c.document_id == document_id))
+            absent = ~exists(select(self.concepts.c.id).where(*matches))
             changed = db.execute(self.concepts.insert().from_select(list(row),
                 select(*(literal(value, type_=self.concepts.c[key].type) for key, value in row.items())).where(absent)))
             if changed.rowcount != 1: raise HTTPException(409, 'Concept already exists')
         citation_id = row["id"] + ":" + row["updated_at"].isoformat()
         payload = {"id": citation_id, "concept_id": row["concept_id"], "document_id": document_id,
                    "content": row["content_md"], "source_ref": row["concept_id"] + ".md",
-                   "recovery_contexts": []}
+                   "recovery_contexts": [dict(context)] if context else []}
         if document_id:
             spaces = self.runtime.plugins.get("spaces")
             catalog = self.runtime.plugins.get("catalog")
@@ -89,6 +94,20 @@ class Concepts(Plugin):
                 if (not active_only or row['document_id'] in ready) and self.runtime.visible(row['document_id'], context): result.append(row)
                 continue
             scope = contexts.get(row['id'], {})
+            if self.runtime.configuration.full_contract and versions:
+                base_id = scope.get('knowledge_base_id')
+                if scope.get('tenant_id') != context.get('tenant_id'): continue
+                if context.get('knowledge_base_id') and base_id != context['knowledge_base_id']: continue
+                if context.get('knowledge_base_ids') is not None and base_id not in context['knowledge_base_ids']: continue
+                with self.runtime.engine.connect() as db:
+                    catalog = self.runtime.plugins['catalog']
+                    binding = db.execute(select(catalog.bindings).where(
+                        catalog.bindings.c.knowledge_base_id == base_id,
+                        catalog.bindings.c.space_id == context['space_id'], catalog.bindings.c.hidden == False)).first()
+                    if not binding: continue
+                    branch = versions.branch(db, {**context, 'knowledge_base_id': base_id})
+                if scope.get('version_id') == branch['head_version_id']: result.append(row)
+                continue
             if head and scope.get('version_id') != head: continue
             if (not scope and not any(name in self.runtime.plugins for name in ('spaces', 'catalog', 'versions')) or
                 all(scope.get(key) == context.get(key) for key in ('tenant_id', 'space_id', 'knowledge_base_id') if key in context)) and (

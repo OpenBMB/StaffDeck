@@ -1,0 +1,425 @@
+{
+  "status": "passed",
+  "cases": [
+    {
+      "name": "unauthenticated",
+      "actor": null,
+      "method": "GET",
+      "path": "/identity",
+      "request": {},
+      "expected_status": 401,
+      "status": 401,
+      "response": {
+        "detail": "Invalid bearer token"
+      }
+    },
+    {
+      "name": "create_scope_a",
+      "actor": "owner",
+      "method": "POST",
+      "path": "/spaces",
+      "request": {
+        "json": {
+          "id": "a",
+          "name": "a"
+        }
+      },
+      "expected_status": 201,
+      "status": 201,
+      "response": {
+        "id": "a",
+        "name": "a",
+        "tenant_id": "test"
+      }
+    },
+    {
+      "name": "create_scope_b",
+      "actor": "owner",
+      "method": "POST",
+      "path": "/spaces",
+      "request": {
+        "json": {
+          "id": "b",
+          "name": "b"
+        }
+      },
+      "expected_status": 201,
+      "status": 201,
+      "response": {
+        "id": "b",
+        "name": "b",
+        "tenant_id": "test"
+      }
+    },
+    {
+      "name": "create_base",
+      "actor": "writer",
+      "method": "POST",
+      "path": "/knowledge-bases",
+      "request": {
+        "json": {
+          "space_id": "a",
+          "name": "Permissions"
+        }
+      },
+      "expected_status": 201,
+      "status": 201,
+      "response": {
+        "id": "kbase_4902db594afd409d923774a3a3aca5f0",
+        "name": "Permissions",
+        "description": "",
+        "status": "active",
+        "created_at": "2026-10-16T07:56:04.319083",
+        "updated_at": "2026-10-16T07:56:04.319086"
+      }
+    },
+    {
+      "name": "reader_write_denied",
+      "actor": "reader",
+      "method": "POST",
+      "path": "/documents",
+      "request": {
+        "json": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0",
+          "filename": "auth.md",
+          "content_base64": "IyBBdXRob3JpemF0aW9uCgpBVVRINzMxIHJlY2VpcHQgcG9saWN5Lg=="
+        }
+      },
+      "expected_status": 403,
+      "status": 403,
+      "response": {
+        "detail": "Permission denied"
+      }
+    },
+    {
+      "name": "cross_space_denied",
+      "actor": "outside",
+      "method": "GET",
+      "path": "/documents",
+      "request": {
+        "params": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0"
+        }
+      },
+      "expected_status": 403,
+      "status": 403,
+      "response": {
+        "detail": "Space permission denied"
+      }
+    },
+    {
+      "name": "actor_override_denied",
+      "actor": "writer",
+      "method": "POST",
+      "path": "/documents",
+      "request": {
+        "json": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0",
+          "filename": "auth.md",
+          "content_base64": "IyBBdXRob3JpemF0aW9uCgpBVVRINzMxIHJlY2VpcHQgcG9saWN5Lg==",
+          "actor": "owner"
+        }
+      },
+      "expected_status": 422,
+      "status": 422,
+      "response": {
+        "detail": "Identity comes from the trusted entrypoint"
+      }
+    },
+    {
+      "name": "writer_ingestion",
+      "actor": "writer",
+      "method": "POST",
+      "path": "/documents",
+      "request": {
+        "json": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0",
+          "filename": "auth.md",
+          "content_base64": "IyBBdXRob3JpemF0aW9uCgpBVVRINzMxIHJlY2VpcHQgcG9saWN5Lg=="
+        }
+      },
+      "expected_status": 202,
+      "status": 202,
+      "response": {
+        "id": "kjob_9b0a6b1eed1146869265fe8a1b1a2dd2",
+        "filename": "auth.md",
+        "status": "queued",
+        "stage": "queued",
+        "progress": 0.0,
+        "error": null,
+        "document_id": null,
+        "created_at": "2026-10-16T07:56:04.325363",
+        "updated_at": "2026-10-16T07:56:04.325363",
+        "finished_at": null
+      }
+    },
+    {
+      "name": "trusted_task_read",
+      "actor": "writer",
+      "method": "GET",
+      "path": "/jobs/kjob_9b0a6b1eed1146869265fe8a1b1a2dd2",
+      "request": {
+        "params": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0"
+        }
+      },
+      "expected_status": 200,
+      "status": 200,
+      "response": {
+        "id": "kjob_9b0a6b1eed1146869265fe8a1b1a2dd2",
+        "filename": "auth.md",
+        "status": "running",
+        "stage": "processing",
+        "progress": 0.4,
+        "error": null,
+        "document_id": null,
+        "finished_at": null,
+        "created_at": "2026-10-16T07:56:04.325363",
+        "updated_at": "2026-10-16T07:56:04.328267"
+      }
+    },
+    {
+      "name": "trusted_task_read",
+      "actor": "writer",
+      "method": "GET",
+      "path": "/jobs/kjob_9b0a6b1eed1146869265fe8a1b1a2dd2",
+      "request": {
+        "params": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0"
+        }
+      },
+      "expected_status": 200,
+      "status": 200,
+      "response": {
+        "id": "kjob_9b0a6b1eed1146869265fe8a1b1a2dd2",
+        "filename": "auth.md",
+        "status": "succeeded",
+        "stage": "done",
+        "progress": 1.0,
+        "error": null,
+        "document_id": "kdoc_be254d607f7e4451bc6616990aa67607",
+        "finished_at": "2026-10-16T07:56:04.330093",
+        "created_at": "2026-10-16T07:56:04.325363",
+        "updated_at": "2026-10-16T07:56:04.330093"
+      }
+    },
+    {
+      "name": "cross_space_job_denied",
+      "actor": "outside",
+      "method": "GET",
+      "path": "/jobs/kjob_9b0a6b1eed1146869265fe8a1b1a2dd2",
+      "request": {
+        "params": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0"
+        }
+      },
+      "expected_status": 403,
+      "status": 403,
+      "response": {
+        "detail": "Space permission denied"
+      }
+    },
+    {
+      "name": "reader_read",
+      "actor": "reader",
+      "method": "GET",
+      "path": "/documents/kdoc_be254d607f7e4451bc6616990aa67607",
+      "request": {
+        "params": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0"
+        }
+      },
+      "expected_status": 200,
+      "status": 200,
+      "response": {
+        "id": "kdoc_be254d607f7e4451bc6616990aa67607",
+        "filename": "auth.md",
+        "file_type": "md",
+        "title": "Authorization",
+        "status": "ready",
+        "content": "# Authorization\n\nAUTH731 receipt policy.",
+        "metadata": {
+          "raw_text": "# Authorization\n\nAUTH731 receipt policy.",
+          "document_card": {
+            "title": "Authorization",
+            "filename": "auth.md",
+            "file_type": "md",
+            "summary": "# Authorization AUTH731 receipt policy.",
+            "outline": [
+              {
+                "section_id": "sec_1",
+                "title": "Authorization",
+                "path": "Authorization",
+                "level": 1,
+                "summary": "# Authorization AUTH731 receipt policy."
+              }
+            ],
+            "applicable_scenarios": [
+              "Authorization"
+            ],
+            "key_entities": [
+              "Authorization",
+              "AUTH731",
+              "receipt",
+              "policy"
+            ],
+            "char_count": 40,
+            "section_count": 1
+          },
+          "section_tree": [
+            {
+              "section_id": "sec_1",
+              "related_section_id": "sec_1",
+              "node_type": "section",
+              "level": 1,
+              "title": "Authorization",
+              "parent_id": null,
+              "path": "Authorization",
+              "section_order": 1,
+              "summary": "# Authorization AUTH731 receipt policy.",
+              "content": "# Authorization\n\nAUTH731 receipt policy.",
+              "source_span": {
+                "start_paragraph": 0,
+                "end_paragraph": 1
+              },
+              "anchor_entities": [
+                "Authorization",
+                "AUTH731",
+                "receipt",
+                "policy"
+              ]
+            }
+          ],
+          "route_trace": [],
+          "ingest_schema_version": 2,
+          "char_count": 40,
+          "section_stats": {
+            "section_count": 1,
+            "paragraph_count": 2
+          },
+          "chunk_stats": {
+            "total_chunks": 1,
+            "chunk_count": 1,
+            "target_chars": 900,
+            "section_target_chars": 1400
+          },
+          "bucket_quality": [
+            {
+              "bucket_id": "kbucket_a44b08c0b43e45a9bfede370bd4ef2ad",
+              "title": "Authorization",
+              "quality": {
+                "status": "ready",
+                "warnings": [],
+                "has_source_sections": true,
+                "has_summary": true,
+                "content_chars": 40
+              }
+            }
+          ],
+          "okf": {
+            "version": "0.1",
+            "concept_count": 3,
+            "concept_types": [
+              "Source Document",
+              "Source Section",
+              "Topic"
+            ]
+          }
+        },
+        "bucket_count": 1,
+        "chunk_count": 1,
+        "created_at": "2026-10-16T07:56:04.330093",
+        "updated_at": "2026-10-16T07:56:04.330093"
+      }
+    },
+    {
+      "name": "reader_edit_denied",
+      "actor": "reader",
+      "method": "PUT",
+      "path": "/documents/kdoc_be254d607f7e4451bc6616990aa67607",
+      "request": {
+        "params": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0"
+        },
+        "json": {
+          "expected_updated_at": "2026-10-16T07:56:04.330093",
+          "content_md": "forbidden"
+        }
+      },
+      "expected_status": 403,
+      "status": 403,
+      "response": {
+        "detail": "Permission denied"
+      }
+    },
+    {
+      "name": "missing_edit_revision",
+      "actor": "writer",
+      "method": "PUT",
+      "path": "/documents/kdoc_be254d607f7e4451bc6616990aa67607",
+      "request": {
+        "params": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0"
+        },
+        "json": {
+          "content_md": "missing revision"
+        }
+      },
+      "expected_status": 422,
+      "status": 422,
+      "response": {
+        "detail": "expected_updated_at is required"
+      }
+    },
+    {
+      "name": "stale_edit_revision",
+      "actor": "writer",
+      "method": "PUT",
+      "path": "/documents/kdoc_be254d607f7e4451bc6616990aa67607",
+      "request": {
+        "params": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0"
+        },
+        "json": {
+          "expected_updated_at": "stale",
+          "content_md": "stale"
+        }
+      },
+      "expected_status": 409,
+      "status": 409,
+      "response": {
+        "detail": "Concurrent edit"
+      }
+    },
+    {
+      "name": "stale_delete_revision",
+      "actor": "writer",
+      "method": "DELETE",
+      "path": "/documents/kdoc_be254d607f7e4451bc6616990aa67607",
+      "request": {
+        "params": {
+          "space_id": "a",
+          "knowledge_base_id": "kbase_4902db594afd409d923774a3a3aca5f0",
+          "expected_updated_at": "stale"
+        }
+      },
+      "expected_status": 409,
+      "status": 409,
+      "response": {
+        "detail": "Concurrent delete"
+      }
+    }
+  ],
+  "shutdown_returncode": -15
+}

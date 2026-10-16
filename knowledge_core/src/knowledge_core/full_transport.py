@@ -52,6 +52,7 @@ def register(app, runtime, principal):
 
     @app.post(prefix + '/spaces', status_code=201)
     def create_space(body: SpaceCreate, actor=Depends(principal)):
+        runtime.authorize(actor, {}, 'write', require_scope=False)
         runtime.authorization.authorize(actor, '*', 'write')
         row = {'id': body.id or s.identifier('space'), 'name': body.name, 'tenant_id': actor.tenant_id,
             'owner_id': actor.id, 'owner_name': actor.display_name, 'status': 'active', 'created_at': s.now(), 'updated_at': s.now()}
@@ -187,15 +188,22 @@ def register(app, runtime, principal):
         if before: catalog.check_revision(before, body.expected_updated_at)
         if not before and body.expected_updated_at: raise HTTPException(409, 'Concept no longer exists at the expected revision')
         document_id = body.document_id if 'document_id' in body.model_fields_set else (before['document_id'] if before else None)
+        if before and before['document_id']:
+            content.locate(s.documents, before['document_id'], actor, space_id, 'write')
+        if document_id:
+            content.locate(s.documents, document_id, actor, space_id, 'write')
         if document_id: runtime.content.get(s.documents, document_id, context, actor, 'write')
         with runtime.engine.begin() as db:
+            if before: catalog.require_editable_head(db, context, actor)
+            else: catalog.writable_branch(db, context)
             if before and document_id != before['document_id']:
                 db.execute(update(concepts.concepts).where(concepts.concepts.c.id == before['id']).values(document_id=document_id))
+            scope = {**context, 'version_id': catalog.versions.branch(db, context)['head_version_id']}
             row = concepts.upsert(db, {'concept_id': concept_id, 'content_md': body.content_md,
                 'create_only': body.create_only,
-                'source_refs': before['source_refs'] if before else []}, document_id, body.expected_updated_at)
+                'source_refs': before['source_refs'] if before else []}, document_id, body.expected_updated_at,
+                context=scope)
             from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-            scope = {**context, 'version_id': catalog.versions.branch(db, context)['head_version_id']}
             db.execute(sqlite_insert(concepts.contexts).values(concept_id=row['id'], context=scope).on_conflict_do_update(
                 index_elements=['concept_id'], set_={'context': scope}))
         return jsonable_encoder(concept_view(row, actor, context))
@@ -217,6 +225,7 @@ def register(app, runtime, principal):
     @app.post(prefix + '/knowledge-bases/{kb_id}/okf/lint')
     def lint(kb_id: str, space_id='local', materialize: bool=False, actor=Depends(principal)):
         from .modules import okf_rules
+        catalog.scope(actor, space_id, kb_id, 'write')
         context, rows = scope_concepts(kb_id, actor, space_id, materialize)
         items = [SimpleNamespace(**row, frontmatter_json=okf_rules.parse_okf_markdown(row['concept_id'], row['content_md']).frontmatter,
             citations_json=row['citations'], links_json=row['links']) for row in rows]
@@ -276,7 +285,10 @@ def register(app, runtime, principal):
     def suggestion(suggestion_id: str, operation: str, space_id='local', actor=Depends(principal)):
         context = catalog.scope(actor, space_id, action='read' if operation == 'export' else 'write')
         row = discovery.get(suggestion_id, context, actor, 'read' if operation == 'export' else 'write')
-        if operation == 'export': return jsonable_encoder(content.projection.content(row, actor, context))
+        if operation == 'export':
+            with runtime.engine.connect() as db:
+                scope = db.execute(select(discovery.contexts.c.context).where(discovery.contexts.c.suggestion_id == suggestion_id)).scalar() or {}
+            return jsonable_encoder(content.projection.content(row, actor, {**context, 'knowledge_base_id': scope.get('knowledge_base_id')}))
         if operation == 'publish':
             if not runtime.publisher: raise HTTPException(404, 'Publication unavailable')
             return runtime.plugins['publication'].publish(suggestion_id, context, actor)

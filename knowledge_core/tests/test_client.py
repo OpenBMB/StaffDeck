@@ -4,7 +4,7 @@ import time
 from fastapi.testclient import TestClient
 from knowledge_core.api import BaseCreate, Edit, QueryRequest, Upload, create_app
 from knowledge_core.client import KnowledgeClient
-from knowledge_core.responses import KnowledgeBase, KnowledgeChunk, KnowledgeDocument, KnowledgeIngestJob
+from knowledge_core.responses import KnowledgeBase, KnowledgeChunk, KnowledgeDocument, KnowledgeIngestJob, KnowledgeDiscoverySuggestion
 from knowledge_core.runtime import Runtime
 from knowledge_core.configuration import Configuration
 
@@ -44,3 +44,22 @@ def test_typed_client_roundtrips_serialized_metadata_and_async_jobs(tmp_path):
         citation = client.resolve_citation(result.chunks[0].id)
         assert isinstance(citation, KnowledgeChunk)
         assert citation.content
+
+
+def test_typed_client_exports_and_rejects_documentless_lint_suggestion(tmp_path):
+    runtime = Runtime(f"sqlite:///{tmp_path / 'suggestion.sqlite'}", configuration=Configuration('full'))
+    with TestClient(create_app(runtime)) as transport:
+        client = KnowledgeClient("http://testserver")
+        client.http.close()
+        client.http = transport
+        base = client.create_base(BaseCreate(name="Lint"))
+        response = transport.put(f'/api/km/v1/knowledge-bases/{base.id}/concepts/topics/orphan',
+                                 json={'content_md': '# Orphan\n\n[[topics/missing]]', 'create_only': True})
+        assert response.status_code == 200, response.text
+        assert client.lint(base.id)['issue_count'] > 0
+        suggestion = client.suggestions(base.id)[0]
+        exported = client.suggestion(suggestion.id, 'export')
+        assert isinstance(exported, KnowledgeDiscoverySuggestion)
+        assert exported.knowledge_base_id == base.id
+        assert client.suggestion(suggestion.id, 'reject') == {'status': 'rejected', 'published': False}
+        assert client.suggestions(base.id)[0].status == 'rejected'

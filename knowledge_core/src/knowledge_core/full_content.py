@@ -37,13 +37,7 @@ class FullContent:
                 context['version_id'] = version['id']
                 if action == 'write' and 'history:write' not in actor.permissions:
                     raise HTTPException(409, 'Historical versions are immutable')
-            if action == 'write' and 'history:write' not in actor.permissions:
-                base = self.catalog.base(db, base_id, actor)
-                shared = db.execute(select(self.catalog.versions.branches.c.id).where(
-                    self.catalog.versions.branches.c.id != branch['id'],
-                    self.catalog.versions.branches.c.head_version_id == branch['head_version_id'])).first()
-                if shared or base['metadata'].get('published_version_id') == branch['head_version_id']:
-                    raise HTTPException(409, 'Copy the published or shared version before editing')
+            if action == 'write': self.catalog.require_editable_head(db, context, actor)
         return dict(row), context
 
     def get(self, table, resource_id, actor, space_id='local'):

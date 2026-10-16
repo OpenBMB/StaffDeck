@@ -177,7 +177,7 @@ class FullCatalog:
                 item = {key: row[key] for key in concepts.concepts.c.keys()}
                 item.update(id=s.identifier('kconcept'), updated_at=s.now())
                 db.execute(concepts.concepts.insert().values(**item))
-                db.execute(concepts.contexts.insert().values(concept_id=item['id'], context={**row['context'], 'version_id': target['id']}))
+                db.execute(concepts.contexts.insert().values(concept_id=item['id'], context={**context, 'version_id': target['id']}))
         self.grant(db, context['space_id'], target['id'])
         self.versions.restore(db, branch, target, context, preserve_metadata=preserve_metadata)
         branch = dict(db.execute(select(self.versions.branches).where(self.versions.branches.c.id == branch['id'])).mappings().one())
@@ -185,6 +185,16 @@ class FullCatalog:
         db.execute(update(self.versions.versions).where(self.versions.versions.c.id == target['id']).values(snapshot=target['snapshot']))
         db.execute(update(self.versions.branches).where(self.versions.branches.c.id == branch['id']).values(sync_state='modified'))
         return target
+
+    def require_editable_head(self, db, context, actor):
+        if 'history:write' in actor.permissions: return
+        branch = self.versions.branch(db, context)
+        base = self.base(db, context['knowledge_base_id'], actor)
+        shared = db.execute(select(self.versions.branches.c.id).where(
+            self.versions.branches.c.id != branch['id'],
+            self.versions.branches.c.head_version_id == branch['head_version_id'])).first()
+        if shared or base['metadata'].get('published_version_id') == branch['head_version_id']:
+            raise HTTPException(409, 'Copy the published or shared version before editing')
 
     def writable_branch(self, db, context):
         branch = self.versions.branch(db, context)
@@ -322,11 +332,23 @@ class FullCatalog:
             ids = set(db.execute(select(self.catalog.contents.c.document_id).where(self.catalog.contents.c.knowledge_base_id == base_id)).scalars())
             for table in (s.chunks, s.buckets, s.citations): db.execute(delete(table).where(table.c.document_id.in_(ids)))
             discovery, concepts = self.runtime.plugins['discovery'], self.runtime.plugins['concepts']
-            suggestions = select(discovery.suggestions.c.id).where(discovery.suggestions.c.document_id.in_(ids))
+            suggestions = select(discovery.suggestions.c.id).where(
+                discovery.suggestions.c.document_id.in_(ids) |
+                discovery.suggestions.c.id.in_(select(discovery.contexts.c.suggestion_id).where(
+                    discovery.contexts.c.context['knowledge_base_id'].as_string() == base_id)))
             db.execute(delete(self.runtime.plugins['publication'].receipts).where(self.runtime.plugins['publication'].receipts.c.suggestion_id.in_(suggestions)))
-            db.execute(delete(discovery.contexts).where(discovery.contexts.c.suggestion_id.in_(suggestions)))
-            db.execute(delete(discovery.suggestions).where(discovery.suggestions.c.document_id.in_(ids)))
-            db.execute(delete(concepts.concepts).where(concepts.concepts.c.document_id.in_(ids)))
+            suggestion_ids = list(db.execute(suggestions).scalars())
+            db.execute(delete(discovery.contexts).where(discovery.contexts.c.suggestion_id.in_(suggestion_ids)))
+            db.execute(delete(discovery.suggestions).where(discovery.suggestions.c.id.in_(suggestion_ids)))
+            concept_ids = list(db.execute(select(concepts.concepts.c.id).where(
+                concepts.concepts.c.document_id.in_(ids) |
+                concepts.concepts.c.id.in_(select(concepts.contexts.c.concept_id).where(
+                    concepts.contexts.c.context['knowledge_base_id'].as_string() == base_id)))).scalars())
+            db.execute(delete(concepts.contexts).where(concepts.contexts.c.concept_id.in_(concept_ids)))
+            db.execute(delete(concepts.concepts).where(concepts.concepts.c.id.in_(concept_ids)))
+            for citation in db.execute(select(s.citations).where(s.citations.c.document_id.is_(None))).mappings():
+                if any(scope.get('knowledge_base_id') == base_id for scope in citation['payload'].get('recovery_contexts', [])):
+                    db.execute(delete(s.citations).where(s.citations.c.id == citation['id']))
             db.execute(delete(s.documents).where(s.documents.c.id.in_(ids)))
             db.execute(delete(self.spaces.contents).where(self.spaces.contents.c.document_id.in_(ids)))
             db.execute(delete(self.versions.contents).where(self.versions.contents.c.document_id.in_(ids)))
