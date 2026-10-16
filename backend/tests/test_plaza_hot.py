@@ -14,6 +14,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.api.plaza_hot import plaza_hot
 from app.db.models import (
     AgentProfile,
+    AppUsageCounter,
     AgentResourceBinding,
     AgentSkillBranch,
     GeneralSkill,
@@ -200,3 +201,20 @@ def test_hot_ranks_by_real_counters_and_skips_unpublished():
         scores = [item.score for item in payload.items]
         assert scores == sorted(scores, reverse=True)
         assert len(payload.items) <= 10
+
+
+def test_oa_assistant_usage_counter_is_listed():
+    """OA 单据助手（前端本地清单、走面板埋点）用过之后要进首页排行。"""
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        # 没用过 → 不进榜（新租户页面不该凭空多一条 0 次记录）
+        assert [i for i in _call(db).items if i.ref_id == "oa-assistant"] == []
+
+        db.add(AppUsageCounter(app_key="oa-assistant", usage_count=5))
+        db.commit()
+        rows = [i for i in _call(db).items if i.ref_id == "oa-assistant"]
+        assert len(rows) == 1
+        assert rows[0].kind == "agents"
+        assert rows[0].title == "OA 单据助手"
+        assert rows[0].metric_value == 5
+        assert rows[0].metric_label == "被使用"

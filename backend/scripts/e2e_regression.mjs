@@ -442,6 +442,34 @@ if (HOTEL && TRAIN) {
   check('费用承担部门 重新代填后仍在表单页', /\/oa-form/.test(url2), url2);
 }
 
+// 16) 房租/住宿报销（配置同通讯报销）：报销场景、报销事由与事项描述都按配置来
+//     期望值直接从 oa_assistant.json 推（场景改名/改文案不该让测试假失败）
+{
+  const cfgScenarios = JSON.parse(readFileSync(new URL('../config/oa_assistant.json', import.meta.url), 'utf8')).scenarios;
+  const acc = cfgScenarios.find((x) => x.id === 'accommodation') || {};
+  const wantReasonRe = new RegExp('^' + String(acc.reason_prefill || '').replace(/\{last_month\}/g, '\\d+') + '$');
+  const host = await injectPanel(page);
+  const { oa, summary } = await runScenario(page, host, 'accommodation', { files: HOTEL ? [HOTEL] : [] });
+  check('房租报销 报销场景=' + acc.scene, oa.scene0 === acc.scene, oa.scene0);
+  check('房租报销 报销事由按配置预填（' + acc.reason_prefill + '）', wantReasonRe.test(oa.reason || ''), oa.reason);
+  check('房租报销 事项描述跟着报销事由', oa.desc0 === oa.reason, (oa.desc0 || '') + ' vs ' + (oa.reason || ''));
+  check('房租报销 费用承担部门=核定费用承担部门', oa.costDept === '核定费用承担部门', oa.costDept);
+  check('房租报销 失败=0', summary && summary.fail === 0, JSON.stringify(summary));
+}
+
+// 17) 代填成功 → 记一次「OA 单据助手」使用次数（首页热门排行榜按这个口径统计）
+{
+  const before = await (await fetch(BASE + '/api/enterprise/oa-assistant/usage')).json();
+  const host = await injectPanel(page);
+  const { summary, log } = await runScenario(page, host, 'communication', { files: HOTEL ? [HOTEL] : [] });
+  check('计次 这次代填成功（fail=0）', summary && summary.fail === 0, JSON.stringify(summary));
+  check('计次 面板日志出现「已记一次 OA 单据助手」', /已记一次「OA 单据助手」使用次数/.test(log),
+    (log.match(/已记一次[^－]{0,50}/) || ['(无)'])[0]);
+  const after = await (await fetch(BASE + '/api/enterprise/oa-assistant/usage')).json();
+  check('计次 计数 +1', after.usage_count === before.usage_count + 1,
+    before.usage_count + ' → ' + after.usage_count);
+}
+
 await browser.close();
 
 let failed = 0;

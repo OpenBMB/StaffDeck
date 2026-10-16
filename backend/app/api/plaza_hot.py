@@ -12,8 +12,9 @@
   overall 宿主的广场发布绑定）。
 
 可见性判定与 gallery_counts 完全同口径（is_open_gallery_resource / 发布状态 /
-管理员可见性）。Agent 广场条目是前端本地清单、不落库，暂无使用计数，不进榜；
-后续如需纳入，需先补使用埋点。
+管理员可见性）。Agent 广场的定制 Agent 是前端本地清单、不落库，**除「OA 单据助手」外**
+不进榜：它的使用次数来自浏览器面板的埋点（app_usage_counters，面板每次代填成功 +1），
+见 oa_assistant.report_usage。
 
 排序：score 降序 → updated_at 降序。score 为 0 的资源也返回（前端显示 0），
 保证新租户页面不为空。
@@ -37,8 +38,10 @@ from app.api.agents import _agent_hidden_from_staffdeck, _agent_visible_to_user
 from app.api.gallery import _is_empty_default_knowledge_base
 from app.api.knowledge_bases import _knowledge_base_stats
 from app.db.database import get_session
+from app.api.oa_assistant import OA_ASSISTANT_APP_KEY
 from app.db.models import (
     AgentProfile,
+    AppUsageCounter,
     AgentResourceBinding,
     AgentSkillBranch,
     GeneralSkill,
@@ -134,6 +137,22 @@ def _scored_items(db: Session, tenant_id: str, user: Any) -> list[HotItem]:
         if row.status == "active" and metadata.get("published_to_gallery") is True:
             _push("agents", row.id, row.name, row.description or "",
                   max(0, int(row.usage_count or 0)), row.updated_at)
+
+    # OA 单据助手（agent-catalog.json 里的本地清单条目，走面板埋点计数）：
+    # 它不在 agent_profiles 里，所以单独补一条，让首页排行能统计到
+    usage_row = db.exec(
+        select(AppUsageCounter).where(AppUsageCounter.app_key == OA_ASSISTANT_APP_KEY)
+    ).first()
+    usage_count = max(0, int((usage_row.usage_count if usage_row else 0) or 0))
+    if usage_count > 0:  # 用过才进榜（新租户页面不该凭空多一条 0 次记录）
+        _push(
+            "agents",
+            OA_ASSISTANT_APP_KEY,
+            "OA 单据助手",
+            "浏览器书签面板：在 OA 报销单上一键代填（发票识别 + 自动生成明细）",
+            usage_count,
+            usage_row.updated_at if usage_row else None,
+        )
 
     # 技能：published + overall 绑定可见；投影掉 MB 级 skill_files_json（见 gallery_counts 注释）
     for row in db.exec(

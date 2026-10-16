@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, Column, Index, Integer, UniqueConstraint, text
+from sqlalchemy import JSON, Boolean, Column, Index, Integer, String, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -2145,4 +2145,23 @@ class PlazaNewsCache(SQLModel, table=True):
     items_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     # provenance: rss / fallback（种子兜底）
     provenance: str = Field(default="rss")
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AppUsageCounter(SQLModel, table=True):
+    """「本地清单类」应用的使用计数（如 OA 单据助手 / AI 单据助手）。
+
+    Agent 广场里的定制 Agent（agent-catalog.json）是**前端本地清单、不落库**，
+    没有 agent_profiles 行，也就没有 usage_count；但首页热门排行榜要统计它们。
+    这里给这类应用一个全局计数器：浏览器书签面板每次代填成功 +1。
+
+    app_key 全局唯一（不按租户分）：面板注入在用户的 OA 页面里、不带租户身份，
+    而这个应用对所有租户都是同一个。
+    """
+
+    __tablename__ = "app_usage_counters"
+
+    id: str = Field(default_factory=lambda: new_id("appuse"), primary_key=True)
+    app_key: str = Field(sa_column=Column(String, nullable=False, unique=True))
+    usage_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
     updated_at: datetime = Field(default_factory=utc_now)

@@ -1,6 +1,6 @@
 """OA 浏览器代填（书签面板）后端测试。
 
-只覆盖两个公开端点：`/panel.js` 下发与 `/report` 上报。面板逻辑在浏览器里跑，
+覆盖公开端点：`/panel.js` 下发、`/report` 上报、`/usage` 计次。面板逻辑在浏览器里跑，
 这里不引入浏览器依赖。
 """
 
@@ -11,6 +11,8 @@ import io
 import json
 
 from fastapi import UploadFile
+from sqlalchemy.pool import StaticPool
+from sqlmodel import SQLModel, create_engine
 from starlette.requests import Request
 
 from app.api import oa_assistant
@@ -251,3 +253,17 @@ def test_category_default_tax_rate_used_when_invoice_has_none(monkeypatch) -> No
     result = invoice_amount.parse_invoice_uploads([("a.pdf", b"t")], categories, _RATE_MAP, "")
     assert result["rows"][0]["tax_rate"] == "9"
     assert result["rows"][0]["invoice_type"] == "9%"
+
+def test_usage_endpoint_counts_oa_assistant(monkeypatch) -> None:
+    """代填成功上报一次 → 「OA 单据助手」使用次数 +1（首页热门排行榜的口径）。"""
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(oa_assistant, "engine", engine)  # 用内存库，别写真实库
+
+    first = oa_assistant.report_usage()
+    second = oa_assistant.report_usage()
+    assert first.headers.get("access-control-allow-origin") == "*"  # OA 页面跨域要能读
+    assert json.loads(first.body) == {"ok": True, "app_key": "oa-assistant", "usage_count": 1}
+    assert json.loads(second.body)["usage_count"] == 2

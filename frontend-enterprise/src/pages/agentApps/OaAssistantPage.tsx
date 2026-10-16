@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { Bookmark, MousePointerClick, Puzzle, ShieldCheck } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Bookmark, ListChecks, MousePointerClick, Puzzle, ShieldCheck } from 'lucide-react';
 
 import AppHeader from '@/components/AppHeader';
-import { API_BASE_URL } from '@/api/client';
+import { API_BASE_URL, api } from '@/api/client';
 import type { EnterpriseAuthUser } from '@/auth';
 
 import AgentAppBackButton from '../agentApps/AgentAppBackButton';
@@ -27,6 +27,28 @@ export default function OaAssistantPage({
     () => new URL(`${API_BASE_URL}/api/enterprise/oa-assistant/panel.js`, window.location.origin).href,
     [],
   );
+
+  // 当前支持的报单场景：从后端配置下发（oa_assistant.json 的 scenarios），
+  // 配置改了页面自动跟着变，不用在这里维护第二份清单。
+  const [scenarios, setScenarios] = useState<{ id: string; name: string; summary: string; scene: string }[]>([]);
+  const [scenariosError, setScenariosError] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .get<{ items: { id: string; name: string; summary: string; scene: string }[] }>(
+        '/api/enterprise/oa-assistant/scenarios',
+      )
+      .then((data) => {
+        if (alive) setScenarios(data.items || []);
+      })
+      .catch(() => {
+        if (alive) setScenariosError(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // 书签本体：小 loader。每次点击都先卸载旧面板、带 cache-buster 重新加载，
   // 保证面板代码/config 更新后不用手动刷新 OA 页面。
@@ -109,6 +131,48 @@ export default function OaAssistantPage({
             说明：本方案不需要服务端浏览器，也不需要用户安装扩展。代价是<strong className="text-[#5b6274]">每次执行都要手动点一下书签</strong>（浏览器不允许网页替用户点书签），
             且若 OA 页面配置了严格 CSP，注入脚本可能被拦截（面板会给出提示）。
           </p>
+        </section>
+
+        {/* 支持的报单场景（后端配置下发） */}
+        <section className="rounded-[20px] bg-white p-[20px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
+          <div className="flex items-center gap-[8px]">
+            <ListChecks className="size-[15px] text-[#757f9c]" />
+            <h2 className="text-[14px] font-medium text-[#18181a]">当前支持的报单场景</h2>
+            {scenarios.length > 0 && (
+              <span className="font-mono text-[11px] text-[#a3aaba]">共 {scenarios.length} 个</span>
+            )}
+          </div>
+          <p className="mt-[6px] text-[12px] leading-[1.8] text-[#858b9c]">
+            打开对应场景的 OA 表单页再点书签，面板会自动切到该场景；也可以手动在面板顶部切换。
+          </p>
+
+          {scenariosError && (
+            <p className="mt-[10px] text-[12px] text-[#c15a3a]">场景清单加载失败，请刷新重试。</p>
+          )}
+          {!scenariosError && scenarios.length === 0 && (
+            <p className="mt-[10px] text-[12px] text-[#a3aaba]">正在加载场景清单…</p>
+          )}
+
+          <ul className="mt-[10px] flex flex-col gap-[8px]">
+            {scenarios.map((item) => (
+              <li
+                key={item.id}
+                className="rounded-[12px] border border-[#eef0f5] bg-[#fafbfd] px-[12px] py-[10px]"
+              >
+                <div className="flex flex-wrap items-center gap-[8px]">
+                  <span className="text-[13px] font-medium text-[#1f2333]">{item.name}</span>
+                  {item.scene && (
+                    <span className="rounded-[6px] border border-[#dfe4ec] bg-white px-[6px] py-[1px] font-mono text-[10.5px] text-[#757f9c]">
+                      报销场景：{item.scene}
+                    </span>
+                  )}
+                </div>
+                {item.summary && (
+                  <p className="mt-[4px] text-[12px] leading-[1.8] text-[#5b6274]">{item.summary}</p>
+                )}
+              </li>
+            ))}
+          </ul>
         </section>
       </div>
     </div>

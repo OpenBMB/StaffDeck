@@ -7,8 +7,9 @@
   接收面板上报、以及内存里解析发票 PDF 算金额。
 
 端点的鉴权口径：
-- `/panel.js`、`/report`、`/invoice-amounts` 都是公开的 —— 请求来自用户浏览器里的 OA 页面，
+- `/panel.js`、`/report`、`/invoice-amounts`、`/usage` 都是公开的 —— 请求来自用户浏览器里的 OA 页面，
   没有 StaffDeck 登录态。脚本/配置不含用户数据；发票上传只做内存解析、不落盘。
+  `/usage` 只做一件事：给「OA 单据助手」的使用计数 +1（首页热门排行榜要用）。
 """
 
 from __future__ import annotations
@@ -22,6 +23,10 @@ from fastapi import APIRouter, File, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.core.invoice_amount import is_pdf_bytes, parse_invoice_uploads
+from sqlmodel import Session, select
+
+from app.db.database import engine
+from app.db.models import AppUsageCounter, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +99,68 @@ async def report(request: Request) -> dict[str, Any]:
         data = {"raw": raw[:1000]}
     logger.info("[oa-assistant] %s", json.dumps(data, ensure_ascii=False)[:4000])
     return {"ok": True}
+
+
+# 前端本地清单里的应用 key（agent-catalog.json 的 id）——首页热门排行榜按它聚合
+OA_ASSISTANT_APP_KEY = "oa-assistant"
+
+
+@router.post("/usage")
+def report_usage() -> JSONResponse:
+    """代填成功 +1（首页热门排行榜的「被使用」计数）。
+
+    无鉴权：请求来自 OA 页面里的面板（和 /report 同口径）。只累加计数，不记用户数据。
+    """
+    with Session(engine) as db:
+        row = db.exec(
+            select(AppUsageCounter).where(AppUsageCounter.app_key == OA_ASSISTANT_APP_KEY)
+        ).first()
+        if row is None:
+            row = AppUsageCounter(app_key=OA_ASSISTANT_APP_KEY, usage_count=0)
+            db.add(row)
+        row.usage_count = max(0, int(row.usage_count or 0)) + 1
+        row.updated_at = utc_now()
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        count = max(0, int(row.usage_count or 0))
+    return JSONResponse({"ok": True, "app_key": OA_ASSISTANT_APP_KEY, "usage_count": count},
+                        headers=CORS_HEADERS)
+
+
+@router.get("/scenarios")
+def list_scenarios() -> JSONResponse:
+    """下发场景清单（名称 + 一句介绍），供「AI 单据助手」安装页展示当前支持哪些报单场景。
+
+    公开端点（与 /panel.js 同口径）：内容就是配置里的场景名与介绍，不含用户数据。
+    """
+    config = _load_config()
+    items = []
+    for sc in config.get("scenarios") or []:
+        if sc.get("enabled") is False:
+            continue
+        items.append(
+            {
+                "id": sc.get("id"),
+                "name": sc.get("name"),
+                "summary": sc.get("summary") or "",
+                "scene": sc.get("scene") or "",
+                "has_line_items": bool(sc.get("line_items")),
+            }
+        )
+    return JSONResponse({"ok": True, "items": items}, headers=CORS_HEADERS)
+
+
+@router.get("/usage")
+def read_usage() -> JSONResponse:
+    """读「OA 单据助手」当前使用次数（不改计数，给排障/前端核对用）。"""
+    with Session(engine) as db:
+        row = db.exec(
+            select(AppUsageCounter).where(AppUsageCounter.app_key == OA_ASSISTANT_APP_KEY)
+        ).first()
+        count = max(0, int((row.usage_count if row else 0) or 0))
+    return JSONResponse({"ok": True, "app_key": OA_ASSISTANT_APP_KEY, "usage_count": count},
+                        headers=CORS_HEADERS)
 
 
 def _invoice_response(payload: dict[str, Any], status_code: int = 200) -> JSONResponse:

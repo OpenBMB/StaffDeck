@@ -176,7 +176,7 @@
       if (options.muteAncestors) withAncestorInlineHandlersMuted(node, dispatch);
       else dispatch();
     };
-    logLine('－ 点击：' + nodeBrief(node), 'dim');
+    if (debugEnabled()) logLine('－ 点击：' + nodeBrief(node), 'dim');
     if (options.allowNav) { run(); return; }
     withNavGuard(node, run);
   }
@@ -2804,6 +2804,25 @@
     }
   }
 
+  /** 上报一次「OA 单据助手」使用次数（首页热门排行榜的计数）。失败静默，不影响用户。 */
+  function reportUsage(filledCount) {
+    try {
+      var body = JSON.stringify({ filled: filledCount, url: location.host });
+      fetch(BASE + '/api/enterprise/oa-assistant/usage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: body,
+        keepalive: true,
+      }).then(function (res) {
+        return res.ok ? res.json() : null;
+      }).then(function (data) {
+        if (data && typeof data.usage_count === 'number') {
+          logLine('－ 已记一次「OA 单据助手」使用次数（累计 ' + data.usage_count + '）', 'dim');
+        }
+      }).catch(function () {});
+    } catch (e) {}
+  }
+
   /** 一键清理：只清空 OA 上已有的附件与明细行（复用自动代填里的同一套代码路径）。 */
   async function clearOaOnly() {
     var scenario = currentScenario();
@@ -2979,6 +2998,11 @@
 
     var failed = steps.filter(function (s) { return s.status === 'error'; });
     var todos = steps.filter(function (s) { return s.status === 'todo'; });
+    // 代填成功（有填上、且没有失败项）→ 记一次「OA 单据助手」的使用次数，
+    // 首页热门排行榜按这个计数统计它（POST /usage，失败静默不影响使用）。
+    var filledCount = steps.filter(function (st) { return st.status === 'filled'; }).length;
+    var failedCount = steps.filter(function (st) { return st.status === 'error'; }).length;
+    if (filledCount > 0 && failedCount === 0) reportUsage(filledCount);
     logLine('完成：成功 ' + steps.filter(function (s) { return s.status === 'filled'; }).length +
       ' · 跳过 ' + steps.filter(function (s) { return s.status === 'skipped'; }).length +
       ' · 失败 ' + failed.length + ' · 待配置 ' + todos.length,

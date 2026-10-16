@@ -25,6 +25,11 @@ from fastapi.responses import HTMLResponse
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.api import oa_assistant  # noqa: E402
+from app.db.database import engine  # noqa: E402
+from sqlmodel import SQLModel  # noqa: E402
+
+# /usage 会给「OA 单据助手」计数（首页热门排行榜口径）→ 保证表在
+SQLModel.metadata.create_all(engine)
 
 app = FastAPI()
 app.include_router(oa_assistant.router)
@@ -77,7 +82,7 @@ _FORM = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>
   <tr><td class="lb">是否全电子发票</td><td><div class="ant-select" data-fieldmark="field29328" data-options="是|否"></div></td><td></td><td></td></tr>
   <tr><td class="lb">费用承担部门</td><td><div class="ant-select" data-fieldmark="field7012" data-prefill="AI+" data-options="AI+|核定费用承担部门|核定"></div></td><td></td><td></td></tr>
   <tr><td class="lb">收款单位名称</td><td><div class="ant-select" data-options="上海测试科技有限公司|某某网络有限公司|上海测试"></div></td><td></td><td></td></tr>
-  <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_0" data-options="通讯费用|交通费用|飞机|火车汽车船|IT服务外包|相关票据|境内住宿|境内机票|境内火车票"></div></td>
+  <tr><td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_0" data-options="通讯费用|房租费用|交通费用|飞机|火车汽车船|IT服务外包|相关票据|境内住宿|境内机票|境内火车票"></div></td>
       <td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_0" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td></tr>
   <tr><td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="0"><input id="field6920_0"></td>
       <td class="lb">金额</td><td><input id="field6932_0"></td></tr>
@@ -293,7 +298,7 @@ document.getElementById('addrow').addEventListener('click', function(e){
   var i = rowCount++;
   var table = document.querySelector('table');
   var tr1 = document.createElement('tr');
-  tr1.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_'+i+'" data-options="IT服务外包|交通费用|相关票据|境内住宿|境内机票|境内火车票"></div></td>'
+  tr1.innerHTML = '<td class="lb">报销场景</td><td><div class="ant-select" data-fieldmark="field6926_'+i+'" data-options="通讯费用|房租费用|交通费用|相关票据|境内住宿|境内机票|境内火车票"></div></td>'
     + '<td class="lb">发票类型</td><td><div class="ant-select" data-fieldmark="field6925_'+i+'" data-options="普通发票|增值税普通发票 ｜ 3%|增值税普通发票 ｜ 6%|增值税普通发票 ｜ 9%|增值税专用发票|增值税专用发票 ｜ 3%|增值税专用发票 ｜ 6%|增值税专用发票 ｜ 9%|增值税专用发票 ｜ 13%|增值税电子普通发票（境内客运）|增值税电子普通发票（境内客运） ｜ 3%|增值税电子普通发票（境内客运） ｜ 9%|电子普通发票|9%|6%|3%|13%"></div></td>';
   var tr2 = document.createElement('tr');
   tr2.innerHTML = '<td class="lb">事项描述</td><td><input type="checkbox" class="row-check" data-row="'+i+'"><input id="field6920_'+i+'"></td><td class="lb">金额</td><td><input id="field6932_'+i+'"></td>';

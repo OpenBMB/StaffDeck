@@ -348,7 +348,37 @@
           "value": "核定费用承担部门",
           "clear_first": true
         }
-      }
+      },
+      "summary": "通讯费报销：报销场景固定「通讯费用」，报销事由与事项描述按「X月通讯费报销」预填，金额取发票价税合计。"
+    },
+    {
+      "id": "accommodation",
+      "name": "房租报销",
+      "enabled": true,
+      "url": "https://oa.fosunholiday.com/spa/workflow/static4form/index.html?_rdm=1791601026398#/main/workflow/req?iscreate=1&workflowid=57&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0&menuIds=1,12&menuPathIds=1,12&preloadkey=1791601026398&timestamp=1791601026398",
+      "reason_prefill": "{last_month}月房租报销",
+      "scene": "房租费用",
+      "fields": [
+        "expense_type",
+        "tax_exceeded",
+        "travel_entertainment",
+        "reason",
+        "company_name",
+        "cost_department",
+        "e_ticket",
+        "invoice_type",
+        "attachment",
+        "scene",
+        "item_desc",
+        "amount"
+      ],
+      "field_overrides": {
+        "cost_department": {
+          "value": "核定费用承担部门",
+          "clear_first": true
+        }
+      },
+      "summary": "房租（住宿）报销：报销场景固定「房租费用」，报销事由与事项描述按「X月房租报销」预填。"
     },
     {
       "id": "traffic",
@@ -376,7 +406,8 @@
           "value": "核定费用承担部门",
           "clear_first": true
         }
-      }
+      },
+      "summary": "交通费报销：报销场景在「飞机 / 火车·汽车·船」二选一，其余同通讯报销。"
     },
     {
       "id": "business_trip",
@@ -455,7 +486,8 @@
         "amount": {
           "enabled": false
         }
-      }
+      },
+      "summary": "出差报销：上传发票自动生成报销明细（同「报销场景 + 税率」合并为一行、金额累计），发票类型按该票税率预选。"
     },
     {
       "id": "company_payment",
@@ -573,7 +605,8 @@
           "selector": "__TODO__",
           "by_label": "相关流程"
         }
-      }
+      },
+      "summary": "境内公司付款：一张发票一行明细，扣税/类目不限都会出行；明细报销场景可选（IT服务外包 / IT硬件设备 / 公司通讯费），附件分「相关票据」与「其他参考资料」两处。"
     }
   ]
 }
