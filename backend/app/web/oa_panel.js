@@ -1542,15 +1542,88 @@
   relatedFlowRow.style.order = '5';
   body.appendChild(relatedFlowRow);
 
-  // 公司名称
-  var companySelect = el('select', INPUT);
-  (PANEL_CFG.company_names || []).forEach(function (name) {
-    var opt = document.createElement('option');
-    opt.value = name;
-    opt.textContent = name;
-    companySelect.appendChild(opt);
+  // 公司名称：可搜索 + 可手动输入。做法对齐「模型配置」里的模型下拉（ModelCombobox）：
+  // 触发器显示当前值 → 展开是「搜索框 + 候选列表」（当前值打勾）→
+  // 输入的文字不在候选里时，多出一条「＋ 使用自定义名称…」（回车确认）。
+  // 面板是原生 DOM（Shadow DOM 里 datalist 的候选在部分浏览器不弹），所以自己画这个下拉。
+  var companyNames = (PANEL_CFG.company_names || []).slice();
+  var companyName = companyNames[0] || '';
+  var companyWrap = el('div', 'display:flex;flex-direction:column;gap:6px;');
+  var companyTrigger = el('button', INPUT + 'display:flex;align-items:center;gap:6px;text-align:left;cursor:pointer;font-family:inherit;', '');
+  companyTrigger.type = 'button';
+  companyTrigger.setAttribute('data-role', 'company-trigger');
+  var companyTriggerText = el('span', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:' + (companyName ? '#1f2333' : '#a3aaba') + ';', companyName || '请选择或输入公司全称');
+  companyTrigger.appendChild(companyTriggerText);
+  companyTrigger.appendChild(el('span', 'color:#a3aaba;font-size:10px;flex:0 0 auto;', '▾'));
+  var companyPanel = el('div', 'display:none;flex-direction:column;gap:5px;border:1px solid #e3e7f1;border-radius:9px;background:#fff;padding:6px;');
+  var companySearch = el('input', INPUT);
+  companySearch.placeholder = '输入公司名称，支持模糊匹配, 回车确认';
+  companySearch.setAttribute('data-role', 'company-search');
+  var companyListBox = el('div', 'display:flex;flex-direction:column;gap:2px;max-height:168px;overflow:auto;');
+  companyPanel.appendChild(companySearch);
+  companyPanel.appendChild(companyListBox);
+  companyWrap.appendChild(companyTrigger);
+  companyWrap.appendChild(companyPanel);
+
+  var COMPANY_OPT = 'border:0;background:transparent;text-align:left;font-size:12px;color:#1f2333;'
+    + 'padding:6px 7px;border-radius:7px;cursor:pointer;font-family:inherit;width:100%;'
+    + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  var COMPANY_OPT_CUSTOM = COMPANY_OPT + 'color:#0f6b4f;font-weight:600;border-top:1px solid #eef0f5;';
+
+  function setCompany(name) {
+    companyName = String(name || '').trim();
+    companyTriggerText.textContent = companyName || '请选择或输入公司全称';
+    companyTriggerText.style.color = companyName ? '#1f2333' : '#a3aaba';
+    companyPanel.style.display = 'none';
+    companySearch.value = '';
+  }
+
+  function renderCompanyOptions() {
+    companyListBox.textContent = '';
+    var query = String(companySearch.value || '').trim();
+    var filtered = query
+      ? companyNames.filter(function (name) { return name.indexOf(query) >= 0; })
+      : companyNames;
+    filtered.forEach(function (name) {
+      var row = el('button', COMPANY_OPT, (name === companyName ? '✓ ' : '') + name);
+      row.type = 'button';
+      row.title = name;
+      row.setAttribute('data-role', 'company-option');
+      row.addEventListener('click', function () { setCompany(name); });
+      companyListBox.appendChild(row);
+    });
+    if (query && companyNames.indexOf(query) < 0) {
+      var custom = el('button', COMPANY_OPT_CUSTOM, '＋ 使用自定义名称「' + query + '」');
+      custom.type = 'button';
+      custom.setAttribute('data-role', 'company-custom');
+      custom.addEventListener('click', function () { setCompany(query); });
+      companyListBox.appendChild(custom);
+    }
+    if (!filtered.length && !query) {
+      companyListBox.appendChild(el('div', 'font-size:11.5px;color:#a3aaba;padding:6px 7px;', '没有常用选项，直接输入公司全称即可'));
+    }
+  }
+
+  companyTrigger.addEventListener('click', function () {
+    var open = companyPanel.style.display !== 'none';
+    companyPanel.style.display = open ? 'none' : 'flex';
+    if (!open) { companySearch.value = ''; renderCompanyOptions(); try { companySearch.focus(); } catch (e) {} }
   });
-  var companyRow = field('公司名称', companySelect);
+  companySearch.addEventListener('input', renderCompanyOptions);
+  companySearch.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      var q = String(companySearch.value || '').trim();
+      if (q) setCompany(q);   // 回车即用（候选里有就取候选，没有就用自定义名称）
+    }
+    if (e.key === 'Escape') companyPanel.style.display = 'none';
+  });
+  root.addEventListener('mousedown', function (e) {
+    var path = (e.composedPath && e.composedPath()) || [];
+    if (path.indexOf(companyWrap) < 0 && path.indexOf(companyTrigger) < 0) companyPanel.style.display = 'none';
+  }, true);
+
+  var companyRow = field('公司名称', companyWrap);
   companyRow.style.order = '6';
   body.appendChild(companyRow);
 
@@ -2919,7 +2992,7 @@
       scene: sceneValue,
       trip_days: String(tripDaysInput.value || '').trim(),
       related_flow: String(relatedFlowInput.value || '').trim(),
-      company_name: companySelect.value,
+      company_name: String(companyName || '').trim(),
       payee_name: String(payeeNameInput.value || '').trim(),
       invoice_type: invoiceTypeSearch(invoiceSelect.value),
       invoice_rate: invoiceTypeRate(invoiceSelect.value),
