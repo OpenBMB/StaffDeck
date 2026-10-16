@@ -226,6 +226,28 @@ def test_gallery_publication_is_available_to_overall_agent(management):
     assert prepared["state"]["active_node_id"] == "done"
 
 
+def test_composition_expands_the_published_child_version(management):
+    from staffdeck_harness.composition.staff import _sops
+
+    db, user, _client = management
+    child = {**deepcopy(CONTENT), "skill_id": "child", "name": "Child"}
+    parent = {
+        **deepcopy(CONTENT), "skill_id": "parent", "start_node_id": "sub",
+        "terminal_node_ids": ["sub"],
+        "nodes": [{"node_id": "sub", "name": "Sub", "type": "subflow", "sub_sop_id": "child"}],
+    }
+    for value in (child, parent):
+        skills.create_skill(SkillCreateRequest(tenant_id="t", content=value), "a", db, user)
+        skills.publish_skill(value["skill_id"], "t", "a", db, user)
+    updated = {**deepcopy(child), "version": "2.0.0", "start_node_id": "new",
+               "terminal_node_ids": ["new"],
+               "nodes": [{"node_id": "new", "name": "New", "type": "answer"}]}
+    skills.update_skill("child", SkillUpdateRequest(tenant_id="t", content=updated), "a", db, user)
+    view = next(s for s in _sops(db, "t", db.get(AgentProfile, "a")) if s.skill_id == "parent")
+    assert view.content["start_node_id"] == "sub::child::done"
+    assert {n["node_id"] for n in view.content["nodes"]} == {"sub::child::done"}
+
+
 def test_migrated_nested_definition_can_be_republished_without_snapshot_conflict(
     management, monkeypatch
 ):

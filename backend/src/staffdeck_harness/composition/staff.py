@@ -117,7 +117,28 @@ def _expand_sop_content(published: list[Skill]) -> list[tuple[Skill, dict[str, A
 def _sops(db: Session, tenant_id: str, agent: AgentProfile | None) -> tuple[SopView, ...]:
     agent_id = agent.id if agent is not None else None
     published = list(visible_published_skills(db, tenant_id, agent_id))
-    expanded_by_id = {sk.skill_id: content for sk, content in _expand_sop_content(published)}
+    from app.skills.sop_management import SopManagementService, legacy_sop_writes_disabled
+
+    if legacy_sop_writes_disabled():
+        from staffdeck_sop_core import SopDefinition
+        from staffdeck_sop_core.nesting import expand
+
+        from app.db.models import SopVersionRecord
+
+        versions = db.exec(select(SopVersionRecord).where(
+            SopVersionRecord.tenant_id == tenant_id,
+            SopVersionRecord.agent_id == SopManagementService.scope(db, tenant_id, agent_id),
+        )).all()
+        catalog = {(row.skill_id, row.version): SopDefinition.from_value(row.content_json)
+                   for row in versions}
+        for row in published:
+            definition = SopDefinition.from_value(row.content_json)
+            catalog[row.skill_id] = definition
+            catalog[(row.skill_id, row.version)] = definition
+        expanded_by_id = {row.skill_id: expand(catalog[row.skill_id], catalog).content
+                          for row in published}
+    else:
+        expanded_by_id = {sk.skill_id: content for sk, content in _expand_sop_content(published)}
     out: list[SopView] = []
     for skill in published:
         content = dict(expanded_by_id.get(skill.skill_id) or skill.content_json or {})

@@ -1,6 +1,7 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from staffdeck_sop_runtime.api import create_app
 
@@ -10,6 +11,67 @@ from staffdeck_harness.contracts.sop import SopDefinition, SopState
 from staffdeck_harness.sop.contracts import SopDependencies
 from staffdeck_harness.sop.http_runtime import HttpSopRuntime
 from staffdeck_harness.sop.runtime_client import RuntimeClient
+
+
+@pytest.mark.parametrize("remaining_actions", [0, 1])
+def test_nonterminal_completion_keeps_task_resumable(remaining_actions):
+    client = SimpleNamespace(
+        session=lambda _: {"state": {"revision": 0, "active_node_id": "first", "status": "active"},
+                           "definition": {"content": {"nodes": [{"node_id": "first"}]}}},
+        operation=lambda *a, **k: {"state": {"active_node_id": "last", "status": "active",
+                                             "slots": {}, "revision": 1}},
+    )
+    adapter = HttpSopRuntime(client, SimpleNamespace())
+    session = SopState("chat", "tenant", agent_id="agent")
+    session.awaiting_input_json = {"runtime_session_id": "runtime", "local_sop_id": "flow"}
+    result = TaskExecutionResult(task_frame_id="task", status="completed", reply_fragment="First done")
+    requirement = TaskRequirement(task_frame_id="task", execution_loop_id="turn", kind="sop", goal="test")
+    advance = adapter.after_execution("tenant", session, None, requirement, result, None,
+                                      remaining_actions=remaining_actions)
+    assert advance.step_result.is_step_completed
+    assert advance.continue_execution == bool(remaining_actions)
+    assert result.status == ("action_budget" if remaining_actions == 0 else "completed")
+    assert session.active_step_id == "last"
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_host_receipt_satisfies_both_resource_and_tool_name_requirements(compact):
+    from app.core.task_request_compiler import (
+        CapabilityCatalogEntry,
+        CapabilityDescriptor,
+        CapabilityManifest,
+    )
+
+    with TestClient(create_app()) as http:
+        def transport(path, payload, headers):
+            return (http.get(path) if payload is None else http.post(path, json=payload)).json()
+
+        client = RuntimeClient("http://runtime", transport=transport)
+        client.request("/v1/definitions", {
+            "sop_id": "flow", "version": "1",
+            "content": {"start_node_id": "work", "nodes": [{
+                "node_id": "work", "allowed_actions": ["call_tool:lookup"],
+                "capability_refs": {"required_tool_ids": ["tool-id"]},
+            }]},
+        })
+        client.operation("runtime", "prepare", request_id="p", turn_id="turn", sopId="flow")
+        adapter = HttpSopRuntime(client, SimpleNamespace())
+        session = SopState("chat", "tenant", agent_id="agent")
+        session.awaiting_input_json = {"runtime_session_id": "runtime", "local_sop_id": "flow"}
+        requirement = TaskRequirement(
+            task_frame_id="task", execution_loop_id="turn", kind="sop", goal="test",
+            capability_manifest=CapabilityManifest(**{("catalog" if compact else "available"): [
+                (CapabilityCatalogEntry if compact else CapabilityDescriptor)(
+                capability_id="tool-id", name="lookup", kind="tool",
+            )]}),
+        )
+        result = TaskExecutionResult(
+            task_frame_id="task", status="completed", reply_fragment="Done",
+            capability_results=[{"capability_id": "tool-id", "tool_name": "lookup",
+                                 "operation_id": "invoke", "success": True}],
+        )
+        adapter.after_execution("tenant", session, None, requirement, result, None, remaining_actions=0)
+        assert client.session("runtime")["state"]["status"] == "completed"
 
 
 def test_staffdeck_adapter_shared_host_conformance_cases():

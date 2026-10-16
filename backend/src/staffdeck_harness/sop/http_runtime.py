@@ -149,6 +149,8 @@ class HttpSopRuntime:
             for n in snapshot["definition"]["content"]["nodes"]
             if n["node_id"] == state["active_node_id"]
         )
+        if node.get("type") == "handoff" and result.status == "awaiting_user":
+            result.status = "handoff"
         declared.update(
             a.split(":", 1)[1]
             for a in node.get("allowed_actions", [])
@@ -157,39 +159,32 @@ class HttpSopRuntime:
         for item in result.capability_results:
             name = item.get("capability_id") or item.get("tool_name")
             descriptor = next(
-                (d for d in requirement.capability_manifest.available if d.name == name), None
+                (d for d in [*requirement.capability_manifest.available,
+                             *requirement.capability_manifest.catalog]
+                 if name in {d.name, d.capability_id}), None
             )
-            if name not in declared and descriptor:
-                name = descriptor.capability_id
-            if name not in declared:
+            aliases = [name]
+            if descriptor:
+                aliases.extend([descriptor.capability_id, descriptor.name])
+            names = [alias for alias in dict.fromkeys(aliases) if alias in declared]
+            if not names:
                 continue
             operation = item.get("operation_id")
             if not operation:
                 raise RuntimeError(
                     "RECEIPT_INVALID", "Capability result lacks host operation identifier"
                 )
-            receipts.append(
-                {
-                    "capability_id": name,
-                    "operation_id": operation,
-                    "node_id": state["active_node_id"],
-                    "session_id": runtime_id,
-                    "turn_id": turn_id,
-                    "status": "succeeded" if item.get("success") else "failed",
-                    "result": item.get("data") if isinstance(item.get("data"), dict) else None,
-                    "evidence": {"host_operation_id": operation},
-                }
-            )
-            if (
-                descriptor
-                and descriptor.capability_id in declared
-                and descriptor.capability_id != name
-            ):
+            for index, name in enumerate(names):
                 receipts.append(
                     {
-                        **receipts[-1],
-                        "capability_id": descriptor.capability_id,
-                        "operation_id": f"{operation}:{descriptor.capability_id}",
+                        "capability_id": name,
+                        "operation_id": operation if index == 0 else f"{operation}:{name}",
+                        "node_id": state["active_node_id"],
+                        "session_id": runtime_id,
+                        "turn_id": turn_id,
+                        "status": "succeeded" if item.get("success") else "failed",
+                        "result": item.get("data") if isinstance(item.get("data"), dict) else None,
+                        "evidence": {"host_operation_id": operation},
                     }
                 )
         knowledge_operations = [
@@ -245,7 +240,15 @@ class HttpSopRuntime:
         self._project(session, next_state)
         projected = step_result(result)
         if next_state["status"] == "handoff":
+            mapping = dict(session.awaiting_input_json or {})
             self.dependencies.create_handoff(tenant_id, session, skill, projected)
+            session.awaiting_input_json = {**mapping, **dict(session.awaiting_input_json or {})}
+            from .results import append_session_handoff_artifact
+
+            append_session_handoff_artifact(result, session)
         elif next_state["status"] == "completed":
             self.complete_current_skill(session)
+        elif next_state["status"] == "active" and remaining_actions <= 0:
+            # The node completed, but the task still has a successor to execute.
+            result.status = "action_budget"
         return SopAdvance(projected, next_state["status"] == "active" and remaining_actions > 0)

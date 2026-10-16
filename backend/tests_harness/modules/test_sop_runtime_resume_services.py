@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 from staffdeck_sop_runtime.api import create_app
 
 from app.core.handoff_reply_service import apply_handoff_reply
+from app.core.human_handoff_service import HumanHandoffService
+from app.core.task_request_compiler import TaskExecutionResult, TaskRequirement
 from app.db.models import (
     ChatSession,
     ExternalBusinessTask,
@@ -60,6 +62,47 @@ def _wait(client, session_id, status):
         revision=0,
         proposal={"status": status, "reply": "Waiting"},
     )["state"]
+
+
+@pytest.mark.parametrize("status", ["handoff", "awaiting_user"])
+def test_handoff_creation_preserves_runtime_mapping_for_reply(db, runtime, status):
+    from staffdeck_harness.modules.registry import reset_registry
+
+    reset_registry()
+    session = ChatSession(id="s1", tenant_id="t1", user_id="u1", agent_id="a1",
+                          active_skill_id="flow", active_step_id="wait")
+    runtime_id = HttpSopRuntime._id(session, "task1")
+    _wait(runtime, runtime_id, "handoff")
+    state = runtime.session(runtime_id)["state"]
+    runtime.operation(runtime_id, "resume", request_id="first-resume", turn_id="turn",
+                      revision=1, waitId=state["pending_wait"]["wait_id"])
+    session.awaiting_input_json = {"runtime_session_id": runtime_id, "task_id": "task1",
+                                   "local_sop_id": "flow"}
+    db.add(session)
+    db.commit()
+    events = SimpleNamespace(record=lambda *a: None)
+    service = HumanHandoffService(db, events)
+
+    def create_handoff(tenant_id, chat_session, skill, result):
+        return service.create(
+            tenant_id, chat_session, result,
+            current_step_resolver=lambda: {"node_id": "wait", "type": "handoff"},
+            assignee_resolver=lambda *a: "admin", context_summary=lambda *a: "",
+            pending_question=lambda *a: "Approve?",
+        )
+
+    adapter = HttpSopRuntime(runtime, SimpleNamespace(create_handoff=create_handoff))
+    result = TaskExecutionResult(task_frame_id="task1", status=status, reply_fragment="Approve?")
+    requirement = TaskRequirement(task_frame_id="task1", execution_loop_id="again", kind="sop", goal="test")
+    adapter.after_execution("t1", session, None, requirement, result, None, remaining_actions=0)
+    assert result.status == "handoff"
+    assert session.awaiting_input_json["runtime_session_id"] == runtime_id
+    assert session.awaiting_input_json["task_id"] == "task1"
+    handoff = db.get(HumanHandoffRequest, session.awaiting_input_json["handoff_id"])
+    assert result.artifacts == [{"type": "human_handoff", "handoff_id": handoff.id}]
+    db.commit()
+    apply_handoff_reply(db, handoff, "Approved", answered_by_user_id="admin", resume=lambda _: None)
+    assert runtime.session(runtime_id)["state"]["status"] == "active"
 
 
 @pytest.mark.parametrize("source", ["web", "feishu"])

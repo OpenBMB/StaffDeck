@@ -5315,6 +5315,28 @@ def test_sidecar_context_replaces_generic_messages_when_sop_step_changes() -> No
     assert messages[1] == prior_messages[1]
 
 
+def test_sidecar_context_includes_current_input_when_resuming_same_sop_step() -> None:
+    requirement = TaskRequirement(
+        task_frame_id="frame-1", kind="sop", goal="collect ticket",
+        current_user_message="Ask me for the ticket.",
+        sop_context={"step": {"node_id": "collect"}},
+    )
+    prior = _pilotdeck_context_messages(requirement, {}, None, None)
+    prior.append({"role": "assistant", "content": [{
+        "type": "text", "text": "Please provide the ticket.",
+    }]})
+    resumed = requirement.model_copy(update={
+        "current_user_message": "The ticket is SOP-1014.",
+        "known_slots": {"ticket": "SOP-1014"},
+    })
+
+    messages = _pilotdeck_context_messages(resumed, {}, None, prior)
+
+    assert messages[:-1] == prior
+    assert json.loads(messages[-1]["content"][0]["text"]) == resumed.model_dump(mode="json")
+    assert _pilotdeck_context_messages(resumed, {}, None, messages) == messages
+
+
 def test_harness_v2_compatibility_module_exports_turn_planner() -> None:
     from app.core import harness_v2_engine
 
