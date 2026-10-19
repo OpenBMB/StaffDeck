@@ -212,7 +212,7 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
               <SwitchRow label="展示工具调用" checked={form.show_tool_trace} onChange={(next) => update({ show_tool_trace: next })} />
               <SwitchRow
                 label="展示知识来源"
-                hint="关闭后，数字员工回答下方的「知识来源」引用卡片不再展示（回答正文里的 [1] 等引用标记不受影响）。"
+                hint="关闭后，数字员工回答下方的「知识来源」引用卡片不再展示，正文里的 [1] 等数字引用编号也一并隐藏。"
                 checked={form.show_knowledge_citations}
                 onChange={(next) => update({ show_knowledge_citations: next })}
               />

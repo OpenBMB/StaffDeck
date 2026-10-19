@@ -1872,6 +1872,50 @@ export function stripTrailingCitationSummary(content: string): string {
   return stripped;
 }
 
+/**
+ * 去掉正文里的数字引用编号（`[1]`、`[12]`、`[1][2]`）。
+ *
+ * 只在「隐藏知识来源」时使用：来源卡片不展示了，正文里孤零零的 `[1]` 就成了
+ * 指向不存在内容的悬空编号。代码块 / 行内代码里的 `[1]` 是数组下标或示例，
+ * 不能动；`[1](url)` 是 markdown 链接、`[1]: url` 是链接定义，也要保留。
+ */
+export function stripCitationMarkers(content: string): string {
+  if (!content || !content.includes('[')) return content;
+  // split 带捕获组时，奇偶下标正好区分「代码段」与「正文段」。
+  const segments = content.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/);
+  return segments
+    .map((segment, index) => (index % 2 === 1 ? segment : stripInlineCitationMarkers(segment)))
+    .join('');
+}
+
+const CITATION_MARKER_INLINE_PATTERN = /[ \t]*\[(\d{1,3})\](?![(:])/g;
+
+function stripInlineCitationMarkers(text: string): string {
+  if (!text.includes('[')) return text;
+  return text
+    .split('\n')
+    .map((line) => {
+      if (!line.includes('[')) return line;
+      const next = line.replace(CITATION_MARKER_INLINE_PATTERN, '');
+      // 只在真的删过标记的行上收尾空白，避免误伤 markdown 的硬换行缩进。
+      return next === line ? line : next.replace(/[ \t]+$/, '');
+    })
+    .join('\n');
+}
+
+/**
+ * 助手消息的可见正文：先去尾部「参考来源」清单，隐藏来源时再去掉正文编号。
+ *
+ * 顺序不能反 —— 先删 `[n]` 会让 `参考资料：[1] [2]` 变成只剩标题的残留行。
+ */
+export function messageVisibleContent(
+  content: string,
+  options: { hideCitations?: boolean } = {},
+): string {
+  const stripped = stripTrailingCitationSummary(content);
+  return options.hideCitations ? stripCitationMarkers(stripped) : stripped;
+}
+
 function citationLabelsInContent(content: string): Set<number> {
   const labels = new Set<number>();
   content.replace(/\[(\d+)\]/g, (_match, value: string) => {

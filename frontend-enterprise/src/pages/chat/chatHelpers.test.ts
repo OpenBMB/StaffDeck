@@ -15,10 +15,12 @@ import {
   knowledgeCitations,
   knowledgeCitationsHidden,
   messageAttachments,
+  messageVisibleContent,
   renderInlineMarkdown,
   scheduledDraftForMessage,
   shouldDeferPersistedEventToLiveStream,
   slotSubmissionText,
+  stripCitationMarkers,
   stripTrailingCitationSummary,
 } from './chatHelpers';
 
@@ -747,5 +749,63 @@ describe('knowledgeCitationsHidden（「知识来源」展示口径）', () => {
   it('分享访客始终不展示，与租户开关无关', () => {
     expect(knowledgeCitationsHidden({ shareMode: true, showKnowledgeCitations: true })).toBe(true);
     expect(knowledgeCitationsHidden({ shareMode: true, showKnowledgeCitations: false })).toBe(true);
+  });
+});
+
+describe('stripCitationMarkers（隐藏来源时正文编号一并去掉）', () => {
+  it('去掉行尾 / 行内 / 连续编号，顺带收掉前导空格', () => {
+    const content = [
+      '身高和体重确实都有要求[1]。',
+      '全园设备按区域分级适配[1][2]，具体以现场公告为准。',
+      '如有心脏不适等情况，也不能乘坐大型游乐设备。[3]',
+    ].join('\n');
+    expect(stripCitationMarkers(content)).toBe([
+      '身高和体重确实都有要求。',
+      '全园设备按区域分级适配，具体以现场公告为准。',
+      '如有心脏不适等情况，也不能乘坐大型游乐设备。',
+    ].join('\n'));
+  });
+
+  it('保留代码块与行内代码里的下标（不是引用编号）', () => {
+    const content = [
+      '取值见 `items[1]`：',
+      '',
+      '```python',
+      'print(items[1])',
+      '```',
+    ].join('\n');
+    expect(stripCitationMarkers(content)).toBe(content);
+  });
+
+  it('保留 markdown 链接与链接定义', () => {
+    const content = '[1](https://example.com) 和 [1]: https://example.com';
+    expect(stripCitationMarkers(content)).toBe(content);
+  });
+
+  it('不动四位以上的方括号数字（年份、编号）', () => {
+    expect(stripCitationMarkers('见 [2024] 年度报告')).toBe('见 [2024] 年度报告');
+  });
+});
+
+describe('messageVisibleContent（正文可见文本口径）', () => {
+  const content = [
+    'MOKU 乐园部分设备有身高限制[1]。',
+    '',
+    '参考来源：',
+    '',
+    '- [1] 乐园手册：乘坐须知',
+    '',
+    '参考资料：[1]',
+  ].join('\n');
+
+  it('展示来源时保留正文编号，只去掉尾部清单', () => {
+    expect(messageVisibleContent(content)).toBe('MOKU 乐园部分设备有身高限制[1]。');
+    expect(messageVisibleContent(content, { hideCitations: false }))
+      .toBe('MOKU 乐园部分设备有身高限制[1]。');
+  });
+
+  it('隐藏来源时正文编号与尾部清单一起去掉', () => {
+    expect(messageVisibleContent(content, { hideCitations: true }))
+      .toBe('MOKU 乐园部分设备有身高限制。');
   });
 });

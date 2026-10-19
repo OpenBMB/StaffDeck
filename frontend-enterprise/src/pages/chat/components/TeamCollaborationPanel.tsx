@@ -20,7 +20,7 @@ import {
   MarkdownMessage,
   harnessWorkspaceArtifacts,
   knowledgeCitations,
-  stripTrailingCitationSummary,
+  messageVisibleContent,
   traceDetails,
   traceSummary,
 } from '../chatHelpers';
@@ -314,7 +314,10 @@ export default function TeamCollaborationPanel({
     const traceLineSummary = traceSnapshot
       ? traceSummary(traceSnapshot.trace, traceLines)
       : null;
-    const streamReply = staffdeckDisplayText(stream?.content || '');
+    const streamReply = messageVisibleContent(
+      staffdeckDisplayText(stream?.content || ''),
+      { hideCitations },
+    );
     const showStreamReply = Boolean(
       streamReply
       && memberReplies.length === 0,
@@ -459,8 +462,9 @@ export default function TeamCollaborationPanel({
                       ...message,
                       role: 'assistant',
                     };
-                    const visibleContent = stripTrailingCitationSummary(
+                    const visibleContent = messageVisibleContent(
                       staffdeckDisplayText(message.content),
+                      { hideCitations },
                     );
                     const citations = knowledgeCitations(chatMessage, visibleContent);
                     const artifacts = harnessWorkspaceArtifacts(chatMessage);

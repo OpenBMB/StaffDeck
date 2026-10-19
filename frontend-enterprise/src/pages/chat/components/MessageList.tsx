@@ -11,10 +11,10 @@ import {
   isScheduledTaskPrompt,
   knowledgeCitations,
   messageAttachments,
+  messageVisibleContent,
   normalizeMessageText,
   placeQueuedMessagesLast,
   scheduledDraftForMessage,
-  stripTrailingCitationSummary,
   traceDetails,
   traceLineAllowed,
   traceSummary,
@@ -130,7 +130,9 @@ export default function MessageList({
             && (expandedTraceIds.includes(traceTurnId) || defaultExpanded),
           );
           const rawVisibleContent = staffdeckDisplayText(
-            item.role === 'assistant' ? stripTrailingCitationSummary(item.content) : item.content,
+            item.role === 'assistant'
+              ? messageVisibleContent(item.content, { hideCitations: hideKnowledgeCitations })
+              : item.content,
           );
           const visibleContent = normalizeMessageText(rawVisibleContent) ? rawVisibleContent : '';
           const citations = item.role === 'assistant' && !hideKnowledgeCitations
