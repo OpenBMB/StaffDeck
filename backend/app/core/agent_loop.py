@@ -563,29 +563,17 @@ class AgentLoop:
             )
             return
         if sink.streamed:
-            # 生成期已经真流式下发过正文（含决策 JSON 预览通道），这里不再重发；
-            # 只做一次对账：最终正文与已下发内容不一致时原地替换。
+            # 生成期已经真流式下发过正文，这里只做一次对账：最终正文与已下发
+            # 内容不一致时原地替换。（当前预览通道已关闭，此分支为防御保留。）
             sink.reconcile(response.reply)
         else:
-            # 无真流式可用的轮次（直出回复、固定话术、结构化结果）回退打字机节奏，
-            # 取代原先「整段一次性暴发」。整轮额外耗时以
-            # STREAM_TYPING_BUDGET_SECONDS 为上限，长回复自动加快单字间隔。
-            chunks = list(
-                self.response_generator.chunk_text(
-                    response.reply, chunk_size=STREAM_CHUNK_SIZE
-                )
-            )
-            interval = (
-                min(
-                    STREAM_CHUNK_INTERVAL_SECONDS,
-                    STREAM_TYPING_BUDGET_SECONDS / len(chunks),
-                )
-                if chunks
-                else 0.0
-            )
-            for index, chunk in enumerate(chunks):
-                if index:
-                    sleep(interval)
+            # 2026-10-19：回到最初的分片下发，不做节奏控制。后端匀速回放（
+            # 8 字/45ms）在前端看起来仍是一次性出现（传输/渲染又把分片合批了），
+            # 但那一步会白白多花最多 STREAM_TYPING_BUDGET_SECONDS(2.5s)，故去掉
+            # sleep/interval，只保留 8 字分片。
+            for chunk in self.response_generator.chunk_text(
+                response.reply, chunk_size=STREAM_CHUNK_SIZE
+            ):
                 event = self._stream_event(
                     "stream_delta",
                     chat_session,
