@@ -725,3 +725,42 @@ def test_small_candidate_shortcut_applies_to_document_route(fake_redis, monkeypa
     # 文档全选 → 桶候选同步变全 → 桶维短路级联触发，两级 LLM 全跳过
     assert "bucket_route_small_candidate_shortcut" in phases
     assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_0", "kbucket_1"]
+
+
+def test_single_candidate_shortcut_skips_document_llm(fake_redis, monkeypatch) -> None:
+    """候选文档唯一但 chunk 超过小候选阈值 → 单候选短路仍跳过 LLM 文档路由。
+
+    复现线上 51 chunk / 单文档卡在小候选阈值外的场景（08_plan_a_speedup 的
+    「加一条 candidate_count <= 1 → 直接选中」）。
+    """
+
+    monkeypatch.setattr(knowledge_service, "SMALL_CANDIDATE_CHUNK_LIMIT", 2)
+
+    def _forbidden(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("single-candidate shortcut must skip LLM document routing")
+
+    monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", _forbidden)
+    monkeypatch.setattr(
+        KnowledgeService, "_select_buckets_with_llm", lambda *a, **k: ["kbucket_0"]
+    )
+
+    with _test_session() as db:
+        _seed_ambiguous_fixture(db, document_count=1)
+        for index in (1, 2):
+            db.add(
+                KnowledgeChunk(
+                    tenant_id="tenant_demo",
+                    knowledge_base_id="kb_demo",
+                    document_id="kdoc_0",
+                    bucket_id="kbucket_0",
+                    chunk_index=index,
+                    content="补充段落",
+                )
+            )
+        db.commit()
+        response = _run_search(db, "员工手册")
+
+    phases = _phases(response)
+    assert "document_route_single_candidate_shortcut" in phases
+    assert "document_route_small_candidate_shortcut" not in phases
+    assert [document["id"] for document in response.selected_documents] == ["kdoc_0"]

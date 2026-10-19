@@ -8,8 +8,6 @@ OPERATION_EMPTY_RESPONSE_RETRIES: dict[str, int] = {
     "knowledge.bucket_route": 0,
     # 同上：抽取失败有模板兜底，空响应重试只会拉长尾延迟
     "sop.slot_extraction": 0,
-    # 预检索判定（bool 输出）：失败/空直接回退现有 LLM 决策链路，不值得重试
-    "knowledge.prefetch_judge": 0,
     # 入库两阶段：空响应重试会**整包重发**（bucketing 的 payload 就有 ~21K 字符），
     # 重试一次就是又一轮分钟级等待。两者都有确定性降级路径（见 JSON_REPAIR 注释）。
     # 不关掉这一项的话，重试轮数会被放大成 (json_repair+1)×(empty+1) 倍。
@@ -28,8 +26,6 @@ OPERATION_JSON_REPAIR_ATTEMPTS: dict[str, int] = {
     # 慢模型上一次修复重试就是十几秒，不值得（2026-09-09 实测抽取
     # 平均 40s 主要来自 json_attempt 串行重试）。
     "sop.slot_extraction": 0,
-    # 预检索判定：小 payload 控制面调用，失败回退现有链路，不修 JSON
-    "knowledge.prefetch_judge": 0,
     # 边条件离线编译（rq 异步）：一次编译覆盖整张图的条件边，失败保持自由文本
     # 即可（运行时回落 LLM），多轮修 JSON 只是白烧 token。
     "sop.edge_condition_compile": 1,
@@ -64,8 +60,6 @@ OPERATION_TIMEOUT_SECONDS: dict[str, float] = {
     "knowledge.document_route": 60.0,
     "knowledge.bucket_route": 60.0,
     "sop.slot_extraction": 30.0,
-    # 预检索判定在对话关键路径上：超时即回退现有链路（判定本身 1-2s 正常）
-    "knowledge.prefetch_judge": 10.0,
     "session.title": 30.0,
     "memory.capture": 30.0,
     # 离线编译跑在 rq worker 里、不在对话关键路径上，可以给足时间；但必须有
@@ -109,8 +103,6 @@ def operation_timeout_seconds(operation: str | None, default_seconds: float) -> 
 OPERATION_THINKING_MODE: dict[str, str] = {
     "knowledge.document_route": "disabled",
     "knowledge.bucket_route": "disabled",
-    # 纯 bool 判定，开思考纯亏（同 bucket_route 的实测结论）
-    "knowledge.prefetch_judge": "disabled",
 }
 
 

@@ -1,8 +1,9 @@
 """仅知识库数字员工确定性预检索（conversation 直查）测试。
 
-覆盖触发条件、窄场景边界（有技能/工具不介入、SOP 不介入、续轮不介入）
-与降级行为；集成行为（预填动作被 harness 消费、跳过首轮 LLM 决策）
-复用 test_sop_step_executor.py 的 HarnessTaskAgent 测试范式。
+覆盖触发条件、窄场景边界（有技能/工具不介入、SOP 不介入、续轮不介入）、
+确定性判定（寒暄词典是唯一闸门，不再调 LLM）与降级行为；集成行为
+（预填动作被 harness 消费、跳过首轮 LLM 决策）复用
+test_sop_step_executor.py 的 HarnessTaskAgent 测试范式。
 """
 
 from __future__ import annotations
@@ -15,22 +16,7 @@ from app.core.knowledge_prefetch import (
 )
 from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
 
-# 判定/预填事件名（TRACE_EVENT + "_judge" 需模块属性访问，见 test_judge_trace）
 import app.core.knowledge_prefetch as kf  # noqa: E402
-
-
-def _always_yes_judge(monkeypatch) -> None:
-    """patch 判定模型为恒 true（模拟判定通过），供聚焦其他逻辑的老用例使用。"""
-    from app.core import knowledge_prefetch as kf
-
-    class FakeJudge:
-        def __init__(self, _model: Any) -> None:
-            pass
-
-        def generate_json(self, _prompt: str, _payload: dict[str, Any]) -> dict[str, Any]:
-            return {"search": True}
-
-    monkeypatch.setattr(kf, "LLMClient", FakeJudge)
 
 
 def _descriptor(
@@ -76,14 +62,12 @@ def _requirement(
 # ---------------------------------------------------------------------------
 
 
-def test_prefills_knowledge_search_for_kb_only_conversation(monkeypatch) -> None:
-    _always_yes_judge(monkeypatch)
+def test_prefills_knowledge_search_for_kb_only_conversation() -> None:
     events: list[tuple[str, dict[str, Any]]] = []
     actions = plan_knowledge_prefill_actions(
         _requirement(),
         first_turn=True,
         trace_sink=lambda t, p: events.append((t, p)),
-        judge_model=object(),
     )
     assert len(actions) == 1
     action = actions[0]
@@ -93,18 +77,14 @@ def test_prefills_knowledge_search_for_kb_only_conversation(monkeypatch) -> None
     assert action["arguments"]["max_chunks"] == 8
     # 不带 knowledge_base_ids：invoker 默认取 TaskFrame 全部授权范围
     assert "knowledge_base_ids" not in action["arguments"]
-    # 判定事件在前，预填事件在后
-    assert [t for t, _ in events] == [
-        kf.TRACE_EVENT + "_judge",
-        kf.TRACE_EVENT,
-    ]
-    assert events[1][1]["query"] == "公司的年假政策是什么？"
+    # 判定已纯确定性：只写预填事件，不再有 _judge / _judge_error
+    assert [t for t, _ in events] == [kf.TRACE_EVENT]
+    assert events[0][1]["query"] == "公司的年假政策是什么？"
 
 
-def test_query_truncated_to_max_chars(monkeypatch) -> None:
-    _always_yes_judge(monkeypatch)
+def test_query_truncated_to_max_chars() -> None:
     long_message = "长" * 500
-    actions = plan_knowledge_prefill_actions(_requirement(message=long_message), judge_model=object())
+    actions = plan_knowledge_prefill_actions(_requirement(message=long_message))
     assert actions[0]["arguments"]["query"] == "长" * QUERY_MAX_CHARS
 
 
@@ -157,9 +137,8 @@ def test_skipped_when_tool_capability_present() -> None:
     assert plan_knowledge_prefill_actions(_requirement(manifest=manifest)) == []
 
 
-def test_file_and_unavailable_capabilities_do_not_block(monkeypatch) -> None:
+def test_file_and_unavailable_capabilities_do_not_block() -> None:
     """file 是附件读取（与预填正交）；不可用能力不参与判定。"""
-    _always_yes_judge(monkeypatch)
     manifest = CapabilityManifest(
         available=[
             _descriptor("knowledge_search"),
@@ -167,9 +146,7 @@ def test_file_and_unavailable_capabilities_do_not_block(monkeypatch) -> None:
             _descriptor("dead_skill", "general_skill", available=False),
         ]
     )
-    actions = plan_knowledge_prefill_actions(
-        _requirement(manifest=manifest), judge_model=object()
-    )
+    actions = plan_knowledge_prefill_actions(_requirement(manifest=manifest))
     assert len(actions) == 1
 
 
@@ -200,130 +177,42 @@ def test_skipped_for_tiny_message() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 判定层：寒暄词典快筛 + 轻量模型二元判定
+# 确定性判定：寒暄词典是唯一闸门（不再有 LLM judge）
 # ---------------------------------------------------------------------------
 
 
-def test_smalltalk_dictionary_blocks_prefill_without_model() -> None:
-    """纯寒暄（去标点/语气词后完全匹配）零成本拦截，不调判定模型。"""
-    calls: list[str] = []
+def test_smalltalk_dictionary_blocks_prefill() -> None:
+    """纯寒暄/纯礼貌语（去标点/语气词后完全匹配）零成本拦截。"""
 
-    class _NoCallModel:
-        def __init__(self, *_a: Any) -> None:
-            raise AssertionError("寒暄不应触发判定模型")
-
-    for msg in ("hi", "Hi!", "你好", "你好呀", "在吗？", "hello there", "哈喽~"):
-        assert plan_knowledge_prefill_actions(
-            _requirement(message=msg), judge_model=_NoCallModel
-        ) == []
+    for msg in (
+        "hi", "Hi!", "你好", "你好呀", "在吗？", "hello there",
+        "哈喽~", "哈喽", "你好哇", "谢谢", "谢谢啦", "辛苦了", "再见", "收到",
+    ):
+        assert plan_knowledge_prefill_actions(_requirement(message=msg)) == []
 
 
 def test_smalltalk_dictionary_never_prefix_matches() -> None:
-    """寒暄+真问题的混合消息不命中词典 → 走判定模型（验证 query 透传）。"""
-    from app.core import knowledge_prefetch as kf
+    """寒暄+真问题的混合消息不命中词典 → 照常预填，query 原样透传。"""
 
-    seen: list[dict[str, Any]] = []
-
-    class FakeClient:
-        def __init__(self, _model: Any) -> None:
-            pass
-
-        def generate_json(self, _prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
-            seen.append(payload)
-            return {"search": True}
-
-    monkey = __import__("pytest").MonkeyPatch()
-    monkey.setattr(kf, "LLMClient", FakeClient)
-    try:
-        actions = plan_knowledge_prefill_actions(
-            _requirement(message="你好，我想问下年假政策"),
-            judge_model=object(),
-        )
-    finally:
-        monkey.undo()
-    assert len(actions) == 1  # 判定 true → 预填
-    assert seen and seen[0]["user_message"] == "你好，我想问下年假政策"
-
-
-def test_judge_model_decision_gates_prefill() -> None:
-    """判定 false → 不预填；判定 true → 预填。"""
-    from app.core import knowledge_prefetch as kf
-
-    class FakeClient:
-        def __init__(self, _model: Any) -> None:
-            pass
-
-        def generate_json(self, _prompt: str, _payload: dict[str, Any]) -> dict[str, Any]:
-            return {"search": False}
-
-    monkey = __import__("pytest").MonkeyPatch()
-    monkey.setattr(kf, "LLMClient", FakeClient, raising=False)
-    try:
-        assert (
-            plan_knowledge_prefill_actions(
-                _requirement(), judge_model=object()
-            )
-            == []
-        )
-
-        class FakeYes:
-            def __init__(self, _model: Any) -> None:
-                pass
-
-            def generate_json(self, _prompt: str, _payload: dict[str, Any]) -> dict[str, Any]:
-                return {"search": True}
-
-        monkey.setattr(kf, "LLMClient", FakeYes, raising=False)
-        actions = plan_knowledge_prefill_actions(
-            _requirement(), judge_model=object()
-        )
-        assert len(actions) == 1
-    finally:
-        monkey.undo()
-
-
-def test_judge_failure_degrades_to_no_prefill() -> None:
-    """判定模型异常/不可用 → 不预填（回退现有 LLM 决策），绝不强制检索。"""
-    from app.core import knowledge_prefetch as kf
-
-    class BoomClient:
-        def __init__(self, _model: Any) -> None:
-            raise RuntimeError("no judge model")
-
-    # 传类本身（LLMClient(judge_model) 构造时抛错）
-    assert (
-        plan_knowledge_prefill_actions(_requirement(), judge_model=BoomClient)
-        == []
+    actions = plan_knowledge_prefill_actions(
+        _requirement(message="你好，我想问下年假政策")
     )
-    # 模型缺失同样不预填
-    assert plan_knowledge_prefill_actions(_requirement(), judge_model=None) == []
+    assert len(actions) == 1
+    assert actions[0]["arguments"]["query"] == "你好，我想问下年假政策"
 
 
-def test_judge_trace_records_decision() -> None:
-    from app.core import knowledge_prefetch as kf
+def test_non_smalltalk_always_prefills_without_llm() -> None:
+    """移除 LLM judge 后的核心契约：非寒暄消息一律预填，不依赖任何模型。
 
-    class FakeClient:
-        def __init__(self, _model: Any) -> None:
-            pass
+    复现线上现场：'那身高体重有要求吗???'（追问/指代句）曾被 judge 判 no
+    而退回一整轮决策；现在应直接预填。
+    """
 
-        def generate_json(self, _prompt: str, _payload: dict[str, Any]) -> dict[str, Any]:
-            return {"search": True}
-
-    monkey = __import__("pytest").MonkeyPatch()
-    monkey.setattr(kf, "LLMClient", FakeClient, raising=False)
-    events: list[tuple[str, dict[str, Any]]] = []
-    try:
-        plan_knowledge_prefill_actions(
-            _requirement(),
-            judge_model=object(),
-            trace_sink=lambda t, p: events.append((t, p)),
-        )
-    finally:
-        monkey.undo()
-    judge_events = [
-        p for t, p in events if t == kf.TRACE_EVENT + "_judge"
-    ]
-    assert judge_events and judge_events[0]["needs_search"] is True
+    assert not hasattr(kf, "_judge_needs_search")  # 判定器已移除
+    for msg in ("那身高体重有要求吗???", "有什么娱乐设施", "项目在哪", "现在几点了"):
+        actions = plan_knowledge_prefill_actions(_requirement(message=msg))
+        assert len(actions) == 1, msg
+        assert actions[0]["arguments"]["query"] == msg
 
 
 def test_degrades_silently_on_exception() -> None:
@@ -337,14 +226,12 @@ def test_degrades_silently_on_exception() -> None:
     assert plan_knowledge_prefill_actions(_Boom()) == []
 
 
-def test_trace_sink_failure_does_not_block_prefill(monkeypatch) -> None:
-    _always_yes_judge(monkeypatch)
-
+def test_trace_sink_failure_does_not_block_prefill() -> None:
     def _broken_sink(topic: str, payload: dict[str, Any]) -> None:
         raise RuntimeError("sink down")
 
     actions = plan_knowledge_prefill_actions(
-        _requirement(), trace_sink=_broken_sink, judge_model=object()
+        _requirement(), trace_sink=_broken_sink
     )
     assert len(actions) == 1
 
@@ -358,17 +245,7 @@ def test_harness_conversation_prefetch_executes_before_first_llm_call(
     monkeypatch,
 ) -> None:
     from app.core import harness_agent as harness_agent_module
-    from app.core import knowledge_prefetch as kf
     from app.db.models import ModelConfig
-
-    class FakeJudgeClient:
-        def __init__(self, _model: Any) -> None:
-            pass
-
-        def generate_json(self, _prompt: str, _payload: dict[str, Any]) -> dict[str, Any]:
-            return {"search": True}  # 判定需要检索
-
-    monkeypatch.setattr(kf, "LLMClient", FakeJudgeClient)
 
     llm_calls: list[dict[str, Any]] = []
 
@@ -419,7 +296,7 @@ def test_harness_conversation_prefetch_executes_before_first_llm_call(
         trace_sink=lambda t, p: trace_events.append((t, p)),
     )
 
-    # 预填检索先执行，LLM 首轮直接基于证据收尾：仅 1 次 LLM 调用
+    # 预填检索先执行，LLM 首轮直接基于证据收尾：整条链路仅 1 次 LLM 调用
     assert result.status == "completed"
     assert result.reply_fragment == "年假政策如下……"
     assert len(llm_calls) == 1

@@ -220,11 +220,11 @@ class HarnessTaskAgent:
         # 仅知识库数字员工的确定性直查：新帧首轮直接预填 knowledge_search，
         # 模型第一次被调用时检索结果已在 transcript 里，省掉「决策调检索」
         # 那一整轮 LLM（仅 conversation kind 且无技能/工具能力时介入）。
+        # 判定为纯确定性：仅民间词典拦寒暄，其余一律预填（不再调 LLM 判「要不要查」）。
         knowledge_prefill = plan_knowledge_prefill_actions(
             requirement,
             first_turn=not transcript and not evidence_results,
             trace_sink=trace_sink,
-            judge_model=lightweight_model_config or model_config,
         )
         if knowledge_prefill:
             pending_actions.extend(
