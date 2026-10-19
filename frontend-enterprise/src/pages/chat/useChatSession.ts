@@ -39,7 +39,7 @@ import {
   visibleChatEmployees,
 } from '@/employee';
 import { notify } from '@/components/ui/app-toast';
-import { knowledgeCitationsHidden } from './chatHelpers';
+import { freeModelNotice, knowledgeCitationsHidden } from './chatHelpers';
 import { useI18n } from '@/i18n';
 import type {
   AgentProfileRead,
@@ -637,11 +637,14 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const showModelSetupNotice = !shareMode && !modelConfigsLoading && !modelConfigsLoadError && !selectedModelConfig && !displayedAgentFreeModel;
   const modelSetupNoticeText = t('当前账号还没有可用模型，发送消息前请先完成模型配置。');
   // 免费模式提示只对「自己没有可用模型」的用户出现：配了模型就走自己的，不必提醒。
-  const freeModelNoticeText = displayedAgentFreeModel && !selectedModelConfig
-    ? `你还没有自己的模型，发送后将使用「${displayedAgent ? employeeDisplayName(displayedAgent) : '该员工'}」的免费模型（每人每天 10 问${
-        typeof displayedAgent?.free_model_remaining === 'number' ? `，今日剩余 ${displayedAgent.free_model_remaining} 问` : ''
-      }）。`
-    : '';
+  // 分享访客不提醒：模型由分享人的配置锁定，跟访客自己的模型/额度无关。
+  const freeModelNoticeText = freeModelNotice({
+    shareMode,
+    freeModelEnabled: displayedAgentFreeModel,
+    hasOwnModel: Boolean(selectedModelConfig),
+    agentName: displayedAgent ? employeeDisplayName(displayedAgent) : undefined,
+    remaining: displayedAgent?.free_model_remaining,
+  });
 
   useEffect(() => {
     if (!auth || !displayedAgent?.id) {
@@ -923,6 +926,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   }, [tenantId]);
 
   useEffect(() => {
+    // 分享访客不弹：模型由分享人的配置锁定，访客没有可配置的模型
+    if (shareMode) return;
     // 花名册未加载完时不判断：此时 displayedAgent 为空，免费标记读不到，会误弹对话框
     if (!auth || !agentsLoaded || modelConfigsLoading || modelConfigsLoadError || selectedModelConfig) return;
     // 免费员工不弹模型配置对话框：无模型也能对话（后端走全局免费模型）
@@ -931,7 +936,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     const quickStartSeen = window.localStorage.getItem(QUICK_START_SEEN_KEY);
     if (!onboardingSeen || !quickStartSeen) return;
     setModelSetupOpen(true);
-  }, [auth, agentsLoaded, modelConfigsLoadError, modelConfigsLoading, selectedModelConfig, displayedAgent]);
+  }, [auth, agentsLoaded, modelConfigsLoadError, modelConfigsLoading, selectedModelConfig, displayedAgent, shareMode]);
 
   const toggleTrace = useCallback((turnId: string, isExpanded = false) => {
     if (isExpanded) {

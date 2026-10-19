@@ -10,6 +10,7 @@ import {
   a2uiFormForMessage,
   canRateMessage,
   formatTraceDuration,
+  freeModelNotice,
   harnessEventTraceLine,
   harnessWorkspaceArtifacts,
   knowledgeCitations,
@@ -749,6 +750,34 @@ describe('knowledgeCitationsHidden（「知识来源」展示口径）', () => {
   it('分享访客始终不展示，与租户开关无关', () => {
     expect(knowledgeCitationsHidden({ shareMode: true, showKnowledgeCitations: true })).toBe(true);
     expect(knowledgeCitationsHidden({ shareMode: true, showKnowledgeCitations: false })).toBe(true);
+  });
+});
+
+describe('freeModelNotice（免费模型提示口径）', () => {
+  const base = {
+    freeModelEnabled: true,
+    hasOwnModel: false,
+    agentName: 'AI G.O',
+    remaining: 7,
+  };
+
+  it('免费员工 + 访客没有自己的模型时才提示，并带上今日剩余', () => {
+    expect(freeModelNotice(base))
+      .toBe('你还没有自己的模型，发送后将使用「AI G.O」的免费模型（每人每天 10 问，今日剩余 7 问）。');
+  });
+
+  it('分享访客一律不提示：模型由分享人的配置锁定', () => {
+    expect(freeModelNotice({ ...base, shareMode: true })).toBe('');
+  });
+
+  it('自己配了模型 / 员工不是免费员工时不提示', () => {
+    expect(freeModelNotice({ ...base, hasOwnModel: true })).toBe('');
+    expect(freeModelNotice({ ...base, freeModelEnabled: false })).toBe('');
+  });
+
+  it('拿不到剩余问数时省略该句', () => {
+    expect(freeModelNotice({ ...base, remaining: null }))
+      .toBe('你还没有自己的模型，发送后将使用「AI G.O」的免费模型（每人每天 10 问）。');
   });
 });
 

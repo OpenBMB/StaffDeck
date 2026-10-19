@@ -42,10 +42,10 @@ function jsonResponse(body: unknown): Response {
   } as Response;
 }
 
-function stubShareFetch() {
+function stubShareFetch(agent: AgentProfileRead = shareAgent) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.includes('/api/chat/agents')) return jsonResponse([shareAgent]);
+    if (url.includes('/api/chat/agents')) return jsonResponse([agent]);
     if (url.includes('/api/chat/sessions')) return jsonResponse([shareSession]);
     if (url.includes('/api/chat/')) return jsonResponse([]);
     if (url.includes('/api/enterprise/')) return jsonResponse([]);
@@ -104,5 +104,22 @@ describe('useChatSession shareMode send guard', () => {
 
     const urls = fetchMock.mock.calls.map((call) => String(call[0]));
     expect(urls.some((url) => url.includes('/api/chat/stream'))).toBe(true);
+  });
+
+  it('免费员工也不向分享访客提示「你还没有自己的模型」', async () => {
+    const freeAgent = {
+      ...shareAgent,
+      free_model_enabled: true,
+      free_model_remaining: 7,
+    } as unknown as AgentProfileRead;
+    stubShareFetch(freeAgent);
+    const { result } = renderShareChatSession();
+
+    await waitFor(() => {
+      expect(result.current.displayedAgent?.id).toBe('agent-share-1');
+    }, { timeout: 3000 });
+
+    // 分享链接里的模型在创建分享时已锁定，与访客自己的模型/免费额度无关
+    expect(result.current.freeModelNoticeText).toBe('');
   });
 });

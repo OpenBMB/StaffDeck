@@ -1812,6 +1812,29 @@ export function knowledgeCitationsHidden(options: {
   return options.showKnowledgeCitations === false;
 }
 
+/**
+ * 输入框上方「正在使用免费模型」的提示文案，空串表示不展示。
+ *
+ * 分享访客一律不展示：分享链接里的模型在创建分享时就已锁定（后端在对话链路
+ * 强制注入分享人的模型），访客既没有自己的模型也不需要，提示只会让人以为
+ * 自己的额度被扣。
+ */
+export function freeModelNotice(options: {
+  shareMode?: boolean;
+  freeModelEnabled?: boolean;
+  hasOwnModel?: boolean;
+  agentName?: string;
+  remaining?: number | null;
+}): string {
+  if (options.shareMode) return '';
+  if (!options.freeModelEnabled || options.hasOwnModel) return '';
+  const agentName = options.agentName || '该员工';
+  const remaining = typeof options.remaining === 'number'
+    ? `，今日剩余 ${options.remaining} 问`
+    : '';
+  return `你还没有自己的模型，发送后将使用「${agentName}」的免费模型（每人每天 10 问${remaining}）。`;
+}
+
 export function traceSummary(trace: TurnTrace, lines: TraceLine[]): { text: string; state: TraceLine['state'] } {
   if (trace.completedAt) {
     if (lines.some((line) => line.state === 'failed')) {
