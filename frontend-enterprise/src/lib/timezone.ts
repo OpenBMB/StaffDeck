@@ -31,6 +31,26 @@ export function formatClientDateTime(value?: string, emptyText = '-'): string {
 }
 
 /**
+ * 紧凑的「月/日 时:分」（如 `10/19 16:34`），给分享有效期这类窄位置用。
+ *
+ * 必须走 `parseBackendDateTime`：后端是 naive UTC，`new Date('...T08:34:00')`
+ * 会按本地时间解析，东八区下整体早 8 小时，把「今天 16:34 到期」显示成 08:34。
+ */
+export function formatClientMonthDayTime(value?: string, emptyText = '-'): string {
+  if (!value) return emptyText;
+  const date = parseBackendDateTime(value);
+  if (Number.isNaN(date.getTime())) return emptyText;
+  return new Intl.DateTimeFormat(getDateLocale(), {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: getClientTimeZone(),
+  }).format(date);
+}
+
+/**
  * 只取日期部分（`YYYY/M/D`）的本地化格式化。
  *
  * 替代各处 `value.slice(0, 10)` 的写法：后端存的是 naive UTC，直接截字符串会把

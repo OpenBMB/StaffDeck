@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatClientDate, formatClientDateTime, parseBackendDateTime } from './timezone';
+import {
+  formatClientDate,
+  formatClientDateTime,
+  formatClientMonthDayTime,
+  parseBackendDateTime,
+} from './timezone';
 
 describe('parseBackendDateTime', () => {
   it('treats naive ISO timestamps as UTC instead of local time', () => {
@@ -37,6 +42,41 @@ describe('formatClientDateTime', () => {
   it('falls back to the empty text for missing values', () => {
     expect(formatClientDateTime(undefined)).toBe('-');
     expect(formatClientDateTime('bad', '')).toBe('');
+  });
+});
+
+describe('formatClientMonthDayTime', () => {
+  it('renders a naive UTC timestamp as local month/day + hh:mm', () => {
+    const expected = new Intl.DateTimeFormat('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }).format(new Date(Date.UTC(2026, 9, 19, 8, 34, 0)));
+    expect(formatClientMonthDayTime('2026-10-19T08:34:00')).toBe(expected);
+  });
+
+  it('does not shift the clock backwards by the UTC offset (分享到期时间回归)', () => {
+    // 回归：分享页原先 `new Date('...T08:34:00')` 按本地时间解析，东八区显示 08:34
+    // 而实际到期是本地 16:34。这里断言东八区下的具体呈现。
+    const clientTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (clientTz === 'Asia/Shanghai') {
+      expect(formatClientMonthDayTime('2026-10-19T08:34:00')).toBe('10/19 16:34');
+    }
+  });
+
+  it('keeps timestamps that already carry a timezone suffix', () => {
+    expect(formatClientMonthDayTime('2026-10-19T08:34:00Z'))
+      .toBe(formatClientMonthDayTime('2026-10-19T08:34:00'));
+    expect(formatClientMonthDayTime('2026-10-19T16:34:00+08:00'))
+      .toBe(formatClientMonthDayTime('2026-10-19T08:34:00'));
+  });
+
+  it('falls back to the empty text for missing values', () => {
+    expect(formatClientMonthDayTime(undefined)).toBe('-');
+    expect(formatClientMonthDayTime('bad', '')).toBe('');
   });
 });
 

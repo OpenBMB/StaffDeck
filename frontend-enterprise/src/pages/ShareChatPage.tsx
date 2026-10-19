@@ -6,6 +6,7 @@ import { api } from '@/api/client';
 import { setEnterpriseAuthOverride, type EnterpriseAuthSession } from '@/auth';
 import EmployeeAvatar from '@/components/EmployeeAvatar';
 import { cn } from '@/lib/utils';
+import { formatClientMonthDayTime } from '@/lib/timezone';
 
 import { CHAT_HEADER_ACTIONS_CLASS, CHAT_MAIN_CLASS } from './chat/chatPageStyles';
 import Composer from './chat/components/Composer';
@@ -182,12 +183,6 @@ function ShareFallbackState({ children }: { children: React.ReactNode }) {
 }
 
 function formatExpiry(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
+  // 后端 expires_at 是 naive UTC，直接用 new Date 会按本地时间解析（东八区早 8 小时）
+  return formatClientMonthDayTime(value, value);
 }

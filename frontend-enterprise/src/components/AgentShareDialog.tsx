@@ -15,6 +15,7 @@ import { api, TENANT_ID } from '@/api/client';
 import { employeeDisplayName } from '@/employee';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { shareHostFromEnv, shareUrlForToken } from '@/lib/share-host';
+import { formatClientMonthDayTime } from '@/lib/timezone';
 import type { AgentProfileRead, ModelConfigRead } from '@/types';
 
 type ShareTtl = '30m' | '2h' | 'forever';
@@ -231,12 +232,6 @@ export default function AgentShareDialog({
 }
 
 function formatDate(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
+  // 后端 created/expires 是 naive UTC，直接 new Date 会按本地时间解析（东八区早 8 小时）
+  return formatClientMonthDayTime(value, value);
 }
