@@ -67,7 +67,7 @@ def _normalize_smalltalk(message: str) -> str:
     return text.strip()
 
 
-def _is_smalltalk(message: str) -> bool:
+def is_smalltalk(message: str) -> bool:
     return _normalize_smalltalk(message) in _SMALLTALK_EXACT
 
 
@@ -106,7 +106,7 @@ def plan_knowledge_prefill_actions(
             return []
         # 唯一判定：寒暄词典快筛（0 成本；只做去语气词后的完全匹配，
         # 「你好，我想问年假」这类混合消息不会命中）→ 其余一律预填。
-        if _is_smalltalk(query):
+        if is_smalltalk(query):
             return []
 
         action = {

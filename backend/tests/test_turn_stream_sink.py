@@ -377,7 +377,7 @@ def _synthesize(engine: HarnessV2Engine, session: ChatSession) -> str:
     )
 
 
-def test_synthesize_reply_streams_deltas_and_returns_full_text(loop_db, stub_llm):
+def test_synthesize_reply_uses_blocking_generate_without_live_deltas(loop_db, stub_llm):
     stub_llm.script = ["甲", "乙", "丙"]
     sink = _RecordedSink()
     engine = _engine_with_stub(loop_db, sink)
@@ -386,13 +386,13 @@ def test_synthesize_reply_streams_deltas_and_returns_full_text(loop_db, stub_llm
     reply = _synthesize(engine, session)
 
     assert reply == "甲乙丙"
-    assert sink.deltas == ["甲", "乙", "丙"]
+    # 2026-10-19：综合生成不再走预览通道下发增量，正文由终局 8字/45ms 匀速回放。
+    assert sink.deltas == []
     assert sink.statuses == [("preparing", "正在生成回复", {})]
-    # 综合生成是本轮权威正文：先作废决策 JSON 预览通道的残留，避免两段接在一起。
-    assert sink.resets == 1
+    assert sink.resets == 0
 
 
-def test_synthesize_reply_replaces_partial_text_on_midstream_failure(loop_db, stub_llm):
+def test_synthesize_reply_returns_failure_without_streaming_partial(loop_db, stub_llm):
     stub_llm.script = ["半截正文"]
     stub_llm.error = RuntimeError("连接中断")
     sink = _RecordedSink()
@@ -403,8 +403,9 @@ def test_synthesize_reply_replaces_partial_text_on_midstream_failure(loop_db, st
 
     assert "模型调用失败" in reply
     assert "半截正文" not in reply
-    # 已下发的半截正文被原地替换，不会与报错拼在一起。
-    assert sink.replaced == [reply]
+    # 非流式生成：没有任何增量下发，也就不需要原地替换。
+    assert sink.deltas == []
+    assert sink.replaced == []
 
 
 def test_synthesize_reply_uses_blocking_generate_without_sink(loop_db, stub_llm):

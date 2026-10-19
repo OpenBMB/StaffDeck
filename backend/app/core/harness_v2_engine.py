@@ -22,12 +22,14 @@ from app.core.harness_agent import (
     HarnessExecutionCancelled,
     HarnessExecutionFenced,
     HarnessTaskAgent,
+    _trace_capability_result,
 )
 from app.core.harness_attachments import (
     materialize_task_attachments,
     validated_task_image_payloads,
 )
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
+from app.core.knowledge_prefetch import is_smalltalk
 from app.core.published_deliverables import list_published_deliverables
 from app.core.harness_session_lease import (
     HarnessSessionLeaseLost,
@@ -216,6 +218,43 @@ def _capability_summary_text(
     if not lines:
         return ""
     return "\n".join(lines)
+
+
+# 遇到这些 kind 说明不只知识库（有技能/工具要模型自己编排）→ 不走直答工作流。
+# 与 app/core/knowledge_prefetch.py 的 _BLOCKING_KINDS 同口径。
+_KNOWLEDGE_WORKFLOW_BLOCKING_KINDS = {"general_skill", "tool"}
+
+
+def _is_knowledge_workflow_frame(
+    frame: Any,
+    manifest: Any,
+    *,
+    slash_command: Any,
+    has_attachments: bool,
+) -> bool:
+    """判断 conversation 帧是否可走「仅知识库」确定性工作流。
+
+    条件：conversation + answer_only + 无斜杠命令 + 无附件；可用能力里没有
+    general_skill/tool（即只有知识库检索可用）；knowledge_search 在授权清单里。
+    不满足一律返回 False，回退标准 Harness 循环。
+    """
+
+    if frame.kind != "conversation":
+        return False
+    if str(getattr(frame, "decision", "") or "") != "answer_only":
+        return False
+    if slash_command is not None or has_attachments:
+        return False
+    if manifest is None or "knowledge_search" not in manifest.allowed_names():
+        return False
+    for item in manifest.available:
+        if (
+            getattr(item, "available", False)
+            and str(getattr(item, "kind", "") or "")
+            in _KNOWLEDGE_WORKFLOW_BLOCKING_KINDS
+        ):
+            return False
+    return True
 
 
 def _direct_reply_answer(
@@ -499,31 +538,185 @@ class HarnessV2Engine:
         *,
         capability_summary: str | None = None,
     ) -> str:
-        """direct_reply / capability_intro 直出回复（流式轮次真流式下发）。"""
+        """direct_reply / capability_intro 直出回复。
 
-        stream = self.turn_stream
-        if stream is None:
-            return _direct_reply_answer(
-                message,
-                persona_prompt,
-                memory_context,
-                conversation_context,
-                answer_model,
-                capability_summary=capability_summary,
-            )
+        2026-10-19：不再走真流式预览通道（预览会让正文跟随上游分包抖动），
+        改为一次性生成，由 `_handle_turn_stream_v2` 的 8 字/45ms 匀速回放下发。
+        """
+
         self._emit_stream_status("preparing", "正在生成回复")
-        parts: list[str] = []
-        for chunk in _direct_reply_answer_stream(
+        return _direct_reply_answer(
             message,
             persona_prompt,
             memory_context,
             conversation_context,
             answer_model,
             capability_summary=capability_summary,
-        ):
-            parts.append(chunk)
-            self._emit_stream_delta(chunk)
-        return "".join(parts).strip()
+        )
+
+    def _run_knowledge_workflow(
+        self,
+        request: ChatTurnRequest,
+        session: ChatSession,
+        row: HarnessTaskFrameRecord,
+        frame: Any,
+        requirement: Any,
+        invoker: HarnessCapabilityInvoker,
+        model_config: Any,
+        memory_context: list[dict[str, object]],
+        conversation_context: dict[str, Any] | None,
+        trace: Any,
+    ) -> TaskExecutionResult | None:
+        """仅知识库员工的确定性工作流：寒暄直回 / 代码直调检索 → 一次 LLM 作答。
+
+        不走 Harness 决策循环：检索由代码直接调 knowledge_search（复用
+        HarnessCapabilityInvoker 的授权/版本/Laya 路由），随后把证据与 prompt
+        拼给 ResponseGenerator 一次生成正文。任何环节异常返回 None，由调用方
+        降级回标准 Harness 路径（与 _run_direct_reply_frame 同约定）。
+        """
+
+        message = str(requirement.source_user_message or "").strip()
+        persona_prompt = self.owner._get_persona_prompt(
+            request.tenant_id, session.agent_id
+        )
+        try:
+            # 1) 寒暄：不检索，直接社交回复（0 检索 + 1 次 LLM）
+            if is_smalltalk(message):
+                reply = self._answer_direct_reply(
+                    message,
+                    persona_prompt,
+                    memory_context,
+                    conversation_context,
+                    model_config,
+                )
+                trace("knowledge_workflow_smalltalk", {"query": message})
+                return TaskExecutionResult(
+                    task_frame_id=row.task_id,
+                    status="completed",
+                    reply_fragment=reply,
+                    task_summary="知识库工作流：寒暄直回。",
+                    action_count=1,
+                )
+
+            # 2) 代码直调检索（不走 LLM 决策轮）
+            search_result = invoker.invoke(
+                "knowledge_search",
+                {"query": message[:200], "max_chunks": 8},
+            )
+            if not isinstance(search_result, dict) or search_result.get("success") is not True:
+                trace(
+                    "knowledge_workflow_search_failed",
+                    {
+                        "query": message,
+                        "error": (search_result or {}).get("error")
+                        if isinstance(search_result, dict)
+                        else None,
+                    },
+                )
+                return None
+            data = search_result.get("data")
+            # data 被大 payload 机制换成沙箱文件指针时拿不到证据 → 降级标准路径
+            if not isinstance(data, dict) or not (
+                isinstance(data.get("chunks"), list)
+                or isinstance(data.get("evidence_pack"), list)
+            ):
+                trace("knowledge_workflow_payload_unusable", {"query": message})
+                return None
+            citations = list(search_result.get("citations") or [])
+            # 与 Harness 路径同口径的观测事件：诊断脚本/会话耗时投影靠
+            # harness_tool_completed.result.route_phases 扫描路由命中。
+            trace(
+                "harness_tool_completed",
+                {
+                    "iteration": 1,
+                    "tool_name": "knowledge_search",
+                    "success": True,
+                    "error": None,
+                    "result": _trace_capability_result("knowledge_search", search_result),
+                    "query": message[:120],
+                    "workflow": "knowledge_direct",
+                },
+            )
+
+            # 3) 一次 LLM：证据 + prompt 直接出正文（复用 ResponseGenerator
+            #    的 retrieved_knowledge / knowledge_citation_hints 拼装）
+            step_result = StepAgentResult(knowledge_results=[dict(data)])
+            router_decision = turn_plan_router_decision(
+                TurnPlan(
+                    decision="answer_only",
+                    task_frames=[frame],
+                    user_intent=frame.user_intent,
+                )
+            )
+            reply = self._generate_knowledge_workflow_answer(
+                message,
+                session,
+                router_decision,
+                step_result,
+                model_config,
+                persona_prompt,
+                memory_context,
+                conversation_context,
+            )
+            trace(
+                "knowledge_workflow_completed",
+                {
+                    "query": message,
+                    "chunk_count": search_result.get("chunk_count"),
+                    "route_phases": search_result.get("route_phases"),
+                },
+            )
+            return TaskExecutionResult(
+                task_frame_id=row.task_id,
+                status="completed",
+                reply_fragment=reply,
+                citations=citations,
+                evidence_results=[dict(data)],
+                task_summary="知识库工作流：代码直调检索后一次作答。",
+                action_count=2,
+            )
+        except Exception as exc:  # noqa: BLE001 - 一律降级标准 Harness
+            if self.turn_stream is not None:
+                self.turn_stream.reset()
+            trace(
+                "knowledge_workflow_fallback",
+                {"query": message, "reason": str(exc)[:300]},
+            )
+            return None
+
+    def _generate_knowledge_workflow_answer(
+        self,
+        message: str,
+        session: ChatSession,
+        router_decision: Any,
+        step_result: StepAgentResult,
+        model_config: Any,
+        persona_prompt: str | None,
+        memory_context: list[dict[str, object]],
+        conversation_context: dict[str, Any] | None,
+    ) -> str:
+        """知识工作流的唯一一次作答调用。
+
+        2026-10-19：改回非流式生成（预览通道跟随上游分包会抖），正文由
+        终局 8 字/45ms 匀速回放。
+        """
+
+        arguments = (
+            message,
+            session,
+            None,
+            router_decision,
+            step_result,
+            None,
+            model_config,
+            persona_prompt,
+            memory_context,
+            conversation_context,
+            None,
+        )
+        # 2026-10-19：知识工作流也改回非流式生成，正文交给终局匀速回放。
+        self._emit_stream_status("preparing", "正在整理知识答案")
+        return self.owner.response_generator.generate(*arguments)
 
     def _synthesize_reply(
         self,
@@ -540,8 +733,8 @@ class HarnessV2Engine:
     ) -> str:
         """本轮最终回复的综合生成。
 
-        流式轮次改用 ``generate_stream`` 边收边发（首字延迟 = TTFT，而不是整轮
-        耗时）；非流式轮次保持原 ``generate`` 调用，行为完全不变。
+        2026-10-19：不再走真流式预览通道，统一一次性生成，正文由
+        ``_handle_turn_stream_v2`` 的 8 字/45ms 匀速回放下发。
         """
 
         arguments = (
@@ -557,31 +750,10 @@ class HarnessV2Engine:
             conversation_context,
             execution_payloads,
         )
-        stream = self.turn_stream
-        if stream is None:
-            return self.owner.response_generator.generate(*arguments)
-        # 综合生成的正文是本轮权威答案：先丢弃决策 JSON 预览通道的残留（多帧轮次
-        # 里那段文本属于某个中间帧），否则两段内容会接在一起。
-        stream.reset()
+        # 2026-10-19：不再走真流式预览通道（预览会让正文跟随上游分包抖动），
+        # 改为一次性生成，正文由 _handle_turn_stream_v2 的 8 字/45ms 匀速回放。
         self._emit_stream_status("preparing", "正在生成回复")
-        parts: list[str] = []
-        try:
-            for chunk in self.owner.response_generator.generate_stream(*arguments):
-                parts.append(chunk)
-                self._emit_stream_delta(chunk)
-        except Exception as exc:  # noqa: BLE001 - 兜底口径与 generate() 对齐
-            from app.core.response_generator import (
-                format_runtime_failure_reply,
-                model_failure_suggestion,
-            )
-
-            failure = format_runtime_failure_reply(
-                "模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc)
-            )
-            # 生成中途断流：已下发的半截正文作废，原地换成报错文案。
-            stream.replace(failure)
-            return failure
-        return "".join(parts)
+        return self.owner.response_generator.generate(*arguments)
 
     def run(self, request: ChatTurnRequest) -> ChatTurnResponse:
         session_request = _with_recoverable_first_session(request)
@@ -1054,6 +1226,7 @@ class HarnessV2Engine:
                     if planner_model_config is not model_config
                     else None
                 ),
+                conversation_context=conversation_context,
             )
             remaining_turn_actions = max(
                 0,
@@ -1388,6 +1561,7 @@ class HarnessV2Engine:
         prior_frame_results: list[dict[str, Any]],
         max_actions: int,
         lightweight_model_config: Any = None,
+        conversation_context: dict[str, Any] | None = None,
     ) -> tuple[TaskExecutionResult, StepAgentResult]:
         # 动作预算一律走配置（agent.harness_max_actions / UIConfig.agent_loop_max_actions，
         # 调用方按 remaining_turn_actions 逐帧递减传入），不按帧类型降档——
@@ -1578,33 +1752,57 @@ class HarnessV2Engine:
                 knowledge_laya_router=knowledge_laya_router,
             )
 
-            result = self.task_agent.run(
-                requirement,
-                model_config,
-                invoker.invoke,
-                max_actions=remaining_actions,
-                trace_sink=trace,
-                is_cancelled=lambda: self._is_cancelled(request, session),
-                image_payloads=image_payloads,
-                step_deadline_monotonic=step_deadline_monotonic,
-                step_timeout_seconds=step_timeout_seconds,
-                checkpoint=loop_checkpoint,
-                lightweight_model_config=lightweight_model_config,
-                edge_condition_specs=edge_condition_specs,
-                laya_router=laya_router,
-                # A2UI：只有「本帧就是当前用户消息的落点」时才认表单提交，
-                # 否则同一轮里被唤醒的其它帧会共用一份不属于它的槽位值。
-                slot_submission=(
-                    request.slot_submission
-                    if row.source_turn_id == self.user_message_id
-                    else None
-                ),
-                # 流式轮次：决策 JSON 里的 finish 正文边生成边下发（预览通道）。
-                # 最终正文仍以解析结果为准，收尾由 TurnStreamSink.reconcile 对账。
-                reply_preview_sink=(
-                    self._emit_stream_delta if self.turn_stream is not None else None
-                ),
-            )
+            # 仅知识库 conversation 帧：走确定性工作流（寒暄直回 / 代码直调
+            # 检索 → 一次作答），不进入 Harness 决策循环。任何环节异常由工作流
+            # 内部返回 None，自动降级到下面的标准路径。
+            knowledge_workflow_result = None
+            if _is_knowledge_workflow_frame(
+                frame,
+                manifest,
+                slash_command=self.slash_command,
+                has_attachments=bool(attachment_descriptors or image_payloads),
+            ):
+                knowledge_workflow_result = self._run_knowledge_workflow(
+                    request,
+                    session,
+                    row,
+                    frame,
+                    requirement,
+                    invoker,
+                    model_config,
+                    memory_context,
+                    conversation_context,
+                    trace,
+                )
+            if knowledge_workflow_result is not None:
+                result = knowledge_workflow_result
+            else:
+                result = self.task_agent.run(
+                    requirement,
+                    model_config,
+                    invoker.invoke,
+                    max_actions=remaining_actions,
+                    trace_sink=trace,
+                    is_cancelled=lambda: self._is_cancelled(request, session),
+                    image_payloads=image_payloads,
+                    step_deadline_monotonic=step_deadline_monotonic,
+                    step_timeout_seconds=step_timeout_seconds,
+                    checkpoint=loop_checkpoint,
+                    lightweight_model_config=lightweight_model_config,
+                    edge_condition_specs=edge_condition_specs,
+                    laya_router=laya_router,
+                    # A2UI：只有「本帧就是当前用户消息的落点」时才认表单提交，
+                    # 否则同一轮里被唤醒的其它帧会共用一份不属于它的槽位值。
+                    slot_submission=(
+                        request.slot_submission
+                        if row.source_turn_id == self.user_message_id
+                        else None
+                    ),
+                    # 流式轮次：2026-10-19 起关闭「决策 JSON 正文预览」通道。
+                    # 预览会让正文跟随上游分包节奏抖动；改为不流式生成，由
+                    # _handle_turn_stream_v2 统一按 8 字/45ms 匀速回放。
+                    reply_preview_sink=None,
+                )
             deferred_continuation = False
             if frame.kind == "sop":
                 deferred_result = _defer_failed_step_after_completed_checkpoint(
