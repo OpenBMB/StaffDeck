@@ -104,11 +104,16 @@ LEXICAL_FAST_PATH_CHUNK_FLOOR = 3.0
 # chunk + 词法排序仅 ~0.2s——「10 桶选 3」对 22 chunk 的小库纯属浪费。
 # **下游 payload 与 chunk_total 无关**：rank → diverse select 按 max_chunks
 # （默认 8）收敛，evidence pack / task_action 不会被撑大；阈值真正约束的是
-# load+rank 的内存与耗时（50 chunk ≈ 50-100KB 文本，毫秒级）。取 50 覆盖
-# 常见小库（人事政策库 10 桶 22 chunk）并留一倍余量。有意绕过 max_buckets
-# 与文档 5 篇上限。不写路由缓存：短路只花一次 ~1ms 的 COUNT，缓存反而引入
-# 「库内容已变但 key 未感知」的过期风险。
-SMALL_CANDIDATE_CHUNK_LIMIT = 50
+# load+rank 的内存与耗时（80 chunk ≈ 80-160KB 文本，毫秒级）。有意绕过
+# max_buckets 与文档 5 篇上限。不写路由缓存：短路只花一次 ~1ms 的 COUNT，
+# 缓存反而引入「库内容已变但 key 未感知」的过期风险。
+# 50 → 80（2026-10-16 现场）：原 50 是按「常见小库（人事政策库 10 桶 22 chunk）
+# 留一倍余量」定的，但线上主库「Hi Sphere 重庆项目百问百搭」正好 51 chunk，
+# 卡在边界外 1 个；而词法快路径要求 top1≥14 且 gap≥8（实测「项目有什么娱乐
+# 设施」top1=13.38 / gap=0.00、「医务室」gap=6.45）两条确定性路径全部落空，
+# 白走 2.13s 的 bucket_route LLM。提到 80 后该库直接短路（同租户其余库 ≤29
+# chunk，无新增受影响面）。
+SMALL_CANDIDATE_CHUNK_LIMIT = 80
 RELATED_CHUNK_MAX_COUNT = 6
 RELATED_CHUNK_MAX_CHARS = 4800
 KNOWLEDGE_INGEST_SCHEMA_VERSION = 2
