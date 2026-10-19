@@ -9,6 +9,7 @@ import IconGrowthArrow from '../../assets/icons/growth-arrow.svg?react';
 import IconProfileCalendar from '../../assets/icons/profile-calendar.svg?react';
 import StaffdeckIcon from '../../components/StaffdeckIcon';
 import { staffdeckDisplayText } from '../../employee';
+import { parseBackendDateTime } from '../../lib/timezone';
 import type {
   AgentProfileRead,
   AgentWorkRecordEventRead,
@@ -253,7 +254,7 @@ function ActivityTimeline({ events }: ActivityTimelineProps) {
   const eventsByTrack = useMemo(() => {
     const collect = (entries: Array<{ value?: string; name?: string }>) =>
       entries
-        .map((entry) => ({ time: entry.value ? new Date(entry.value).getTime() : Number.NaN, name: entry.name || '' }))
+        .map((entry) => ({ time: entry.value ? parseBackendDateTime(entry.value).getTime() : Number.NaN, name: entry.name || '' }))
         .filter((entry) => Number.isFinite(entry.time));
     return TIMELINE_TRACKS.reduce<Record<string, TrackEvent[]>>((grouped, track) => {
       grouped[track.key] = collect(
@@ -969,7 +970,7 @@ function monthCalendarWeeks(anchor: number): Date[][] {
 function buildDayActivities(events: AgentWorkRecordEventRead[]): Record<string, DayActivity[]> {
   const map: Record<string, DayActivity[]> = {};
   const push = (event: AgentWorkRecordEventRead, label: string) => {
-    const date = new Date(event.timestamp);
+    const date = parseBackendDateTime(event.timestamp);
     if (Number.isNaN(date.getTime())) return;
     const key = dateKey(date);
     (map[key] ||= []).push({ label, dot: ACTIVITY_DOT[event.kind], time: formatHm(date) });
@@ -977,7 +978,7 @@ function buildDayActivities(events: AgentWorkRecordEventRead[]): Record<string, 
 
   const chatByDay: Record<string, number> = {};
   events.filter((item) => item.kind === 'chat').forEach((item) => {
-    const date = new Date(item.timestamp);
+    const date = parseBackendDateTime(item.timestamp);
     if (Number.isNaN(date.getTime())) return;
     const key = dateKey(date);
     chatByDay[key] = (chatByDay[key] || 0) + 1;
@@ -1058,7 +1059,7 @@ function growthTimeline(
 
   return events
     .filter((item) => Boolean(item.timestamp))
-    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    .sort((a, b) => parseBackendDateTime(a.timestamp).getTime() - parseBackendDateTime(b.timestamp).getTime());
 }
 
 function stableGrowthTimestamp(item: GrowthTimestampSource): string {
@@ -1076,11 +1077,11 @@ function stableGrowthTimestamp(item: GrowthTimestampSource): string {
 
 function isMeaningfullyUpdated(createdAt?: string, updatedAt?: string): boolean {
   if (!createdAt || !updatedAt) return false;
-  return Math.abs(new Date(updatedAt).getTime() - new Date(createdAt).getTime()) > 60 * 1000;
+  return Math.abs(parseBackendDateTime(updatedAt).getTime() - parseBackendDateTime(createdAt).getTime()) > 60 * 1000;
 }
 
 function formatMonthDay(value: string): string {
-  const date = new Date(value);
+  const date = parseBackendDateTime(value);
   if (Number.isNaN(date.getTime())) return '-';
   return `${date.getMonth() + 1}.${date.getDate()}`;
 }

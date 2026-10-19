@@ -5,6 +5,7 @@ import {
   isGalleryEmployee,
   type EnterpriseAuthUser,
 } from './auth';
+import { formatClientDateISO, toClientDateISO } from './lib/timezone';
 
 import avatarAfterSales from './assets/staffdeck/staffdeck-avatar-after-sales.png';
 import avatarCommerce from './assets/staffdeck/staffdeck-avatar-commerce.png';
@@ -389,7 +390,7 @@ export function employeeProfile(agent?: AgentProfileRead | null): EmployeeProfil
     avatarKind: isOverall ? 'preset' : avatarKind,
     avatarPreset: isOverall ? 'overall' : stringFromMeta(metadata, 'avatar_preset') || preset.key,
     avatarImage: isOverall ? '' : stringFromMeta(metadata, 'avatar_image'),
-    onboardedAt: stringFromMeta(metadata, 'onboarded_at') || agent?.created_at?.slice(0, 10) || '-',
+    onboardedAt: stringFromMeta(metadata, 'onboarded_at') || formatClientDateISO(agent?.created_at),
     workStyles: asStringArray(metadata.work_styles),
     expertiseTags: asStringArray(metadata.expertise_tags),
     workModes: asStringArray(metadata.work_modes),
@@ -459,7 +460,7 @@ export function employeeMetadataFromTemplate(templateKey: string, currentMetadat
     avatar_tone: template.avatarTone,
     avatar_kind: 'preset',
     avatar_preset: template.avatarPreset,
-    onboarded_at: currentMetadata.onboarded_at || new Date().toISOString().slice(0, 10),
+    onboarded_at: currentMetadata.onboarded_at || toClientDateISO(new Date()),
     work_styles: template.workStyles,
     expertise_tags: template.expertiseTags,
     work_modes: template.workModes,
@@ -476,7 +477,7 @@ export function employeeBlankMetadata(currentMetadata: Record<string, unknown> =
     avatar_tone: stringFromMeta(currentMetadata, 'avatar_tone') || 'teal',
     avatar_kind: stringFromMeta(currentMetadata, 'avatar_kind') || 'preset',
     avatar_preset: stringFromMeta(currentMetadata, 'avatar_preset') || EMPLOYEE_AVATAR_PRESETS[0].key,
-    onboarded_at: currentMetadata.onboarded_at || new Date().toISOString().slice(0, 10),
+    onboarded_at: currentMetadata.onboarded_at || toClientDateISO(new Date()),
     work_styles: asStringArray(currentMetadata.work_styles),
     expertise_tags: asStringArray(currentMetadata.expertise_tags),
     work_modes: asStringArray(currentMetadata.work_modes),

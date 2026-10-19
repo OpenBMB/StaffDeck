@@ -33,6 +33,7 @@ import {
 } from '../../api/aiReview';
 import { ApiError } from '../../api/client';
 import { cn } from '@/lib/utils';
+import { formatClientMonthDayTime } from '@/lib/timezone';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import AgentAppBackButton from '../agentApps/AgentAppBackButton';
 import {
@@ -168,10 +169,8 @@ function StatusChip({ status }: { status: AiReviewTaskSummary['status'] }) {
 }
 
 function formatTime(value: string | null): string {
-  if (!value) return '';
-  const date = new Date(value.endsWith('Z') || value.includes('+') ? value : `${value}Z`);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  // 后端时间戳是 naive UTC，统一走 lib 里的规范实现（裸 new Date 在东八区会早 8 小时）
+  return formatClientMonthDayTime(value ?? undefined, '');
 }
 
 function WorkspaceRow({

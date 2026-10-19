@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '../api/client';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { formatClientYearMonthDayTime } from '../lib/timezone';
 
 import { ConfirmDialog } from './ConfirmDialog';
 
@@ -304,14 +305,6 @@ export default function AccountApiKeyDialog({
 }
 
 function formatDate(value?: string | null): string {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
+  // 后端时间戳是 naive UTC，裸 new Date 会按本地时间解析（东八区早 8 小时）
+  return formatClientYearMonthDayTime(value, value || '-');
 }

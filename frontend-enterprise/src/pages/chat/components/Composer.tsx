@@ -65,10 +65,13 @@ import SlashCommandChip from './SlashCommandChip';
 export default function Composer({
   chat,
   hideModelSelector = false,
+  hideScheduledTask = false,
 }: {
   chat: UseChatSession;
   /** 分享访客场景：模型在创建分享时已锁定，隐藏选择器 */
   hideModelSelector?: boolean;
+  /** 分享访客场景：不允许通过分享链接创建定时任务 */
+  hideScheduledTask?: boolean;
 }) {
   const { t } = useI18n();
   const {
@@ -495,10 +498,12 @@ export default function Composer({
                     <StaffdeckIcon name="upload" size={16} />
                     <span>上传文件</span>
                   </DropdownMenuItem>
-                  <DropdownMenuItem className={CHAT_MENU_ITEM_CLASS} onSelect={() => handleComposerPlusAction('scheduled_task')}>
-                    <StaffdeckIcon name="clock" size={16} />
-                    <span>定时任务</span>
-                  </DropdownMenuItem>
+                  {!hideScheduledTask && (
+                    <DropdownMenuItem className={CHAT_MENU_ITEM_CLASS} onSelect={() => handleComposerPlusAction('scheduled_task')}>
+                      <StaffdeckIcon name="clock" size={16} />
+                      <span>定时任务</span>
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
               {composerIntent === 'scheduled_task' && (

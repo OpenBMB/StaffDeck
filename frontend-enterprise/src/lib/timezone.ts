@@ -51,6 +51,55 @@ export function formatClientMonthDayTime(value?: string, emptyText = '-'): strin
 }
 
 /**
+ * 「年/月/日 时:分」（如 `2026/10/19 16:34`），给密钥创建时间、最后使用时间这类列表行用。
+ *
+ * 同样必须走 `parseBackendDateTime`：后端是 naive UTC，裸 `new Date` 在东八区会早 8 小时。
+ */
+export function formatClientYearMonthDayTime(
+  value?: string | null,
+  emptyText = '-',
+): string {
+  if (!value) return emptyText;
+  const date = parseBackendDateTime(value);
+  if (Number.isNaN(date.getTime())) return emptyText;
+  return new Intl.DateTimeFormat(getDateLocale(), {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: getClientTimeZone(),
+  }).format(date);
+}
+
+/**
+ * 把 `Date` 转成客户端时区的 `YYYY-MM-DD`。
+ *
+ * 给 `<input type="date">` 的 value、日期列这类必须固定格式的位置用。「今天」请写
+ * `toClientDateISO(new Date())`，不要用 `new Date().toISOString().slice(0, 10)` ——
+ * 那是 UTC 日期，东八区早上 8 点前会算成昨天。
+ */
+export function toClientDateISO(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/**
+ * 后端时间戳 → 客户端时区的 `YYYY-MM-DD`。
+ *
+ * 纯日期串（`YYYY-MM-DD`）没有时刻信息，原样返回，避免被时区推到前一天。
+ */
+export function formatClientDateISO(value?: string | null, emptyText = '-'): string {
+  const text = String(value ?? '').trim();
+  if (!text) return emptyText;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const date = parseBackendDateTime(text);
+  if (Number.isNaN(date.getTime())) return emptyText;
+  return toClientDateISO(date);
+}
+
+/**
  * 只取日期部分（`YYYY/M/D`）的本地化格式化。
  *
  * 替代各处 `value.slice(0, 10)` 的写法：后端存的是 naive UTC，直接截字符串会把

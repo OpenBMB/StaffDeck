@@ -34,6 +34,7 @@ from app.public_api.jobs import (
     ensure_not_cancelled,
     job_read,
     register_job_handler,
+    sanitize_citation_payload,
     update_job,
 )
 from app.public_api.jobs import stream_job_events
@@ -425,12 +426,14 @@ def create_run_route(
 
 
 @router.post("/agents/{agent_id}/runs:stream", status_code=200)
+@router.post("/agents/{agent_id}/runs-stream", status_code=200)
 def create_run_stream_route(
     agent_id: str,
     body: AgentRunCreate,
     request: Request,
     principal: PublicPrincipal = Depends(require_scopes("runs:create")),
     db: Session = Depends(get_session),
+    citations_enabled: bool = Header(default=False, alias="citations-enabled"),
 ) -> StreamingResponse:
     """Create a durable run and stream its public events in the same request."""
     enforce_agent_access(principal, agent_id)
@@ -460,7 +463,15 @@ def create_run_stream_route(
             status_code=202,
             resource_id=job.id,
         )
-    stream = stream_job_events(job.id, request, 0, None, principal, db)
+    stream = stream_job_events(
+        job.id,
+        request,
+        0,
+        None,
+        principal,
+        db,
+        citations_enabled=citations_enabled,
+    )
     stream.headers["X-Run-ID"] = job.id
     stream.headers["Cache-Control"] = "no-cache, no-transform"
     stream.headers["X-Accel-Buffering"] = "no"
@@ -490,11 +501,13 @@ def get_run_result(
     run_id: str,
     principal: PublicPrincipal = Depends(require_scopes("runs:read")),
     db: Session = Depends(get_session),
+    citations_enabled: bool = Header(default=True, alias="citations-enabled"),
 ) -> dict:
     row = _owned_run(db, principal, run_id)
     if row.status != "succeeded":
         raise PublicAPIError(409, "RUN_NOT_SUCCEEDED", "The run has not succeeded.")
-    return dict(row.result_json or {})
+    result = dict(row.result_json or {})
+    return result if citations_enabled else sanitize_citation_payload(result)
 
 
 @router.get("/runs/{run_id}/events")
@@ -505,9 +518,18 @@ def stream_run_events(
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     principal: PublicPrincipal = Depends(require_scopes("runs:read")),
     db: Session = Depends(get_session),
+    citations_enabled: bool = Header(default=False, alias="citations-enabled"),
 ) -> StreamingResponse:
     _owned_run(db, principal, run_id)
-    return stream_job_events(run_id, request, after, last_event_id, principal, db)
+    return stream_job_events(
+        run_id,
+        request,
+        after,
+        last_event_id,
+        principal,
+        db,
+        citations_enabled=citations_enabled,
+    )
 
 
 @router.post("/runs/{run_id}:cancel", response_model=dict)

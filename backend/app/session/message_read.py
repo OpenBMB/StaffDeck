@@ -6,7 +6,12 @@ from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from app.db.models import KnowledgeChunk, KnowledgeConcept, Message
-from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT, compact_knowledge_citation_labels
+from app.core.ui_flags import knowledge_citations_hidden
+from app.knowledge.citations import (
+    CITATION_EXCERPT_CHAR_LIMIT,
+    compact_knowledge_citation_labels,
+    strip_citation_markers,
+)
 from app.session.session_schema import MessageRead
 
 
@@ -31,6 +36,10 @@ def message_read(
         else:
             metadata.pop("knowledge_citations", None)
             metadata.pop("knowledge_query", None)
+        # 历史消息里已经带着引用编号：租户关掉「展示知识来源」后读取时再清一遍，
+        # 这样任何客户端（含缓存了旧前端包的）都不会看到悬空编号；库里原文保留。
+        if knowledge_citations_hidden(db, row.tenant_id):
+            content = strip_citation_markers(content)
     metadata_turn_id = str(metadata.get("turn_id") or metadata.get("user_message_id") or "").strip()
     return MessageRead(
         id=row.id,

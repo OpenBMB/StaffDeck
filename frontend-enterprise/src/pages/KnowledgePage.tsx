@@ -85,6 +85,7 @@ import {
 import { useClientPagination } from '../hooks/useClientPagination';
 import { renderMarkdownBlocks } from './chat/chatHelpers';
 import { getDateLocale } from '@/i18n';
+import { formatClientMonthDayTime } from '@/lib/timezone';
 import type {
   CapabilityScope,
   KnowledgeBaseRead,
@@ -3536,15 +3537,8 @@ function updateOkfFrontmatterValue(markdown: string, key: string, value: string)
 }
 
 function formatDateTime(value: string) {
-  if (!value) return '未知时间';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(getDateLocale(), {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  // 后端时间戳是 naive UTC，必须走 formatClientMonthDayTime，裸 `new Date` 在东八区会早 8 小时
+  return formatClientMonthDayTime(value, '未知时间');
 }
 
 function typeLabel(type: string) {

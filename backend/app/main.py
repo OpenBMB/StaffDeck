@@ -86,9 +86,17 @@ _SHARE_SCOPE_ALLOWED_PREFIXES = (
     "/api/public/agent-shares/",
 )
 
+# 对话链路里的「例外」:定时任务的创建/草案接口就挂在 /api/chat/ 下,
+# 但它是持久化的写操作(会被后台调度反复执行),分享访客一律不可达。
+_SHARE_SCOPE_DENIED_PREFIXES = (
+    "/api/chat/scheduled-task",
+)
+
 
 def share_scope_allows_path(path: str) -> bool:
     """分享访客令牌可达的路径:只放行对话链路与分享自身接口。"""
+    if path.startswith(_SHARE_SCOPE_DENIED_PREFIXES):
+        return False
     return path.startswith(_SHARE_SCOPE_ALLOWED_PREFIXES)
 
 

@@ -28,6 +28,7 @@ import UpdateReminder from "./components/UpdateReminder";
 import StaffdeckIcon from "./components/StaffdeckIcon";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { EnterpriseRoute } from "./enums/routes";
+import { toClientDateISO } from "./lib/timezone";
 import {
   employeeBlankMetadata,
   canAccessEmployeeAgent,
@@ -462,7 +463,7 @@ function Shell({
       creator_name: auth.user.username,
       role_key: "",
       role_name: roleName,
-      onboarded_at: new Date().toISOString().slice(0, 10),
+      onboarded_at: toClientDateISO(new Date()),
       blank_onboarding: isBlankOnboarding,
     };
     try {

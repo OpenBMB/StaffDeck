@@ -3758,8 +3758,11 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       fileInputRef.current?.click();
       return;
     }
+    // 分享访客不得创建定时任务：菜单项已隐藏，这里再兜一层，
+    // 防止其他入口（快捷键/旧缓存 UI）把访客带进定时任务模式。
+    if (shareMode) return;
     setComposerIntent('scheduled_task');
-  }, []);
+  }, [shareMode]);
 
   const openSession = useCallback((id: string) => {
     navigate(chatSessionPath(id));

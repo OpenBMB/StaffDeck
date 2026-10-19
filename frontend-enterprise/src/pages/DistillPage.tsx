@@ -78,6 +78,8 @@ import { isTeamScope, readEmployeeScope } from '@/lib/agent-scope-storage';
 import { subscribeEnterpriseCapabilityCatalogRefresh } from '@/lib/capability-catalog-events';
 import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
 import { formatHandoffAssigneeValue, parseHandoffAssigneeValue } from '@/lib/handoff-assignee';
+import { parseBackendDateTime } from '@/lib/timezone';
+import { getDateLocale } from '@/i18n';
 import type { EnterpriseAuthUser } from '../auth';
 import {
   ACTION_EMPTY_CLASS,
@@ -7728,9 +7730,10 @@ function splitEditableList(value: string): string[] {
 
 function formatMessageTime(value?: string): string {
   if (!value) return '';
-  const date = new Date(value);
+  // 本地新建的消息带 Z，后端历史是 naive UTC —— 统一走 parseBackendDateTime 才不会差 8 小时
+  const date = parseBackendDateTime(value);
   if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  return date.toLocaleTimeString(getDateLocale(), { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 function CopyGlyph() {

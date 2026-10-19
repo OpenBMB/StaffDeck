@@ -17,6 +17,7 @@ import {
   notify,
 } from '@/components/ui';
 import { SELECT_TRIGGER_CLASS } from '@/lib/enterprise-ui';
+import { toClientDateISO } from '@/lib/timezone';
 import { api, TENANT_ID } from '../api/client';
 import AgentShareDialog from './AgentShareDialog';
 import type { EnterpriseAuthUser } from '../auth';
@@ -83,7 +84,7 @@ export default function EmployeeProfileEditor({
     setForm({
       name: employeeDisplayName(agent),
       roleName: profile.roleName === '待补充岗位' ? '' : profile.roleName,
-      onboardedAt: profile.onboardedAt === '-' ? new Date().toISOString().slice(0, 10) : profile.onboardedAt,
+      onboardedAt: profile.onboardedAt === '-' ? toClientDateISO(new Date()) : profile.onboardedAt,
       description: agent.description || '',
       personaPrompt: agent.persona_prompt || '',
       systemPromptSummary: typeof agent.metadata?.system_prompt_summary === 'string' ? agent.metadata.system_prompt_summary : '',
@@ -109,7 +110,7 @@ export default function EmployeeProfileEditor({
         ...(agent.metadata || {}),
         blank_onboarding: false,
         role_name: form.roleName.trim() || '待补充岗位',
-        onboarded_at: form.onboardedAt || new Date().toISOString().slice(0, 10),
+        onboarded_at: form.onboardedAt || toClientDateISO(new Date()),
         system_prompt_summary: form.systemPromptSummary.trim(),
         work_styles: compactTags(form.workStyles),
         expertise_tags: compactTags(form.expertiseTags),

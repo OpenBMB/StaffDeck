@@ -62,6 +62,7 @@ from app.core.task_request_compiler import (
     TaskRequestCompiler,
 )
 from app.core.turn_planner import TurnPlanner, turn_plan_router_decision
+from app.core.ui_flags import knowledge_citations_hidden
 from app.db.models import (
     ChatSession,
     HarnessRunRecord,
@@ -76,6 +77,7 @@ from app.knowledge.citations import (
     citation_identity,
     compact_knowledge_citation_labels,
     renumber_citations,
+    strip_citation_markers,
 )
 from app.llm.stage_protocol import stage_payload, unified_system_prompt
 from app.memory.service import memory_read
@@ -697,8 +699,11 @@ class HarnessV2Engine:
     ) -> str:
         """知识工作流的唯一一次作答调用。
 
-        2026-10-19：改回非流式生成（预览通道跟随上游分包会抖），正文由
-        终局 8 字/45ms 匀速回放。
+        2026-10-19：这条路径用**真流式**（``generate_stream`` + ``sink.delta``）：
+        正文跨整个生成过程逐段下发，首字延迟 = TTFT。因为吐字窗口是整轮生成
+        （数秒级），不会被传输/渲染层合批成「一下出来」。收尾仍由
+        ``_handle_turn_stream_v2`` 的 ``reconcile`` 用最终正文（引用编号可能
+        重排）对账。非流式轮次（turn_stream 为 None）回退阻塞 ``generate``。
         """
 
         arguments = (
@@ -714,9 +719,17 @@ class HarnessV2Engine:
             conversation_context,
             None,
         )
-        # 2026-10-19：知识工作流也改回非流式生成，正文交给终局匀速回放。
         self._emit_stream_status("preparing", "正在整理知识答案")
-        return self.owner.response_generator.generate(*arguments)
+        stream = self.turn_stream
+        if stream is None:
+            return self.owner.response_generator.generate(*arguments)
+        # 真流式：逐 token 下发；中途失败会把已下发内容作废并抛给调用方降级
+        # （见 _run_knowledge_workflow 的 except）。
+        parts: list[str] = []
+        for chunk in self.owner.response_generator.generate_stream(*arguments):
+            parts.append(chunk)
+            self._emit_stream_delta(chunk)
+        return "".join(parts).strip()
 
     def _synthesize_reply(
         self,
@@ -1312,6 +1325,9 @@ class HarnessV2Engine:
             )
         self._renew_session_lease()
         reply, citations = compact_knowledge_citation_labels(reply, citations)
+        # 与 agent_loop 同一口径：租户关掉「展示知识来源」时正文里不留 [n] 编号
+        if knowledge_citations_hidden(self.db, request.tenant_id):
+            reply = strip_citation_markers(reply)
         artifacts = _aggregate_artifacts(execution_results)
         assistant_metadata: dict[str, Any] = {
             "execution_engine": "harness_v2",

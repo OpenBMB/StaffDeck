@@ -168,7 +168,7 @@ function ShareChatSurface({ share }: { share: SharePublicInfo }) {
       </div>
       <main className={cn(CHAT_MAIN_CLASS, 'flex-1')}>
         <MessageList chat={chat} />
-        <Composer chat={chat} hideModelSelector />
+        <Composer chat={chat} hideModelSelector hideScheduledTask />
       </main>
     </div>
   );

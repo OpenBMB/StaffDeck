@@ -18,6 +18,7 @@ import {
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
 import { MOBILE_CARD_CLASS, formatDateTime } from '@/lib/enterprise-ui';
+import { parseBackendDateTime } from '@/lib/timezone';
 
 import { api, TENANT_ID } from '../../api/client';
 import IconListBulleted from '../../assets/icons/list-bulleted.svg?react';
@@ -517,7 +518,7 @@ function groupMemories(rows: MemoryRead[]): MemoryUserGroup[] {
   return Array.from(map.entries())
     .map(([key, memories]) => {
       const sorted = [...memories].sort(
-        (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+        (a, b) => parseBackendDateTime(b.updated_at).getTime() - parseBackendDateTime(a.updated_at).getTime(),
       );
       const kinds = Array.from(new Set(sorted.map((item) => item.kind))).sort();
       return {
@@ -533,5 +534,5 @@ function groupMemories(rows: MemoryRead[]): MemoryUserGroup[] {
           .join(' / '),
       };
     })
-    .sort((a, b) => new Date(b.latest_at).getTime() - new Date(a.latest_at).getTime());
+    .sort((a, b) => parseBackendDateTime(b.latest_at).getTime() - parseBackendDateTime(a.latest_at).getTime());
 }

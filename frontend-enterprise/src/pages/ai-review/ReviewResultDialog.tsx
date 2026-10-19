@@ -24,6 +24,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { notify } from '@/components/ui/app-toast';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui';
 import { cn } from '@/lib/utils';
+import { formatClientMonthDayTime } from '@/lib/timezone';
 import {
   commentRange,
   formatElapsed,
@@ -152,10 +153,8 @@ function ErrorMessageText({ text }: { text: string }) {
 }
 
 function formatSyncTime(value: string | null): string {
-  if (!value) return '';
-  const date = new Date(value.endsWith('Z') || value.includes('+') ? value : `${value}Z`);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  // 后端时间戳是 naive UTC，统一走 lib 里的规范实现（裸 new Date 在东八区会早 8 小时）
+  return formatClientMonthDayTime(value ?? undefined, '');
 }
 
 export default function ReviewResultDialog({

@@ -122,4 +122,20 @@ describe('useChatSession shareMode send guard', () => {
     // 分享链接里的模型在创建分享时已锁定，与访客自己的模型/免费额度无关
     expect(result.current.freeModelNoticeText).toBe('');
   });
+
+  it('分享访客点不到「定时任务」：加号菜单动作被忽略', async () => {
+    stubShareFetch();
+    const { result } = renderShareChatSession();
+
+    await waitFor(() => {
+      expect(result.current.displayedAgent?.id).toBe('agent-share-1');
+    }, { timeout: 3000 });
+
+    act(() => {
+      result.current.handleComposerPlusAction('scheduled_task');
+    });
+
+    // 菜单项已隐藏，这里再兜一层：即便被旧 UI/脚本触发也不会进入定时任务模式
+    expect(result.current.composerIntent).toBeNull();
+  });
 });

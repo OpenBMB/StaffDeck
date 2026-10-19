@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   formatClientDate,
+  formatClientDateISO,
   formatClientDateTime,
   formatClientMonthDayTime,
+  formatClientYearMonthDayTime,
   parseBackendDateTime,
+  toClientDateISO,
 } from './timezone';
 
 describe('parseBackendDateTime', () => {
@@ -80,6 +83,34 @@ describe('formatClientMonthDayTime', () => {
   });
 });
 
+describe('formatClientYearMonthDayTime', () => {
+  it('renders a naive UTC timestamp with year as local time', () => {
+    const expected = new Intl.DateTimeFormat('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }).format(new Date(Date.UTC(2026, 9, 19, 8, 34, 0)));
+    expect(formatClientYearMonthDayTime('2026-10-19T08:34:00')).toBe(expected);
+  });
+
+  it('does not shift the clock backwards by the UTC offset (API Key 时间回归)', () => {
+    const clientTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (clientTz === 'Asia/Shanghai') {
+      expect(formatClientYearMonthDayTime('2026-10-19T08:34:00')).toBe('2026/10/19 16:34');
+    }
+  });
+
+  it('falls back to the empty text for missing values', () => {
+    expect(formatClientYearMonthDayTime(undefined)).toBe('-');
+    expect(formatClientYearMonthDayTime(null)).toBe('-');
+    expect(formatClientYearMonthDayTime('bad', '')).toBe('');
+  });
+});
+
 describe('formatClientDate', () => {
   it('renders a naive UTC timestamp as the date in the client timezone', () => {
     const expected = new Date(Date.UTC(2026, 7, 11, 9, 0, 0)).toLocaleDateString('zh-CN', {
@@ -109,5 +140,38 @@ describe('formatClientDate', () => {
   it('falls back to the empty text for missing values', () => {
     expect(formatClientDate(undefined)).toBe('-');
     expect(formatClientDate('bad', '')).toBe('');
+  });
+});
+
+describe('toClientDateISO', () => {
+  it('renders the local calendar date with zero padding', () => {
+    expect(toClientDateISO(new Date(2026, 0, 5, 23, 30))).toBe('2026-01-05');
+    expect(toClientDateISO(new Date(2026, 11, 31, 0, 1))).toBe('2026-12-31');
+  });
+
+  it('uses local parts, not the UTC date (入职日期默认值回归)', () => {
+    // 回归：以前用 `new Date().toISOString().slice(0, 10)`，东八区凌晨到 8 点之间会给成昨天
+    const local = new Date(2026, 9, 20, 1, 0);
+    const utcSliced = local.toISOString().slice(0, 10);
+    expect(toClientDateISO(local)).toBe('2026-10-20');
+    if (local.getTimezoneOffset() < 0) expect(utcSliced).not.toBe(toClientDateISO(local));
+  });
+});
+
+describe('formatClientDateISO', () => {
+  it('renders a naive UTC timestamp as the local date', () => {
+    const clientTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    expect(formatClientDateISO('2026-09-22T18:00:00'))
+      .toBe(clientTz === 'UTC' ? '2026-09-22' : '2026-09-23');
+  });
+
+  it('keeps date-only values untouched', () => {
+    expect(formatClientDateISO('2026-08-11')).toBe('2026-08-11');
+  });
+
+  it('falls back to the empty text for missing or malformed values', () => {
+    expect(formatClientDateISO(undefined)).toBe('-');
+    expect(formatClientDateISO(null, '')).toBe('');
+    expect(formatClientDateISO('bad', '')).toBe('');
   });
 });

@@ -4,6 +4,7 @@ import { api, TENANT_ID } from '@/api/client';
 import { cn } from '@/lib/utils';
 import { reveal, settle, prefersReducedMotion } from '@/lib/motion';
 import { findAgentCatalogEntry } from '@/lib/agentCatalog';
+import { parseBackendDateTime } from '@/lib/timezone';
 import { emitAgentScopeChange, persistSharedAgentScope } from '@/lib/agent-scope-storage';
 import { NewsPanel, QuickAccessTiles } from '@/components/openPlatform/PlazaWidgets';
 
@@ -83,9 +84,13 @@ function KindIcon({ kind, className }: { kind: string; className?: string }) {
 
 const fmt = (value: number) => value.toLocaleString('zh-CN');
 
-/** ISO 时间戳 → MM-DD HH:mm（解析失败原样返回）。 */
+/**
+ * 后端时间戳 → MM-DD HH:mm（解析失败原样返回）。
+ *
+ * 走 `parseBackendDateTime`：后端是 naive UTC，裸 `new Date` 在东八区会早 8 小时。
+ */
 function fmtDate(iso: string): string {
-  const date = new Date(iso);
+  const date = parseBackendDateTime(iso);
   if (Number.isNaN(date.getTime())) return iso;
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;

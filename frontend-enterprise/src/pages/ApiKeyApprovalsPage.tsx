@@ -38,6 +38,7 @@ import { api, ApiError, TENANT_ID } from '../api/client';
 import type { EnterpriseAuthUser } from '../auth';
 import AccountsPanel from './accounts/AccountsPanel';
 import { formatDateTime } from '@/lib/enterprise-ui';
+import { toClientDateISO } from '@/lib/timezone';
 import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
@@ -289,7 +290,8 @@ export default function ApiKeyApprovalsPage({
 
   // Usage
   const [usage, setUsage] = useState<UsageRead | null>(null);
-  const [usageMonth, setUsageMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  // 当前自然月按客户端时区取：`toISOString().slice(0,7)` 是 UTC 月份，东八区月初凌晨会算成上个月
+  const [usageMonth, setUsageMonth] = useState(() => toClientDateISO(new Date()).slice(0, 7));
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageSearch, setUsageSearch] = useState('');
   const [consumerSearch, setConsumerSearch] = useState('');
@@ -1564,7 +1566,7 @@ export default function ApiKeyApprovalsPage({
                 <span className="text-[13px] font-medium text-[#18181a] tabular-nums">{usageMonth}</span>
                 <button
                   type="button"
-                  disabled={usageMonth >= new Date().toISOString().slice(0, 7)}
+                  disabled={usageMonth >= toClientDateISO(new Date()).slice(0, 7)}
                   onClick={() => {
                     const d = new Date(usageMonth + '-01');
                     d.setMonth(d.getMonth() + 1);

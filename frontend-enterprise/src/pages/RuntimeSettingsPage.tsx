@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Button as UIButton, Card, CardContent, CardHeader, CardTitle, Input, Switch, Textarea, notify } from '@/components/ui';
 import { UnderlineTabs } from '@/components/ui/underline-tabs';
 import { api, TENANT_ID } from '../api/client';
+import { formatClientDateISO } from '../lib/timezone';
 import type { EnterpriseAuthUser } from '../auth';
 import AccountApiKeyDialog from '../components/AccountApiKeyDialog';
 import type { UIConfigRead } from '../types';
@@ -57,12 +58,6 @@ const DEFAULT_UI_CONFIG: UiConfigForm = {
   sandbox_network_mode: 'all',
   sandbox_allowed_domains: '',
 };
-
-function formatDateOnly(value: string): string {
-  const normalized = /(?:z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`;
-  const date = new Date(normalized);
-  return Number.isNaN(date.getTime()) ? value.slice(0, 10) : date.toISOString().slice(0, 10);
-}
 
 export default function RuntimeSettingsPage({ currentUser }: { currentUser: EnterpriseAuthUser }) {
   const [tab, setTab] = useState<AdminTab>('settings');
@@ -313,7 +308,7 @@ export default function RuntimeSettingsPage({ currentUser }: { currentUser: Ente
               </LabeledField>}
               {form.sandbox_enabled && form.sandbox_network_mode === 'allowlist' && <LabeledField label="允许的域名" hint="每行一个域名，也支持 *.example.com。"><Textarea rows={4} value={form.sandbox_allowed_domains} onChange={(e) => update({ sandbox_allowed_domains: e.target.value })} placeholder="api.example.com\n*.internal.example.com" /></LabeledField>}
               <p className="text-[11px] leading-[16px] text-muted-foreground">关闭沙盒时，命令仍受 TaskFrame 工作区、运行时长和输出大小限制，但不再使用操作系统级 SRT 隔离。</p>
-              {updatedAt && <span className="text-[12px] text-muted-foreground">最后更新：{formatDateOnly(updatedAt)}</span>}
+              {updatedAt && <span className="text-[12px] text-muted-foreground">最后更新：{formatClientDateISO(updatedAt)}</span>}
             </CardContent>
           </Card>
           <Card className="editor-card settings-card">

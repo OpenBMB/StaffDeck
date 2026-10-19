@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, Request, Response
 from sqlmodel import Session, select
 
+from app.agents.usage import bump_agent_usage
 from app.db import get_session
 from app.db.models import AgentProfile, ChatSession, ExternalSessionBinding, utc_now
 from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_scopes
@@ -10,6 +11,7 @@ from app.public_api.errors import PublicAPIError
 from app.public_api.idempotency import replay_idempotent_response, store_idempotent_response
 from app.public_api.schemas import PublicSessionCreate, PublicSessionUpdate
 from app.public_api.utils import etag_for
+from app.session.origin import PUBLIC_API_SESSION_CHANNEL
 
 
 router = APIRouter(prefix="/agents/{agent_id}/sessions", tags=["sessions"])
@@ -103,10 +105,12 @@ def create_public_session_row(
         user_id=principal.actor_user.id,
         agent_id=agent_id,
         title=(body.title or "新会话").strip()[:200],
-        channel="public_api",
+        channel=PUBLIC_API_SESSION_CHANNEL,
     )
     db.add(row)
     db.flush()
+    # Public API 也是「使用数字员工」：每个新会话计一次，与站内/分享同一口径
+    bump_agent_usage(db, agent_id)
     binding = None
     if body.external_session_id:
         binding = ExternalSessionBinding(

@@ -24,6 +24,7 @@ from app.db.models import (
     new_id,
     utc_now,
 )
+from app.knowledge.citations import CitationMarkerStreamStripper, strip_citation_section
 from app.public_api.auth import PublicPrincipal, get_public_principal
 from app.public_api.errors import PublicAPIError
 from app.public_api.schemas import JobRead
@@ -37,6 +38,45 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 JobHandler = Callable[[Session, APIJob], dict[str, Any]]
 _handlers: dict[str, JobHandler] = {}
 JOB_LEASE_SECONDS = 15 * 60
+
+# `citations-enabled: false` 时要摘掉的东西：
+# 1) 整条 `run.citation` 事件（知识检索结果的原文/片段）；
+# 2) 任何层级里名为 citations / knowledge_citations 的字段；
+# 3) 正文里的 `[1]`、`[2]` 角标，以及尾部「参考来源：[1] [2]」清单。
+_CITATION_EVENT_TYPES = {"run.citation"}
+_CITATION_PAYLOAD_KEYS = {
+    "citations",
+    "citation",
+    "knowledge_citations",
+    # 会话状态里回带的检索证据就是引用卡片的原文，一并视为引用内容。
+    "knowledge_context",
+}
+_CITATION_TEXT_KEYS = ("content", "reply", "text", "answer", "output")
+_OUTPUT_DELTA_EVENT = "run.output.delta"
+_OUTPUT_REPLACE_EVENTS = {"run.output.replace"}
+
+
+def _drop_citation_keys(value: Any) -> Any:
+    """递归摘掉引用字段（含嵌套在工具结果里的）。"""
+    if isinstance(value, dict):
+        return {
+            key: _drop_citation_keys(item)
+            for key, item in value.items()
+            if str(key).lower() not in _CITATION_PAYLOAD_KEYS
+        }
+    if isinstance(value, list):
+        return [_drop_citation_keys(item) for item in value]
+    return value
+
+
+def sanitize_citation_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """整段文本字段的引用清理（非流式分片场景：结果、replace 事件）。"""
+    cleaned = _drop_citation_keys(data)
+    for key in _CITATION_TEXT_KEYS:
+        value = cleaned.get(key)
+        if isinstance(value, str) and value:
+            cleaned[key] = strip_citation_section(value)
+    return cleaned
 
 
 def register_job_handler(kind: str) -> Callable[[JobHandler], JobHandler]:
@@ -541,6 +581,7 @@ def stream_job_events(
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     principal: PublicPrincipal = Depends(get_public_principal),
     db: Session = Depends(get_session),
+    citations_enabled: bool = Header(default=True, alias="citations-enabled"),
 ) -> StreamingResponse:
     row = _owned_job(db, principal, job_id)
     _require_job_scope(principal, row, "read")
@@ -550,6 +591,43 @@ def stream_job_events(
     def events() -> Iterator[str]:
         cursor = max(0, after)
         idle_ticks = 0
+        # 引用角标会跨分片被切开（`[` + `1]`），所以 delta 走有状态的过滤器；
+        # 它压住的尾部残片在遇到下一条非正文事件时补发（不带 id，不影响断点续读）。
+        stripper = CitationMarkerStreamStripper()
+
+        def tail_event() -> str | None:
+            if citations_enabled or not stripper.has_pending:
+                return None
+            pending = json.dumps({"content": stripper.flush()}, ensure_ascii=False)
+            return f"event: {_OUTPUT_DELTA_EVENT}\ndata: {pending}\n\n"
+
+        def filter_data(event_type: str, data: dict[str, Any]) -> dict[str, Any] | None:
+            if citations_enabled:
+                return data
+            if event_type in _CITATION_EVENT_TYPES:
+                return None
+            cleaned = _drop_citation_keys(data)
+            for key in _CITATION_TEXT_KEYS:
+                value = cleaned.get(key)
+                if not isinstance(value, str) or not value:
+                    continue
+                if event_type == _OUTPUT_DELTA_EVENT and key == "content":
+                    cleaned[key] = stripper.feed(value)
+                elif event_type in _OUTPUT_REPLACE_EVENTS and key == "content":
+                    # replace 是整段覆盖，之前压住的残片作废。
+                    stripper.reset()
+                    cleaned[key] = strip_citation_section(value)
+                else:
+                    cleaned[key] = strip_citation_section(value)
+            if (
+                event_type == _OUTPUT_DELTA_EVENT
+                and isinstance(cleaned.get("content"), str)
+                and not cleaned["content"]
+            ):
+                # 整片都是角标：清理后没有内容可下发，别发空 delta。
+                return None
+            return cleaned
+
         while True:
             with Session(engine) as event_db:
                 current = event_db.get(APIJob, row.id)
@@ -566,9 +644,18 @@ def stream_job_events(
                 ).all()
                 for item in rows:
                     cursor = item.sequence
-                    data = json.dumps(item.data_json or {}, ensure_ascii=False)
-                    yield f"id: {item.sequence}\nevent: {item.event_type}\ndata: {data}\n\n"
+                    data = filter_data(item.event_type, dict(item.data_json or {}))
+                    if data is not None:
+                        if item.event_type not in {_OUTPUT_DELTA_EVENT, *_OUTPUT_REPLACE_EVENTS}:
+                            pending = tail_event()
+                            if pending is not None:
+                                yield pending
+                        payload = json.dumps(data, ensure_ascii=False)
+                        yield f"id: {item.sequence}\nevent: {item.event_type}\ndata: {payload}\n\n"
                 if current.status in {"succeeded", "failed", "cancelled"} and not rows:
+                    pending = tail_event()
+                    if pending is not None:
+                        yield pending
                     return
             idle_ticks += 1
             if idle_ticks % 100 == 0:

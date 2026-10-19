@@ -82,7 +82,7 @@ from app.session.message_visibility import (
     visible_message_rows,
 )
 from app.session.message_read import message_read
-from app.session.origin import pilotdeck_origin_session_ids
+from app.session.origin import HIDDEN_FROM_CHAT_LIST_CHANNELS, pilotdeck_origin_session_ids
 from app.session.session_schema import (
     ChatAttachmentRead,
     ChatSessionCreateRequest,
@@ -2069,7 +2069,7 @@ def list_chat_sessions(
                 ChatSession.tenant_id == tenant_id,
                 or_(
                     ChatSession.channel.is_(None),
-                    ChatSession.channel != "skill_test",
+                    ChatSession.channel.not_in(HIDDEN_FROM_CHAT_LIST_CHANNELS),
                 ),
                 or_(
                     and_(
@@ -2859,17 +2859,20 @@ def _apply_share_scope(
 
     请求体里的 agent_id / model_config_id 一律忽略 —— 否则访客可以自己换员工或换模型,
     绕过分享者在创建链接时做的选择。
+    interaction_mode 同理:定时任务会落库并被后台调度长期执行,分享访客只能走普通对话,
+    即使构造请求体带上 scheduled_task 也降级为 normal。
     """
     # 用 isinstance 而非 `is not None`：直接调用（单测/内部复用）时默认值是 FastAPI 的
     # Depends 对象，`is not None` 会把普通请求误判成分享访客。
     if not isinstance(share_scope, ShareScope):
         return request
-    return request.model_copy(
-        update={
-            "agent_id": share_scope.agent_id,
-            "model_config_id": share_scope.model_config_id,
-        }
-    )
+    updates: dict[str, object] = {
+        "agent_id": share_scope.agent_id,
+        "model_config_id": share_scope.model_config_id,
+    }
+    if request.interaction_mode != "normal":
+        updates["interaction_mode"] = "normal"
+    return request.model_copy(update=updates)
 
 
 def _ensure_chat_agent_available(

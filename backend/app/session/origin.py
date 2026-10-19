@@ -8,6 +8,11 @@ from app.db.models import AgentEvent, ChatSession, ExternalSessionBinding
 
 
 PILOTDECK_GROUP_CHAT_CHANNEL = "pilotdeck_group_chat"
+# Public API（第三方/AI 小程序）创建的会话：对话页侧边栏是站内人的会话列表，
+# 这些由 API Key 托管的会话不该混进来（会话本身仍可通过 API 按 id 访问）。
+PUBLIC_API_SESSION_CHANNEL = "public_api"
+# 站内人不应在侧边栏看到的会话来源
+HIDDEN_FROM_CHAT_LIST_CHANNELS = ("skill_test", PUBLIC_API_SESSION_CHANNEL)
 
 
 def _is_pilotdeck_metadata(value: object) -> bool:

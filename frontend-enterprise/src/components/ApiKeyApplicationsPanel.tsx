@@ -15,6 +15,7 @@ import { notify } from '@/components/ui/app-toast';
 import { StatusBadge } from '@/pages/scheduled-tasks/StatusBadge';
 import { api, ApiError, TENANT_ID } from '../api/client';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { formatClientDateTime } from '../lib/timezone';
 import { cn } from '@/lib/utils';
 import { type EnterpriseAuthUser } from '../auth';
 
@@ -71,10 +72,8 @@ const SUGGESTION_META: Record<string, { label: string; tone: 'red' | 'orange' | 
 };
 
 function formatTime(value: string | null): string {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('zh-CN', { hour12: false });
+  // 后端时间戳是 naive UTC，裸 new Date 会按本地时间解析（东八区早 8 小时）
+  return formatClientDateTime(value || undefined, value || '-');
 }
 
 export function ApiKeyApplicationsPanel({ currentUser }: { currentUser?: EnterpriseAuthUser }) {

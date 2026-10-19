@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
@@ -1086,3 +1087,150 @@ def test_internal_job_remains_durably_queued_when_executor_is_stopping(monkeypat
     assert persisted is not None
     assert persisted.status == "queued"
     assert persisted.credential_id == "internal"
+
+
+def test_streaming_run_hides_citations_when_header_disabled(monkeypatch) -> None:
+    """`citations-enabled: false`：不发行引用事件、不返回引用字段、正文去掉 [n]。"""
+
+    client, engine, admin_token = _client(monkeypatch)
+    tenant_key = _tenant_key(
+        client, admin_token, ["agents:read", "runs:create", "runs:read"]
+    )
+
+    class FakeStreamingLoop:
+        def __init__(self, db):
+            self.db = db
+
+        def handle_turn_stream(self, request):
+            session = self.db.get(ChatSession, request.session_id)
+            turn_id = request.client_turn_id
+            self.db.add(
+                AgentEvent(
+                    tenant_id=request.tenant_id,
+                    session_id=request.session_id,
+                    event_type="knowledge_result",
+                    payload_json={
+                        "turn_id": turn_id,
+                        "query": "报销标准",
+                        "citations": [{"label": "[1]", "document_id": "doc_1"}],
+                    },
+                )
+            )
+            # 角标被分片切开：[ + 1] + 正文
+            for chunk in ("制度答复", " [", "1]", "，按标准执行。"):
+                self.db.add(
+                    AgentEvent(
+                        tenant_id=request.tenant_id,
+                        session_id=request.session_id,
+                        event_type="stream_delta",
+                        payload_json={"content": chunk, "turn_id": turn_id},
+                    )
+                )
+            self.db.add(
+                AgentEvent(
+                    tenant_id=request.tenant_id,
+                    session_id=request.session_id,
+                    event_type="stream_end",
+                    payload_json={"turn_id": turn_id},
+                )
+            )
+            self.db.add(
+                Message(
+                    tenant_id=request.tenant_id,
+                    session_id=request.session_id,
+                    role="assistant",
+                    content="制度答复 [1]，按标准执行。",
+                    metadata_json={
+                        "client_turn_id": turn_id,
+                        "knowledge_citations": [
+                            {"label": "[1]", "document_id": "doc_1"}
+                        ],
+                    },
+                )
+            )
+            self.db.commit()
+            response = ChatTurnResponse(
+                reply="制度答复 [1]，按标准执行。",
+                session_id=request.session_id,
+                session_state=public_session(session),
+            )
+            yield {"event": "complete", "data": response.model_dump(mode="json")}
+
+    monkeypatch.setattr("app.public_api.jobs.engine", engine)
+    monkeypatch.setattr("app.public_api.runs.engine", engine)
+    monkeypatch.setattr("app.public_api.runs.AgentLoop", FakeStreamingLoop)
+    monkeypatch.setattr(
+        "app.public_api.jobs.enqueue_async_job",
+        lambda _name, func, job_id: func(job_id),
+    )
+
+    response = client.post(
+        "/agents/agent_api/runs-stream",
+        headers={
+            "Authorization": f"Bearer {tenant_key}",
+            "Idempotency-Key": "stream-run-no-citations",
+            "Accept": "text/event-stream",
+            "citations-enabled": "false",
+        },
+        json={"input": "报销标准是多少", "session_mode": "stateless"},
+    )
+
+    assert response.status_code == 200
+    assert "event: run.citation" not in response.text
+    assert "knowledge_citations" not in response.text
+    assert '"citations"' not in response.text
+    assert "run.output.completed" in response.text
+
+    deltas = [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and '"content"' in line
+    ]
+    streamed = "".join(str(item.get("content") or "") for item in deltas)
+    assert streamed == "制度答复，按标准执行。"
+    assert "[1]" not in streamed
+
+
+def test_run_result_hides_citations_when_header_disabled(monkeypatch) -> None:
+    client, engine, admin_token = _client(monkeypatch)
+    tenant_key = _tenant_key(client, admin_token, ["runs:read"])
+    with Session(engine) as db:
+        db.add(
+            APIJob(
+                id="apijob_result_citations",
+                tenant_id="tenant_api",
+                credential_id="credential_result",
+                agent_id="agent_api",
+                kind="run",
+                status="succeeded",
+                request_json={"input": "报销标准"},
+                result_json={
+                    "run_id": "apijob_result_citations",
+                    "reply": "制度答复 [1]。\n\n参考来源：[1]",
+                    "citations": [{"label": "[1]", "document_id": "doc_1"}],
+                    "session_state": {
+                        "knowledge_context": [{"title": "报销制度"}],
+                        "status": "active",
+                    },
+                },
+            )
+        )
+        db.commit()
+
+    headers = {"Authorization": f"Bearer {tenant_key}"}
+    with_citations = client.get(
+        "/runs/apijob_result_citations/result", headers=headers
+    )
+    assert with_citations.status_code == 200
+    assert with_citations.json()["citations"][0]["document_id"] == "doc_1"
+    assert with_citations.json()["reply"] == "制度答复 [1]。\n\n参考来源：[1]"
+
+    without_citations = client.get(
+        "/runs/apijob_result_citations/result",
+        headers={**headers, "citations-enabled": "false"},
+    )
+    assert without_citations.status_code == 200
+    payload = without_citations.json()
+    assert "citations" not in payload
+    assert "knowledge_context" not in payload["session_state"]
+    assert payload["reply"] == "制度答复。"

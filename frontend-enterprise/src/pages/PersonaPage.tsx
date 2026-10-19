@@ -12,6 +12,7 @@ import {
 } from '@/components/ui';
 import { api, TENANT_ID } from '../api/client';
 import { isTeamScope, readEmployeeScope } from '../lib/agent-scope-storage';
+import { formatClientDateISO } from '../lib/timezone';
 import type { AgentProfileRead, PersonaRead } from '../types';
 
 type PersonaForm = {
@@ -21,15 +22,6 @@ type PersonaForm = {
 };
 
 const BLANK_PERSONA: PersonaForm = { agent_name: '', agent_description: '', system_prompt: '' };
-
-function formatDateOnly(value: string): string {
-  const normalized = /(?:z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`;
-  const date = new Date(normalized);
-  if (Number.isNaN(date.getTime())) {
-    return value.slice(0, 10);
-  }
-  return date.toISOString().slice(0, 10);
-}
 
 export default function PersonaPage() {
   const [form, setForm] = useState<PersonaForm>(BLANK_PERSONA);
@@ -175,7 +167,7 @@ export default function PersonaPage() {
               onChange={(event) => updatePersona({ system_prompt: event.target.value })}
             />
           </LabeledField>
-          {updatedAt && <span className="text-[12px] text-muted-foreground">最后更新：{formatDateOnly(updatedAt)}</span>}
+          {updatedAt && <span className="text-[12px] text-muted-foreground">最后更新：{formatClientDateISO(updatedAt)}</span>}
         </CardContent>
       </Card>
     </>
