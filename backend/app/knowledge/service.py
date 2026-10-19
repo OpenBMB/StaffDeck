@@ -876,6 +876,28 @@ class KnowledgeService:
                                 "chunk_total": document_chunk_total,
                             }
                         )
+                    # 单候选短路（文档维）：候选文档唯一时不存在「选哪篇」的
+                    # 决策空间，让 LLM 从 1 个选项里选 1 个纯属浪费（实测
+                    # 0.8~4.4s）。设计依据见 docs 08_plan_a_speedup.md：
+                    # 「加一条 candidate_count <= 1 → 直接选中，风险近乎为零」。
+                    # 放在 chunk_total 短路之后（阈值内的库仍走既有 phase），
+                    # 用 SMALL_CANDIDATE_CHUNK_LIMIT > 0 作总开关——测试把该常量
+                    # 置 -1 即同时关掉两条确定性文档路径。
+                    if (
+                        not shortcut_applied
+                        and len(documents) <= 1
+                        and SMALL_CANDIDATE_CHUNK_LIMIT > 0
+                    ):
+                        selected_document_ids = [row.id for row in documents]
+                        shortcut_applied = True
+                        span.finish(strategy="single_candidate")
+                        route_trace.append(
+                            {
+                                "phase": "document_route_single_candidate_shortcut",
+                                "message": "候选文档唯一，跳过模型路由直接选中",
+                                "candidate_count": len(documents),
+                            }
+                        )
                     if not shortcut_applied:
                         scored_documents = _score_documents_with_scores(query, documents)
                         fast_path_documents = _lexical_fast_path_top(
