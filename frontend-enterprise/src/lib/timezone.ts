@@ -100,6 +100,7 @@ export function formatClientDateISO(value?: string | null, emptyText = '-'): str
   return toClientDateISO(date);
 }
 
+/*
  * 只取日期部分（`YYYY/M/D`）的本地化格式化。
  *
  * 替代各处 `value.slice(0, 10)` 的写法：后端存的是 naive UTC，直接截字符串会把
