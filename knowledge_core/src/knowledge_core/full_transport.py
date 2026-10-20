@@ -31,7 +31,7 @@ def register(app, runtime, principal):
         return {**runtime.configuration.as_dict(), 'api_protocol': 'knowledge-core/v1',
             'identity_required': runtime.configuration.enabled('authentication'),
             'model_mode': 'model' if runtime.model_config or runtime.capabilities else 'lexical',
-            'operations': describe({'identity': ('GET', '/identity'), **{name: operation for name, operation in FULL.items()
+            'operations': describe({'identity': ('GET', '/identity'), 'list_models': ('GET', '/models'), **{name: operation for name, operation in FULL.items()
                 if name != 'publish_discovery' or runtime.publisher is not None}})}
     app.router.routes.insert(0, app.router.routes.pop())
 

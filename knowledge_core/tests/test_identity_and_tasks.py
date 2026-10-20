@@ -4,13 +4,16 @@ import pytest
 from fastapi.testclient import TestClient
 from knowledge_core.api import create_app
 from knowledge_core.identity import Principal, StaticBearerIdentity
+from knowledge_core.configuration import Configuration
+from knowledge_core.runtime import Runtime as ComposedRuntime
 from knowledge_core.kernel import storage as s
 from sqlalchemy import select
 from support import full_runtime as Runtime
 from test_independent_workflow import wait_job
 
 
-def test_bearer_permissions_and_namespace_isolation(tmp_path):
+@pytest.mark.parametrize("full", [True, False])
+def test_bearer_permissions_and_namespace_isolation(tmp_path, full):
     identity = StaticBearerIdentity(
         {
             "writer": Principal("writer", "team-a", spaces=frozenset({"space-a"})),
@@ -21,18 +24,30 @@ def test_bearer_permissions_and_namespace_isolation(tmp_path):
             "outside": Principal("outside", "team-a", spaces=frozenset({"space-b"})),
         }
     )
-    runtime = Runtime(f"sqlite:///{tmp_path / 'identity.sqlite'}", identity=identity)
+    runtime = ComposedRuntime(
+        f"sqlite:///{tmp_path / 'identity.sqlite'}", identity=identity,
+        configuration=Configuration('full', {'authentication': True, 'publication': full}),
+    )
     with TestClient(create_app(runtime)) as client:
         with runtime.engine.begin() as db:
             db.execute(runtime.plugins['spaces'].spaces.insert().values(id='space-a', tenant_id='team-a', name='A', owner_id='writer'))
         assert client.get("/api/km/v1/spaces").status_code == 401
         writer = {"Authorization": "Bearer writer"}
+        operations = client.get('/api/km/config').json()['operations']
+        assert operations['list_models']['path'] == '/api/km/v1/models'
         reader = {"Authorization": "Bearer reader"}
         response = client.post(
             "/api/km/v1/knowledge-bases", json={"space_id": "space-a", "name": "A"}, headers=writer
         )
         assert response.status_code == 201, response.text
         kb_id = response.json()["id"]
+        assert response.json()["tenant_id"] == "team-a"
+        stored = client.get(
+            f"/api/km/v1/knowledge-bases/{kb_id}?space_id=space-a", headers=reader
+        )
+        assert stored.json()["tenant_id"] == "team-a"
+        listed = client.get("/api/km/v1/knowledge-bases?space_id=space-a", headers=reader)
+        assert listed.json()[0]["tenant_id"] == "team-a"
         assert (
             client.get(
                 f"/api/km/v1/knowledge-bases/{kb_id}?space_id=space-a", headers=reader

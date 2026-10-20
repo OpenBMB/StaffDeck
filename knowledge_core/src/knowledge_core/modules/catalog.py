@@ -71,7 +71,7 @@ class Catalog(Plugin):
             self.runtime.authorize(actor, scope, "write")
             validate(body, {"id", "name", "description"}, ("name",))
             row = {"id": body.get("id") or identifier("kbase"), "name": body["name"], "description": body.get("description", ""),
-                   "status": "active", "created_at": now(), "updated_at": now()}
+                   "tenant_id": actor.tenant_id, "status": "active", "created_at": now(), "updated_at": now()}
             with self.runtime.engine.begin() as db:
                 db.execute(self.catalogs.insert().values(**row))
                 if hasattr(self, "bindings"): db.execute(self.bindings.insert().values(knowledge_base_id=row["id"], space_id=scope["space_id"]))
