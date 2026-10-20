@@ -19,6 +19,8 @@ from app.api.tools import (
     get_codex_a2a_adapter,
     list_a2a_task_runs,
     list_tools,
+    publish_tool,
+    unpublish_tool,
 )
 from app.api.tools import (
     probe_tool as _probe_tool,
@@ -824,3 +826,60 @@ def test_list_my_tools_returns_cross_scope_items_created_by_current_user() -> No
 
         assert {row.name for row in rows} == {"own.tool", "gallery.tool"}
         assert {row.metadata.get("owner_agent_id") for row in rows} == {None, employee.id}
+
+
+def test_private_tool_can_be_published_and_unpublished_to_gallery() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+            )
+        )
+        db.add(
+            AgentProfile(id="agent_owner", tenant_id="tenant_demo", name="销售员工")
+        )
+        tool = Tool(
+            id="tool_private_publish",
+            tenant_id="tenant_demo",
+            name="private.publish",
+            method="POST",
+            url="https://example.test/publish",
+        )
+        db.add(tool)
+        db.flush()
+        ensure_private_resource_binding(
+            db,
+            "tenant_demo",
+            "agent_owner",
+            "tool",
+            tool.id,
+            "active",
+            metadata_json={
+                "owner_user_id": "user_member",
+                "created_by_user_id": "user_member",
+            },
+        )
+        db.commit()
+
+        published = publish_tool(
+            tool.id,
+            "tenant_demo",
+            db,
+            _member_user(),
+        )
+        assert published.published is True
+        assert [row.id for row in list_tools("tenant_demo", None, "agent_overall", db)] == [
+            tool.id
+        ]
+
+        unpublished = unpublish_tool(
+            tool.id,
+            "tenant_demo",
+            db,
+            _member_user(),
+        )
+        assert unpublished.published is False
+        assert list_tools("tenant_demo", None, "agent_overall", db) == []
+        # 员工引用不受广场下架影响
+        assert [row.id for row in list_tools("tenant_demo", None, "agent_owner", db)] == [tool.id]

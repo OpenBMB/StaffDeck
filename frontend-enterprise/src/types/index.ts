@@ -435,6 +435,7 @@ export type ToolRead = {
   enabled: boolean;
   binding_status?: 'active' | 'inactive' | string | null;
   reference_count?: number;
+  published?: boolean;
   metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;

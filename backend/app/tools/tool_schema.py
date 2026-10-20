@@ -59,6 +59,8 @@ class ToolRead(BaseModel):
     binding_status: Optional[str] = None
     # 被多少个数字员工引用（不包含开放广场的内部绑定）。
     reference_count: int = 0
+    # 是否已发布到工具广场（存在广场绑定）。
+    published: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str

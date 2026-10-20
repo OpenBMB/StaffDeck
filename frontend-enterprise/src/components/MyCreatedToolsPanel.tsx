@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FlaskConical } from 'lucide-react';
+import { EyeOff, FlaskConical, UploadCloud } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -117,6 +117,23 @@ export default function MyCreatedToolsPanel({ agents }: { agents: AgentProfileRe
     return `/enterprise/tools/${encodeURIComponent(row.id)}/test${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''}`;
   }
 
+  async function setToolPublished(row: ToolRead, published: boolean) {
+    try {
+      const updated = await api.post<ToolRead>(
+        `/api/enterprise/tools/${encodeURIComponent(row.id)}/${published ? 'publish' : 'unpublish'}?tenant_id=${TENANT_ID}`,
+        {},
+      );
+      setRows((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      notify.success(published ? '已发布到工具广场' : '已从工具广场下架');
+      announceEnterpriseCapabilityCatalogChange({
+        resourceType: 'tool',
+        agentId: toolOwnerAgentId(row) || undefined,
+      });
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : published ? '发布失败' : '下架失败');
+    }
+  }
+
   async function reviewRequest(row: ToolAccessRequestRead, approve: boolean) {
     if (reviewingId) return;
     setReviewingId(row.id);
@@ -177,6 +194,13 @@ export default function MyCreatedToolsPanel({ agents }: { agents: AgentProfileRe
           <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => navigate(testRouteFor(row))}>
             <FlaskConical />
             测试
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className={MENU_ITEM_CLASS}
+            onSelect={() => void setToolPublished(row, !row.published)}
+          >
+            {row.published ? <EyeOff /> : <UploadCloud />}
+            {row.published ? '从广场下架' : '发布到广场'}
           </DropdownMenuItem>
           <DropdownMenuSeparator className="my-[2px] bg-[#eef0f4]" />
           <DropdownMenuItem
@@ -246,6 +270,16 @@ export default function MyCreatedToolsPanel({ agents }: { agents: AgentProfileRe
       ),
     },
     {
+      key: 'gallery',
+      title: '广场',
+      width: 90,
+      render: (row) => (
+        <StatusBadge tone={row.published ? 'blue' : 'gray'}>
+          {row.published ? '已发布' : '未发布'}
+        </StatusBadge>
+      ),
+    },
+    {
       key: 'updated',
       title: '更新时间',
       width: 170,
@@ -287,6 +321,9 @@ export default function MyCreatedToolsPanel({ agents }: { agents: AgentProfileRe
           <StatusBadge tone="gray">{row.bucket || '未分组'}</StatusBadge>
           <StatusBadge tone={(row.reference_count || 0) > 0 ? 'blue' : 'gray'}>
             {(row.reference_count || 0) > 0 ? `${row.reference_count} 个员工引用` : '未被引用'}
+          </StatusBadge>
+          <StatusBadge tone={row.published ? 'blue' : 'gray'}>
+            {row.published ? '已发布' : '未发布'}
           </StatusBadge>
           <span className="ml-auto">{formatDateTime(row.updated_at)}</span>
         </div>

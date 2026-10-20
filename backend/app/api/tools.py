@@ -14,6 +14,7 @@ from app.agents.branching import (
     ensure_private_resource_binding,
     get_agent,
     get_overall_agent,
+    hide_open_gallery_binding,
     is_bound_resource_visible_for_agent,
     is_open_gallery_resource,
     require_overall_agent,
@@ -133,6 +134,7 @@ def tool_read(
     *,
     binding_status: str | None = None,
     reference_count: int = 0,
+    published: bool = False,
 ) -> ToolRead:
     config = dict(row.config_json or {})
     return ToolRead(
@@ -157,6 +159,7 @@ def tool_read(
         enabled=row.enabled,
         binding_status=binding_status,
         reference_count=reference_count,
+        published=published,
         metadata=dict(metadata or {}),
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
@@ -185,6 +188,73 @@ def _tool_reference_counts(
     for resource_id in db.exec(stmt).all():
         counts[str(resource_id)] = counts.get(str(resource_id), 0) + 1
     return counts
+
+
+def _published_tool_ids(
+    db: Session,
+    tenant_id: str,
+    tool_ids: list[str],
+) -> set[str]:
+    if not tool_ids:
+        return set()
+    overall = get_overall_agent(db, tenant_id)
+    if overall is None:
+        return set()
+    return {
+        str(binding.resource_id)
+        for binding in db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == tenant_id,
+                AgentResourceBinding.agent_id == overall.id,
+                AgentResourceBinding.resource_type == "tool",
+                AgentResourceBinding.resource_id.in_(tool_ids),
+                AgentResourceBinding.status != "deleted",
+            )
+        ).all()
+    }
+
+
+def _tool_creator_metadata(db: Session, tenant_id: str, tool_id: str) -> dict[str, Any]:
+    creator_keys = (
+        "owner_user_id",
+        "created_by_user_id",
+        "owner_username",
+        "created_by_username",
+        "owner_display_name",
+        "created_by_display_name",
+        "created_by",
+        "creator_name",
+    )
+    metadata: dict[str, Any] = {}
+    for binding in db.exec(
+        select(AgentResourceBinding)
+        .where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.resource_type == "tool",
+            AgentResourceBinding.resource_id == tool_id,
+            AgentResourceBinding.status != "deleted",
+        )
+        .order_by(AgentResourceBinding.created_at)
+    ).all():
+        source = dict(binding.metadata_json or {})
+        for key in creator_keys:
+            if source.get(key) and not metadata.get(key):
+                metadata[key] = source[key]
+    return metadata
+
+
+def _tool_creator_user_id(db: Session, tenant_id: str, tool_id: str) -> str:
+    metadata = _tool_creator_metadata(db, tenant_id, tool_id)
+    return str(metadata.get("owner_user_id") or metadata.get("created_by_user_id") or "")
+
+
+def _ensure_tool_definition_manager(
+    db: Session, tenant_id: str, tool_id: str, user: User
+) -> None:
+    if user.role == "admin":
+        return
+    if _tool_creator_user_id(db, tenant_id, tool_id) != user.id:
+        raise HTTPException(status_code=403, detail="只有工具创建者或管理员可以执行此操作")
 
 
 def _agent_tool_binding_statuses(
@@ -226,16 +296,17 @@ def list_tools(
         return _list_my_tools(db, tenant_id, current_user)
     rows = _visible_tool_rows(db, tenant_id, bucket, agent_id)
     metadata_by_id = resource_binding_metadata(db, tenant_id, agent_id, "tool")
-    counts = _tool_reference_counts(db, tenant_id, [row.id for row in rows])
-    statuses = _agent_tool_binding_statuses(
-        db, tenant_id, agent_id, [row.id for row in rows]
-    )
+    tool_ids = [row.id for row in rows]
+    counts = _tool_reference_counts(db, tenant_id, tool_ids)
+    published_ids = _published_tool_ids(db, tenant_id, tool_ids)
+    statuses = _agent_tool_binding_statuses(db, tenant_id, agent_id, tool_ids)
     return [
         tool_read(
             row,
             metadata_by_id.get(row.id),
             binding_status=statuses.get(row.id),
             reference_count=counts.get(row.id, 0),
+            published=row.id in published_ids,
         )
         for row in rows
     ]
@@ -269,6 +340,7 @@ def _list_my_tools(db: Session, tenant_id: str, current_user: User) -> list[Tool
         ).all()
     }
     counts = _tool_reference_counts(db, tenant_id, list(rows_by_id))
+    published_ids = _published_tool_ids(db, tenant_id, list(rows_by_id))
     result: list[ToolRead] = []
     seen: set[str] = set()
     for binding in bindings:
@@ -286,6 +358,7 @@ def _list_my_tools(db: Session, tenant_id: str, current_user: User) -> list[Tool
                 metadata,
                 binding_status=binding.status,
                 reference_count=counts.get(row.id, 0),
+                published=row.id in published_ids,
             )
         )
     return result
@@ -385,6 +458,7 @@ def create_tool(
         metadata_by_id.get(row.id),
         binding_status=binding_status,
         reference_count=counts.get(row.id, 0),
+        published=row.id in _published_tool_ids(db, request.tenant_id, [row.id]),
     )
 
 
@@ -706,6 +780,62 @@ def import_swagger_tools(
     )
 
 
+@router.post("/{tool_id}/publish", response_model=ToolRead)
+def publish_tool(
+    tool_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ToolRead:
+    ensure_current_user_tenant(tenant_id, current_user)
+    row = _get_tool(db, tenant_id, tool_id)
+    _ensure_tool_definition_manager(db, tenant_id, tool_id, current_user)
+    metadata = _tool_creator_metadata(db, tenant_id, tool_id)
+    if not metadata:
+        metadata = user_creator_metadata(current_user)
+    ensure_open_gallery_binding(
+        db,
+        tenant_id,
+        "tool",
+        row.id,
+        "active",
+        metadata_json=metadata,
+        revive=True,
+    )
+    db.commit()
+    db.refresh(row)
+    counts = _tool_reference_counts(db, tenant_id, [row.id])
+    metadata_by_id = resource_binding_metadata(db, tenant_id, None, "tool")
+    return tool_read(
+        row,
+        metadata_by_id.get(row.id),
+        reference_count=counts.get(row.id, 0),
+        published=True,
+    )
+
+
+@router.post("/{tool_id}/unpublish", response_model=ToolRead)
+def unpublish_tool(
+    tool_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ToolRead:
+    ensure_current_user_tenant(tenant_id, current_user)
+    row = _get_tool(db, tenant_id, tool_id)
+    _ensure_tool_definition_manager(db, tenant_id, tool_id, current_user)
+    hide_open_gallery_binding(db, tenant_id, "tool", row.id)
+    db.commit()
+    db.refresh(row)
+    counts = _tool_reference_counts(db, tenant_id, [row.id])
+    return tool_read(
+        row,
+        _tool_creator_metadata(db, tenant_id, tool_id),
+        reference_count=counts.get(row.id, 0),
+        published=False,
+    )
+
+
 @router.get(
     "/{tool_id}", response_model=ToolRead, dependencies=[Depends(require_agent_scope_viewer)]
 )
@@ -725,6 +855,7 @@ def get_tool(
         metadata_by_id.get(row.id),
         binding_status=statuses.get(row.id),
         reference_count=counts.get(row.id, 0),
+        published=row.id in _published_tool_ids(db, tenant_id, [row.id]),
     )
 
 
@@ -795,6 +926,7 @@ def update_tool(
         metadata_by_id.get(row.id),
         binding_status=binding_status,
         reference_count=counts.get(row.id, 0),
+        published=row.id in _published_tool_ids(db, request.tenant_id, [row.id]),
     )
 
 
