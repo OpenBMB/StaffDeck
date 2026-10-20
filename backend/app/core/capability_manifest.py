@@ -182,35 +182,41 @@ class CapabilityManifestBuilder:
                     # App-only controls stay callable from their isolated view but are not
                     # advertised to the conversation model.
                     continue
+            # HTTP tools are first-class agent tools: they are not gated by SOP
+            # membership or allowed_skills. MCP keeps the legacy scoped behavior.
+            is_http_tool = (row.tool_type or "http") == "http"
             scope = _scope(row)
-            if scope is None:
-                unavailable.append(
-                    _unavailable(
-                        row.id,
-                        row.name,
-                        "tool",
-                        "general",
-                        "能力范围配置无效，已按 fail-closed 禁用。",
-                    )
-                )
-                continue
             explicitly_allowed = any(tool_by_ref.get(ref) is row for ref in refs["tool_ids"])
-            if scope == "sop_specific" and not explicitly_allowed:
-                continue
-            if row.allowed_skills_json and (
-                skill is None or skill.skill_id not in row.allowed_skills_json
-            ):
-                if explicitly_allowed:
+            if is_http_tool:
+                scope = scope or "general"
+            else:
+                if scope is None:
                     unavailable.append(
                         _unavailable(
                             row.id,
                             row.name,
                             "tool",
-                            scope,
-                            "当前工具的 allowed_skills 未授权该 SOP。",
+                            "general",
+                            "能力范围配置无效，已按 fail-closed 禁用。",
                         )
                     )
-                continue
+                    continue
+                if scope == "sop_specific" and not explicitly_allowed:
+                    continue
+                if row.allowed_skills_json and (
+                    skill is None or skill.skill_id not in row.allowed_skills_json
+                ):
+                    if explicitly_allowed:
+                        unavailable.append(
+                            _unavailable(
+                                row.id,
+                                row.name,
+                                "tool",
+                                scope,
+                                "当前工具的 allowed_skills 未授权该 SOP。",
+                            )
+                        )
+                    continue
             invocation_name = _available_invocation_name(row.name, row.id, available)
             available.append(
                 CapabilityDescriptor(
@@ -561,7 +567,6 @@ def tool_snapshot_digest(db: Session, tool: Tool) -> str:
         "allowed_skills": tool.allowed_skills_json or [],
         "mcp_server_id": tool.mcp_server_id,
         "capability_scope": tool.capability_scope,
-        "enabled": tool.enabled,
         "mcp_server": server_payload,
     }
     canonical = json.dumps(

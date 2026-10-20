@@ -1618,7 +1618,7 @@ def test_staged_image_is_both_a_sandbox_file_and_vision_payload(
     assert payloads[0].data_url == attachment.data_url
 
 
-def test_capability_manifest_only_exposes_current_step_sop_specific_resources() -> None:
+def test_capability_manifest_scopes_sop_resources_but_exposes_http_tools_globally() -> None:
     engine = _test_engine()
     with Session(engine) as db:
         db.add(Tenant(id="tenant-demo", name="Demo"))
@@ -1719,12 +1719,14 @@ def test_capability_manifest_only_exposes_current_step_sop_specific_resources() 
     assert "general_skill.shared" in second.allowed_names()
     assert "general_skill.second-only" in second.allowed_names()
     assert "general_skill.first-only" not in second.allowed_names()
-    assert "refund.lookup" not in second.allowed_names()
+    # HTTP tools are directly callable by the employee and are no longer
+    # restricted by SOP capability scope.
+    assert "refund.lookup" in second.allowed_names()
 
     assert "general_skill.shared" in conversation.allowed_names()
     assert "general_skill.first-only" not in conversation.allowed_names()
     assert "general_skill.second-only" not in conversation.allowed_names()
-    assert "refund.lookup" not in conversation.allowed_names()
+    assert "refund.lookup" in conversation.allowed_names()
     shared_descriptor = next(
         item for item in first.available if item.name == "general_skill.shared"
     )

@@ -246,7 +246,7 @@ export default function DashboardPage({
           <DashboardStat title="SOP" value={skills.length} icon={<StaffdeckIcon name="filter" />} />
           <DashboardStat title="技能" value={generalSkills.length} icon={<StaffdeckIcon name="spark" />} />
           <DashboardStat title="知识库" value={visibleKnowledgeBases.length} icon={<StaffdeckIcon name="file" />} />
-          <DashboardStat title="可用工具" value={tools.filter((item) => item.enabled).length} icon={<StaffdeckIcon name="tool" />} />
+          <DashboardStat title="可用工具" value={tools.filter(toolActive).length} icon={<StaffdeckIcon name="tool" />} />
           <DashboardStat title="SOP 调用" value={totalCalls} icon={<StaffdeckIcon name="chat" />} />
           <DashboardStat title="好评" value={positiveFeedback || feedbackSummary?.up_count || 0} icon={<StaffdeckIcon name="chat" />} />
           <DashboardStat title="差评" value={negativeFeedback || feedbackSummary?.down_count || 0} icon={<StaffdeckIcon name="chat" />} />
@@ -268,7 +268,7 @@ export default function DashboardPage({
   const activeSkills = skills.filter((item) => item.status === 'published' && item.branch_status !== 'inactive');
   const activeGeneralSkills = generalSkills.filter((item) => item.status === 'published');
   const activeKnowledge = visibleKnowledgeBases.filter((item) => item.status === 'active');
-  const activeTools = tools.filter((item) => item.enabled);
+  const activeTools = tools.filter(toolActive);
   const selectedKnowledgeCount = visibleKnowledgeBases.length;
   const selectedGeneralSkillCount = agentResourceCount(selectedAgent, 'general_skill');
   const selectedSkillCount = agentResourceCount(selectedAgent, 'skill');
@@ -473,6 +473,10 @@ function isEmptyDefaultKnowledgeBase(item: KnowledgeBaseRead): boolean {
     && item.bucket_count === 0
     && item.chunk_count === 0
   );
+}
+
+function toolActive(item: ToolRead): boolean {
+  return item.binding_status ? item.binding_status === 'active' : item.enabled;
 }
 
 function MetricTile({ label, value }: { label: string; value: number }) {

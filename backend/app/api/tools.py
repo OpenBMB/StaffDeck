@@ -5,13 +5,15 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import or_, type_coerce
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Session, select
 
 from app.agents.branching import (
     ensure_open_gallery_binding,
     ensure_private_resource_binding,
     get_agent,
-    hide_open_gallery_binding,
+    get_overall_agent,
     is_bound_resource_visible_for_agent,
     is_open_gallery_resource,
     require_overall_agent,
@@ -19,8 +21,8 @@ from app.agents.branching import (
     user_creator_metadata,
     visible_tool_rows,
 )
-from app.config import get_settings
 from app.capability_scope import normalize_capability_scope
+from app.config import get_settings
 from app.db import get_session
 from app.db.models import (
     A2ATaskEvent,
@@ -42,7 +44,7 @@ from app.security.permissions import (
 )
 from app.security.tenant import ensure_tenant
 from app.tools import ToolExecutor
-from app.tools.http_request import prepare_get_request
+from app.tools.http_request import split_http_arguments
 from app.tools.mcp_client import (
     MCP_APP_MIME_TYPE,
     MCP_APPS_EXTENSION_ID,
@@ -51,19 +53,25 @@ from app.tools.mcp_client import (
     execute_mcp_tool,
     read_mcp_resource,
 )
+from app.tools.swagger_import import SwaggerParseError, parse_swagger_text
 from app.tools.tool_schema import (
     MCPAppResourceRead,
     MCPAppToolCallRequest,
     MCPAppToolCallResponse,
+    MCPDiscoveredTool,
     MCPDiscoverRequest,
     MCPDiscoverResponse,
-    MCPDiscoveredTool,
     MCPServerConnection,
     MCPServerCreateRequest,
     MCPServerRead,
     MCPServerUpdateRequest,
     MCPSyncRequest,
     MCPSyncResponse,
+    SwaggerImportItemResult,
+    SwaggerImportRequest,
+    SwaggerImportResponse,
+    SwaggerParseRequest,
+    SwaggerParseResponse,
     ToolBucketRead,
     ToolCall,
     ToolCreateRequest,
@@ -119,7 +127,13 @@ class CodexA2AAdapterRead(BaseModel):
     token_configured: bool
 
 
-def tool_read(row: Tool, metadata: dict[str, Any] | None = None) -> ToolRead:
+def tool_read(
+    row: Tool,
+    metadata: dict[str, Any] | None = None,
+    *,
+    binding_status: str | None = None,
+    reference_count: int = 0,
+) -> ToolRead:
     config = dict(row.config_json or {})
     return ToolRead(
         id=row.id,
@@ -141,10 +155,59 @@ def tool_read(row: Tool, metadata: dict[str, Any] | None = None) -> ToolRead:
         mcp_server_id=row.mcp_server_id,
         capability_scope=normalize_capability_scope(row.capability_scope),
         enabled=row.enabled,
+        binding_status=binding_status,
+        reference_count=reference_count,
         metadata=dict(metadata or {}),
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
+
+
+def _tool_reference_counts(
+    db: Session,
+    tenant_id: str,
+    tool_ids: list[str],
+) -> dict[str, int]:
+    """Count employee references, excluding the overall/open-gallery binding."""
+
+    if not tool_ids:
+        return {}
+    overall = get_overall_agent(db, tenant_id)
+    stmt = select(AgentResourceBinding.resource_id).where(
+        AgentResourceBinding.tenant_id == tenant_id,
+        AgentResourceBinding.resource_type == "tool",
+        AgentResourceBinding.resource_id.in_(tool_ids),
+        AgentResourceBinding.status != "deleted",
+    )
+    if overall is not None:
+        stmt = stmt.where(AgentResourceBinding.agent_id != overall.id)
+    counts: dict[str, int] = {}
+    for resource_id in db.exec(stmt).all():
+        counts[str(resource_id)] = counts.get(str(resource_id), 0) + 1
+    return counts
+
+
+def _agent_tool_binding_statuses(
+    db: Session,
+    tenant_id: str,
+    agent_id: str | None,
+    tool_ids: list[str],
+) -> dict[str, str]:
+    agent = get_agent(db, tenant_id, agent_id)
+    if not agent or agent.is_overall or not tool_ids:
+        return {}
+    return {
+        str(binding.resource_id): binding.status
+        for binding in db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == tenant_id,
+                AgentResourceBinding.agent_id == agent.id,
+                AgentResourceBinding.resource_type == "tool",
+                AgentResourceBinding.resource_id.in_(tool_ids),
+                AgentResourceBinding.status != "deleted",
+            )
+        ).all()
+    }
 
 
 @router.get("", response_model=list[ToolRead], dependencies=[Depends(require_agent_scope_viewer)])
@@ -153,11 +216,79 @@ def list_tools(
     bucket: str | None = Query(default=None),
     agent_id: str | None = Query(default=None),
     db: Session = Depends(get_session),
+    mine: bool = False,
+    current_user: User | None = Depends(get_current_user),
 ) -> list[ToolRead]:
     ensure_tenant(db, tenant_id)
+    if mine:
+        if not isinstance(current_user, User):
+            raise HTTPException(status_code=401, detail="Authentication required")
+        return _list_my_tools(db, tenant_id, current_user)
     rows = _visible_tool_rows(db, tenant_id, bucket, agent_id)
     metadata_by_id = resource_binding_metadata(db, tenant_id, agent_id, "tool")
-    return [tool_read(row, metadata_by_id.get(row.id)) for row in rows]
+    counts = _tool_reference_counts(db, tenant_id, [row.id for row in rows])
+    statuses = _agent_tool_binding_statuses(
+        db, tenant_id, agent_id, [row.id for row in rows]
+    )
+    return [
+        tool_read(
+            row,
+            metadata_by_id.get(row.id),
+            binding_status=statuses.get(row.id),
+            reference_count=counts.get(row.id, 0),
+        )
+        for row in rows
+    ]
+
+
+def _list_my_tools(db: Session, tenant_id: str, current_user: User) -> list[ToolRead]:
+    """「我创建的工具」：跨作用域列出当前用户创建的广场/员工私有工具。"""
+
+    metadata_column = type_coerce(AgentResourceBinding.metadata_json, JSONB)
+    owner_keys = metadata_column["owner_user_id"].astext
+    creator_keys = metadata_column["created_by_user_id"].astext
+    bindings = db.exec(
+        select(AgentResourceBinding)
+        .where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.resource_type == "tool",
+            AgentResourceBinding.status != "deleted",
+            or_(owner_keys == current_user.id, creator_keys == current_user.id),
+        )
+        .order_by(AgentResourceBinding.updated_at.desc())
+    ).all()
+    if not bindings:
+        return []
+    rows_by_id = {
+        row.id: row
+        for row in db.exec(
+            select(Tool).where(
+                Tool.tenant_id == tenant_id,
+                Tool.id.in_([binding.resource_id for binding in bindings]),
+            )
+        ).all()
+    }
+    counts = _tool_reference_counts(db, tenant_id, list(rows_by_id))
+    result: list[ToolRead] = []
+    seen: set[str] = set()
+    for binding in bindings:
+        row = rows_by_id.get(binding.resource_id)
+        if row is None or row.id in seen:
+            continue
+        metadata = dict(binding.metadata_json or {})
+        if metadata.get("tool_access_granted") is True:
+            # 审批授予的是「使用引用」，不是工具创建归属。
+            continue
+        seen.add(row.id)
+        result.append(
+            tool_read(
+                row,
+                metadata,
+                binding_status=binding.status,
+                reference_count=counts.get(row.id, 0),
+            )
+        )
+    return result
 
 
 @router.get(
@@ -172,6 +303,7 @@ def list_tool_buckets(
 ) -> list[ToolBucketRead]:
     ensure_tenant(db, tenant_id)
     rows = _visible_tool_rows(db, tenant_id, None, agent_id)
+    counts = _tool_reference_counts(db, tenant_id, [row.id for row in rows])
     grouped: dict[str, ToolBucketRead] = {}
     for row in rows:
         bucket = row.bucket or "未分桶"
@@ -179,7 +311,7 @@ def list_tool_buckets(
             bucket, ToolBucketRead(bucket=bucket, total=0, enabled_count=0, disabled_count=0)
         )
         item.total += 1
-        if row.enabled:
+        if counts.get(row.id, 0) > 0:
             item.enabled_count += 1
         else:
             item.disabled_count += 1
@@ -217,19 +349,21 @@ def create_tool(
         output_schema=request.output_schema,
         allowed_skills_json=request.allowed_skills,
         capability_scope=request.capability_scope,
-        enabled=request.enabled,
+        enabled=True,
     )
     db.add(row)
     db.flush()
     creator_metadata = user_creator_metadata(current_user)
+    binding_status: str | None = None
     if agent and not agent.is_overall:
+        binding_status = "active" if request.enabled else "inactive"
         ensure_private_resource_binding(
             db,
             request.tenant_id,
             agent.id,
             "tool",
             row.id,
-            "active" if request.enabled else "inactive",
+            binding_status,
             metadata_json=creator_metadata,
         )
     else:
@@ -239,13 +373,19 @@ def create_tool(
             request.tenant_id,
             "tool",
             row.id,
-            "active" if request.enabled else "inactive",
+            "active",
             metadata_json=creator_metadata,
         )
     db.commit()
     db.refresh(row)
     metadata_by_id = resource_binding_metadata(db, request.tenant_id, agent_id, "tool")
-    return tool_read(row, metadata_by_id.get(row.id))
+    counts = _tool_reference_counts(db, request.tenant_id, [row.id])
+    return tool_read(
+        row,
+        metadata_by_id.get(row.id),
+        binding_status=binding_status,
+        reference_count=counts.get(row.id, 0),
+    )
 
 
 @router.post("/probe", response_model=ToolProbeResponse)
@@ -319,18 +459,29 @@ def probe_tool(
         executor._resolve_headers(request.headers, request.auth),
         normalized_tool_base_url=get_settings().normalized_tool_base_url,
     )
+    http_options = (
+        request.mcp_config.get("http")
+        if isinstance(request.mcp_config.get("http"), dict)
+        else None
+    )
+    request_url, query, body, header_params = split_http_arguments(
+        url,
+        request.method,
+        request.sample_arguments,
+        http_options,
+    )
+    headers.update(header_params)
     timeout_seconds = _probe_timeout_seconds(request)
     try:
         with httpx.Client(timeout=timeout_seconds) as client:
-            if request.method.upper() == "GET":
-                request_url, request_kwargs = prepare_get_request(url, request.sample_arguments)
-                response = client.request(
-                    request.method.upper(), request_url, headers=headers, **request_kwargs
-                )
-            else:
-                response = client.request(
-                    request.method.upper(), url, headers=headers, json=request.sample_arguments
-                )
+            request_kwargs: dict[str, Any] = {}
+            if query:
+                request_kwargs["params"] = query
+            if body or (request.method.upper() != "GET" and not http_options):
+                request_kwargs["json"] = body
+            response = client.request(
+                request.method.upper(), request_url, headers=headers, **request_kwargs
+            )
     except httpx.TimeoutException:
         return ToolProbeResponse(
             success=False,
@@ -448,6 +599,113 @@ def cancel_a2a_task_run(
     return _a2a_task_run_read(run, [])
 
 
+@router.post("/swagger/parse", response_model=SwaggerParseResponse)
+def parse_swagger(
+    request: SwaggerParseRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> SwaggerParseResponse:
+    ensure_current_user_tenant(request.tenant_id, current_user)
+    ensure_tenant(db, request.tenant_id)
+    try:
+        parsed = parse_swagger_text(
+            request.spec,
+            default_group=request.default_group,
+            base_url_override=request.base_url,
+        )
+    except SwaggerParseError as exc:
+        return SwaggerParseResponse(
+            success=False,
+            error=ToolError(code="SWAGGER_PARSE_ERROR", message=str(exc)),
+        )
+    return SwaggerParseResponse(**parsed)
+
+
+@router.post("/swagger/import", response_model=SwaggerImportResponse)
+def import_swagger_tools(
+    request: SwaggerImportRequest,
+    agent_id: str | None = Query(default=None),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> SwaggerImportResponse:
+    ensure_current_user_tenant(request.tenant_id, current_user)
+    ensure_tenant(db, request.tenant_id)
+    items: list[SwaggerImportItemResult] = []
+    for draft in request.endpoints:
+        name = draft.name.strip()
+        if not name:
+            items.append(
+                SwaggerImportItemResult(
+                    name=draft.display_name or "未命名接口",
+                    status="error",
+                    error="工具名称不能为空",
+                )
+            )
+            continue
+        tool_request = ToolCreateRequest(
+            tenant_id=request.tenant_id,
+            name=name,
+            display_name=draft.display_name,
+            description=draft.description,
+            bucket=_normalize_bucket(request.group or draft.group),
+            tool_type="http",
+            method=draft.method,
+            url=draft.url,
+            headers=draft.headers,
+            auth=draft.auth,
+            mcp_config=(
+                {"http": draft.request_options}
+                if draft.request_options
+                else {}
+            ),
+            input_schema=draft.input_schema,
+            output_schema=draft.output_schema,
+            allowed_skills=[],
+            capability_scope="general",
+            enabled=request.enabled,
+        )
+        try:
+            row = create_tool(tool_request, agent_id, db, current_user)
+        except HTTPException as exc:
+            items.append(
+                SwaggerImportItemResult(
+                    name=name,
+                    status="skipped" if exc.status_code == 409 else "error",
+                    display_name=draft.display_name,
+                    error=str(exc.detail),
+                )
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001
+            items.append(
+                SwaggerImportItemResult(
+                    name=name,
+                    status="error",
+                    display_name=draft.display_name,
+                    error=str(exc),
+                )
+            )
+            continue
+        items.append(
+            SwaggerImportItemResult(
+                name=name,
+                status="imported",
+                tool_id=row.id,
+                display_name=row.display_name or row.name,
+            )
+        )
+    imported = sum(1 for item in items if item.status == "imported")
+    skipped = sum(1 for item in items if item.status == "skipped")
+    failed = sum(1 for item in items if item.status == "error")
+    return SwaggerImportResponse(
+        success=failed == 0,
+        imported=imported,
+        skipped=skipped,
+        failed=failed,
+        items=items,
+    )
+
+
 @router.get(
     "/{tool_id}", response_model=ToolRead, dependencies=[Depends(require_agent_scope_viewer)]
 )
@@ -460,7 +718,14 @@ def get_tool(
     row = _get_tool(db, tenant_id, tool_id)
     _ensure_tool_visible(db, tenant_id, row, agent_id)
     metadata_by_id = resource_binding_metadata(db, tenant_id, agent_id, "tool")
-    return tool_read(row, metadata_by_id.get(row.id))
+    counts = _tool_reference_counts(db, tenant_id, [row.id])
+    statuses = _agent_tool_binding_statuses(db, tenant_id, agent_id, [row.id])
+    return tool_read(
+        row,
+        metadata_by_id.get(row.id),
+        binding_status=statuses.get(row.id),
+        reference_count=counts.get(row.id, 0),
+    )
 
 
 @router.put("/{tool_id}", response_model=ToolRead)
@@ -474,17 +739,10 @@ def update_tool(
     row = _get_tool(db, request.tenant_id, tool_id)
     agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
     _ensure_tool_visible(db, request.tenant_id, row, agent_id)
-    if agent and not agent.is_overall:
-        source_tool_id = row.id
-        source_was_open_gallery = is_open_gallery_resource(db, request.tenant_id, "tool", row)
-        row = _ensure_private_tool_for_agent(db, request.tenant_id, agent, row)
-        if not source_was_open_gallery and request.name.strip() != row.name:
-            raise HTTPException(status_code=400, detail="Tool name cannot be modified")
-    else:
+    if request.name.strip() != row.name:
+        raise HTTPException(status_code=400, detail="Tool name cannot be modified")
+    if not agent or agent.is_overall:
         ensure_open_gallery_admin(request.tenant_id, current_user)
-        source_tool_id = row.id
-        if request.name.strip() != row.name:
-            raise HTTPException(status_code=400, detail="Tool name cannot be modified")
     row.display_name = request.display_name
     row.description = request.description
     row.bucket = _normalize_bucket(request.bucket)
@@ -506,26 +764,19 @@ def update_tool(
         row.capability_scope = request.capability_scope
         if row.mcp_server_id:
             row.capability_scope_inherited = False
-    row.enabled = request.enabled
     row.updated_at = utc_now()
     db.add(row)
     db.flush()
-    creator_metadata = user_creator_metadata(current_user)
+    binding_status: str | None = None
     if agent and not agent.is_overall:
-        if source_tool_id != row.id:
-            source_binding = _tool_binding(db, request.tenant_id, agent.id, source_tool_id)
-            if source_binding:
-                source_binding.status = "deleted"
-                source_binding.updated_at = utc_now()
-                db.add(source_binding)
+        binding_status = "active" if request.enabled else "inactive"
         ensure_private_resource_binding(
             db,
             request.tenant_id,
             agent.id,
             "tool",
             row.id,
-            "active" if request.enabled else "inactive",
-            metadata_json=creator_metadata if source_tool_id != row.id else None,
+            binding_status,
         )
     else:
         ensure_open_gallery_binding(
@@ -533,13 +784,18 @@ def update_tool(
             request.tenant_id,
             "tool",
             row.id,
-            "active" if request.enabled else "inactive",
-            metadata_json=creator_metadata,
+            "active",
         )
     db.commit()
     db.refresh(row)
     metadata_by_id = resource_binding_metadata(db, request.tenant_id, agent_id, "tool")
-    return tool_read(row, metadata_by_id.get(row.id))
+    counts = _tool_reference_counts(db, request.tenant_id, [row.id])
+    return tool_read(
+        row,
+        metadata_by_id.get(row.id),
+        binding_status=binding_status,
+        reference_count=counts.get(row.id, 0),
+    )
 
 
 @router.delete("/{tool_id}")
@@ -561,15 +817,26 @@ def delete_tool(
             db.commit()
             return {"status": "hidden"}
         raise HTTPException(status_code=404, detail="Tool not visible to this agent")
-    if agent and agent.is_overall:
-        if not is_open_gallery_resource(db, tenant_id, "tool", row):
-            raise HTTPException(status_code=404, detail="Tool not visible in open gallery")
-        ensure_open_gallery_admin(tenant_id, current_user)
-        hide_open_gallery_binding(db, tenant_id, "tool", row.id)
-        db.commit()
-        return {"status": "hidden"}
-    require_overall_agent(db, tenant_id, agent_id)
+    if agent and agent.is_overall and not is_open_gallery_resource(
+        db, tenant_id, "tool", row
+    ):
+        raise HTTPException(status_code=404, detail="Tool not visible in open gallery")
     ensure_open_gallery_admin(tenant_id, current_user)
+    counts = _tool_reference_counts(db, tenant_id, [row.id])
+    reference_count = counts.get(row.id, 0)
+    if reference_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该工具正被 {reference_count} 个数字员工引用，请先移除员工引用后再删除。",
+        )
+    for binding in db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.resource_type == "tool",
+            AgentResourceBinding.resource_id == row.id,
+        )
+    ).all():
+        db.delete(binding)
     db.delete(row)
     db.commit()
     return {"status": "deleted"}
@@ -667,63 +934,6 @@ def _tool_binding(
             AgentResourceBinding.status != "deleted",
         )
     ).first()
-
-
-def _ensure_private_tool_for_agent(
-    db: Session, tenant_id: str, agent: AgentProfile, row: Tool
-) -> Tool:
-    if not is_open_gallery_resource(db, tenant_id, "tool", row):
-        return row
-    now = utc_now()
-    clone = Tool(
-        tenant_id=tenant_id,
-        name=_unique_tool_name(db, tenant_id, row.name, agent.id),
-        display_name=row.display_name,
-        description=row.description,
-        bucket=row.bucket,
-        tool_type=row.tool_type,
-        method=row.method,
-        url=row.url,
-        headers_json=dict(row.headers_json or {}),
-        auth_json=dict(row.auth_json or {}),
-        config_json=dict(row.config_json or {}),
-        input_schema=dict(row.input_schema or {}),
-        output_schema=dict(row.output_schema or {}),
-        allowed_skills_json=list(row.allowed_skills_json or []),
-        mcp_server_id=row.mcp_server_id,
-        capability_scope=normalize_capability_scope(row.capability_scope),
-        capability_scope_inherited=row.capability_scope_inherited,
-        enabled=row.enabled,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(clone)
-    db.flush()
-    return clone
-
-
-def _tool_name_taken(db: Session, tenant_id: str, name: str, exclude_id: str | None = None) -> bool:
-    stmt = select(Tool).where(Tool.tenant_id == tenant_id, Tool.name == name)
-    if exclude_id:
-        stmt = stmt.where(Tool.id != exclude_id)
-    return db.exec(stmt).first() is not None
-
-
-def _unique_tool_name(
-    db: Session,
-    tenant_id: str,
-    base_name: str,
-    agent_id: str,
-    exclude_id: str | None = None,
-) -> str:
-    base = (base_name or "tool").strip() or "tool"
-    suffix_base = f"{base}-{agent_id[:8]}"
-    candidate = suffix_base
-    suffix = 2
-    while _tool_name_taken(db, tenant_id, candidate, exclude_id=exclude_id):
-        candidate = f"{suffix_base}-{suffix}"
-        suffix += 1
-    return candidate
 
 
 def _normalize_bucket(value: str | None) -> str:

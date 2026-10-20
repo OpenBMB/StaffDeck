@@ -20,6 +20,7 @@ import AgentShareDialog from '../components/AgentShareDialog';
 import EmployeeApiKeyDialog from '../components/EmployeeApiKeyDialog';
 import EmployeeCard from '../components/EmployeeCard';
 import MyCreatedSkillsPanel from '../components/MyCreatedSkillsPanel';
+import MyCreatedToolsPanel from '../components/MyCreatedToolsPanel';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
 import { RevealGroup } from '../components/RevealGroup';
 import {
@@ -63,10 +64,12 @@ export default function AgentsPage({
   const [selectingAgentId, setSelectingAgentId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline'>('all');
-  // 页面级 tab：数字员工 / 技能管理（技能管理不再是页面底部的附属面板）。
-  const [pageTab, setPageTab] = useState<'employees' | 'skills'>(() =>
-    window.location.hash.includes('skills') ? 'skills' : 'employees'
-  );
+  // 页面级 tab：数字员工 / 技能管理 / 工具管理。
+  const [pageTab, setPageTab] = useState<'employees' | 'skills' | 'tools'>(() => {
+    if (window.location.hash.includes('skills')) return 'skills';
+    if (window.location.hash.includes('tools')) return 'tools';
+    return 'employees';
+  });
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
     () => readEmployeeScope() || null,
   );
@@ -254,6 +257,7 @@ export default function AgentsPage({
         items={[
           { value: 'employees', label: '数字员工' },
           { value: 'skills', label: '技能管理' },
+          { value: 'tools', label: '工具管理' },
         ]}
       />
 
@@ -337,7 +341,7 @@ export default function AgentsPage({
         )}
       </RevealGroup>
         </>
-      ) : (
+      ) : pageTab === 'skills' ? (
         <div className="mt-[24px]">
           <div className="flex items-center justify-end mb-[16px]">
             <UIButton
@@ -352,6 +356,29 @@ export default function AgentsPage({
           </div>
           {/* 我创建的技能：跨作用域汇总（广场技能 + 挂在员工下的技能）。 */}
           <MyCreatedSkillsPanel agents={agents} />
+        </div>
+      ) : (
+        <div className="mt-[24px]">
+          <div className="flex flex-wrap items-center justify-end gap-[10px] mb-[16px]">
+            <UIButton
+              type="button"
+              variant="outline"
+              onClick={() => navigate('/enterprise/tools/import/swagger')}
+              className="h-[38px] rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[20px] text-[13px] font-normal text-[#757f9c] hover:border-[#cbd3e6] hover:bg-white hover:text-[#18181a]"
+            >
+              从 Swagger 导入
+            </UIButton>
+            <UIButton
+              type="button"
+              onClick={() => navigate('/enterprise/tools/new')}
+              className="h-[38px] rounded-[10px] bg-[#18181a] px-[20px] text-[13px] font-normal text-white hover:bg-[#303030]"
+            >
+              <IconPlus className="size-[16px]" />
+              新建工具
+            </UIButton>
+          </div>
+          {/* 我创建的工具：跨作用域汇总（广场工具 + 挂在员工下的工具）。 */}
+          <MyCreatedToolsPanel agents={agents} />
         </div>
       )}
       <EmployeeAvatarEditor

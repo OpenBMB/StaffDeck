@@ -433,9 +433,86 @@ export type ToolRead = {
   allowed_skills: string[];
   mcp_server_id?: string | null;
   enabled: boolean;
+  binding_status?: 'active' | 'inactive' | string | null;
+  reference_count?: number;
   metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+};
+
+export type ToolAccessRequestRead = {
+  id: string;
+  tenant_id: string;
+  tool_id: string;
+  tool_name: string;
+  tool_display_name: string;
+  tool_description: string;
+  agent_id: string;
+  agent_name: string;
+  requested_by_user_id: string;
+  requested_by_username: string;
+  status: 'pending' | 'approved' | 'rejected' | string;
+  reviewed_by_username?: string | null;
+  review_note?: string | null;
+  created_at: string;
+  updated_at: string;
+  reviewed_at?: string | null;
+};
+
+export type UserNotificationRead = {
+  id: string;
+  kind: string;
+  title: string;
+  message: string;
+  link?: string | null;
+  read: boolean;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type SwaggerToolDraft = {
+  name: string;
+  display_name?: string | null;
+  description?: string | null;
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  path: string;
+  url: string;
+  group: string;
+  headers: Record<string, string>;
+  auth: Record<string, unknown>;
+  input_schema: Record<string, unknown>;
+  output_schema: Record<string, unknown>;
+  request_options: Record<string, unknown>;
+  tags: string[];
+  deprecated: boolean;
+};
+
+export type SwaggerParseResponse = {
+  success: boolean;
+  title: string;
+  version: string;
+  base_url: string;
+  group: string;
+  endpoints: SwaggerToolDraft[];
+  warnings: string[];
+  error?: { code: string; message: string } | null;
+};
+
+export type SwaggerImportItemResult = {
+  name: string;
+  status: 'imported' | 'skipped' | 'error';
+  tool_id?: string | null;
+  display_name?: string | null;
+  error?: string | null;
+};
+
+export type SwaggerImportResponse = {
+  success: boolean;
+  imported: number;
+  skipped: number;
+  failed: number;
+  items: SwaggerImportItemResult[];
+  error?: { code: string; message: string } | null;
 };
 
 export type A2ATaskEventRead = {

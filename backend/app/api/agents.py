@@ -74,6 +74,7 @@ from app.db.models import (
     Skill,
     TeamMember,
     Tool,
+    ToolAccessRequest,
     utc_now,
     User,
 )
@@ -701,6 +702,47 @@ def _import_agent_resources_once(
         if block_reason:
             missing.append({"resource_id": identifier, "reason": block_reason})
             continue
+        if (
+            request.resource_type == "tool"
+            and not target_agent.is_overall
+            and isinstance(user, User)
+            and not _is_admin_user(user)
+            and isinstance(resolved, Tool)
+        ):
+            overall = get_overall_agent(db, request.tenant_id)
+            owner_binding = (
+                db.exec(
+                    select(AgentResourceBinding).where(
+                        AgentResourceBinding.tenant_id == request.tenant_id,
+                        AgentResourceBinding.agent_id == overall.id,
+                        AgentResourceBinding.resource_type == "tool",
+                        AgentResourceBinding.resource_id == resolved.id,
+                        AgentResourceBinding.status != "deleted",
+                    )
+                ).first()
+                if overall
+                else None
+            )
+            owner_metadata = dict(owner_binding.metadata_json or {}) if owner_binding else {}
+            owner_user_id = str(
+                owner_metadata.get("owner_user_id")
+                or owner_metadata.get("created_by_user_id")
+                or ""
+            )
+            approved = db.exec(
+                select(ToolAccessRequest).where(
+                    ToolAccessRequest.tenant_id == request.tenant_id,
+                    ToolAccessRequest.tool_id == resolved.id,
+                    ToolAccessRequest.agent_id == target_agent.id,
+                    ToolAccessRequest.requested_by_user_id == user.id,
+                    ToolAccessRequest.status == "approved",
+                )
+            ).first()
+            if owner_user_id != user.id and approved is None:
+                missing.append(
+                    {"resource_id": identifier, "reason": "approval_required"}
+                )
+                continue
         if target_agent.is_overall:
             _import_resource_to_overall(
                 db, request.tenant_id, source_agent, request.resource_type, resolved
@@ -1053,7 +1095,7 @@ def _agent_resource_timeline_events(
             kind, label = "knowledge", resource.name
         elif binding.resource_type == "tool":
             resource = tools.get(binding.resource_id)
-            if not resource or not resource.enabled:
+            if not resource:
                 continue
             kind, label = "tool", resource.display_name or resource.name
         else:
@@ -1533,7 +1575,7 @@ def _open_gallery_resource_enabled(
     if resource_type == "knowledge_base" and isinstance(resolved, KnowledgeBase):
         return resolved.status == "active"
     if resource_type == "tool" and isinstance(resolved, Tool):
-        return resolved.enabled
+        return True
     return False
 
 
@@ -2057,7 +2099,7 @@ def _resource_binding_visible_in_agent_summary(
     if isinstance(resource, KnowledgeBase):
         return resource.status == "active"
     if isinstance(resource, Tool):
-        return resource.enabled
+        return True
     return False
 
 

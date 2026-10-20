@@ -150,6 +150,24 @@ def test_initial_projection_expands_only_kernel_and_sop_explicit_capabilities() 
     assert all(not hasattr(item, "metadata") for item in projected.catalog)
 
 
+def test_initial_projection_expands_http_tools_but_keeps_mcp_in_catalog() -> None:
+    http_tool = _descriptor(
+        "order.lookup",
+        metadata={"tool_type": "http", "method": "POST"},
+    )
+    mcp_tool = _descriptor(
+        "mcp.search",
+        metadata={"tool_type": "mcp", "method": "POST"},
+    )
+
+    projected = project_capability_manifest(
+        CapabilityManifest(available=[http_tool, mcp_tool])
+    )
+
+    assert [item.name for item in projected.available] == ["order.lookup"]
+    assert [item.name for item in projected.catalog] == ["mcp.search"]
+
+
 def test_capability_search_honors_kind_limit_and_stable_name_order() -> None:
     tools = [
         _descriptor(f"tool_{index:02d}", description="zzzz shared capability")

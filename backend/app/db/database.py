@@ -3,6 +3,7 @@ import json
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import Engine, inspect, text
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -63,6 +64,7 @@ def init_db() -> None:
 
     # _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
+    _migrate_tool_binding_semantics()
     _migrate_ai_review_schema()
     _migrate_mcp_server_timeout()
     _migrate_general_skill_download_count()
@@ -77,6 +79,115 @@ def init_db() -> None:
     # _migrate_model_custom_headers_schema()
     # _migrate_agent_usage_count()
     # _purge_orphaned_chat_sessions()
+
+
+def _migrate_tool_binding_semantics() -> None:
+    """兼容工具语义迁移：全局 Tool.enabled 已废弃，启用状态下沉到员工绑定。
+
+    历史数据里可能存在：
+    - Tool.enabled=False，但员工绑定仍是 active；
+    - 私有工具绑定缺少 owner/scope 元数据，导致「我创建的工具」、归属展示失效；
+    - 旧逻辑留下的 enabled 标记与新的绑定状态互相矛盾。
+
+    这里做一次幂等回填：
+    1. 全局停用的工具 → 所有相关绑定置为 inactive；
+    2. 私有绑定补齐 owner_agent_id / scope / 创建者元数据；
+    3. Tool.enabled 统一回 true，后续运行时只看 binding.status。
+    """
+
+    from app.db.models import AgentProfile, AgentResourceBinding, Tool, utc_now
+
+    with Session(engine) as db:
+        tools = list(db.exec(select(Tool)).all())
+        if not tools:
+            return
+        tools_by_id = {tool.id: tool for tool in tools}
+        bindings = list(
+            db.exec(
+                select(AgentResourceBinding).where(
+                    AgentResourceBinding.resource_type == "tool",
+                    AgentResourceBinding.status != "deleted",
+                )
+            ).all()
+        )
+        if not bindings:
+            return
+        agents = {
+            agent.id: agent
+            for agent in db.exec(
+                select(AgentProfile).where(
+                    AgentProfile.id.in_({binding.agent_id for binding in bindings})
+                )
+            ).all()
+        }
+        # 广场绑定里的创建者信息，可用于给引用它的私有绑定回填真实工具创建者。
+        gallery_metadata_by_tool: dict[str, dict[str, Any]] = {}
+        for binding in bindings:
+            agent = agents.get(binding.agent_id)
+            if agent and agent.is_overall:
+                gallery_metadata_by_tool[binding.resource_id] = dict(
+                    binding.metadata_json or {}
+                )
+
+        creator_keys = (
+            "owner_user_id",
+            "created_by_user_id",
+            "owner_username",
+            "created_by_username",
+            "owner_display_name",
+            "created_by_display_name",
+        )
+        for binding in bindings:
+            tool = tools_by_id.get(binding.resource_id)
+            if tool is None:
+                continue
+            changed = False
+            metadata = dict(binding.metadata_json or {})
+            agent = agents.get(binding.agent_id)
+            is_overall_binding = bool(agent and agent.is_overall)
+            if is_overall_binding:
+                if metadata.get("scope") != "open_gallery":
+                    metadata["scope"] = "open_gallery"
+                    metadata["visibility"] = "open_gallery"
+                    changed = True
+            else:
+                if not metadata.get("owner_agent_id"):
+                    metadata["owner_agent_id"] = binding.agent_id
+                    changed = True
+                if not metadata.get("scope"):
+                    metadata["scope"] = "agent_private"
+                    metadata["visibility"] = "agent_private"
+                    metadata["created_from_agent"] = True
+                    changed = True
+                if not metadata.get("owner_user_id") and not metadata.get("created_by_user_id"):
+                    gallery_metadata = gallery_metadata_by_tool.get(tool.id, {})
+                    if any(gallery_metadata.get(key) for key in creator_keys):
+                        for key in creator_keys:
+                            if gallery_metadata.get(key) and not metadata.get(key):
+                                metadata[key] = gallery_metadata[key]
+                                changed = True
+                    elif agent is not None:
+                        agent_metadata = dict(agent.metadata_json or {})
+                        for key in creator_keys:
+                            if agent_metadata.get(key) and not metadata.get(key):
+                                metadata[key] = agent_metadata[key]
+                                changed = True
+            # 旧全局开关：工具被 admin 停用时，员工侧绑定也应当停用。
+            if not tool.enabled and binding.status == "active":
+                binding.status = "inactive"
+                changed = True
+            if changed:
+                binding.metadata_json = metadata
+                binding.updated_at = utc_now()
+                db.add(binding)
+
+        # 丢弃旧的全局 enabled 语义；之后只由员工绑定控制是否可调用。
+        for tool in tools:
+            if not tool.enabled:
+                tool.enabled = True
+                tool.updated_at = utc_now()
+                db.add(tool)
+        db.commit()
 
 
 def _purge_orphaned_chat_sessions() -> None:

@@ -55,6 +55,10 @@ class ToolRead(BaseModel):
     mcp_server_id: Optional[str] = None
     capability_scope: CapabilityScope
     enabled: bool
+    # 员工范围下这是该员工绑定的启用状态；工具广场范围下为 None。
+    binding_status: Optional[str] = None
+    # 被多少个数字员工引用（不包含开放广场的内部绑定）。
+    reference_count: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
@@ -68,6 +72,67 @@ class ToolBucketRead(BaseModel):
     enabled_count: int
     disabled_count: int
     tool_ids: list[str] = Field(default_factory=list)
+
+
+
+
+class SwaggerParseRequest(BaseModel):
+    tenant_id: str
+    spec: str = Field(min_length=1)
+    default_group: Optional[str] = None
+    base_url: Optional[str] = None
+
+
+class SwaggerToolDraft(BaseModel):
+    name: str
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
+    path: str = ""
+    url: str
+    group: str = "Swagger 导入"
+    headers: dict[str, str] = Field(default_factory=dict)
+    auth: dict[str, Any] = Field(default_factory=dict)
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    request_options: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    deprecated: bool = False
+
+
+class SwaggerParseResponse(BaseModel):
+    success: bool = True
+    title: str = ""
+    version: str = ""
+    base_url: str = ""
+    group: str = "Swagger 导入"
+    endpoints: list[SwaggerToolDraft] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    error: Optional[ToolError] = None
+
+
+class SwaggerImportRequest(BaseModel):
+    tenant_id: str
+    group: Optional[str] = None
+    endpoints: list[SwaggerToolDraft] = Field(min_length=1)
+    enabled: bool = True
+
+
+class SwaggerImportItemResult(BaseModel):
+    name: str
+    status: Literal["imported", "skipped", "error"]
+    tool_id: Optional[str] = None
+    display_name: Optional[str] = None
+    error: Optional[str] = None
+
+
+class SwaggerImportResponse(BaseModel):
+    success: bool = True
+    imported: int = 0
+    skipped: int = 0
+    failed: int = 0
+    items: list[SwaggerImportItemResult] = Field(default_factory=list)
+    error: Optional[ToolError] = None
 
 
 class ToolCall(BaseModel):

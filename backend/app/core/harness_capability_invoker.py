@@ -1194,7 +1194,6 @@ class HarnessCapabilityInvoker:
         if (
             tool is None
             or tool.tenant_id != self.tenant_id
-            or not tool.enabled
             or tool.name != source_tool_name
         ):
             return _failure(

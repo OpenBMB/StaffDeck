@@ -2168,3 +2168,48 @@ class AppUsageCounter(SQLModel, table=True):
     app_key: str = Field(sa_column=Column(String, nullable=False, unique=True))
     usage_count: int = Field(default=0, sa_column=Column(Integer, nullable=False, server_default="0"))
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ToolAccessRequest(SQLModel, table=True):
+    """员工申请使用工具广场中的工具。审批通过后绑定到申请员工。"""
+
+    __tablename__ = "tool_access_requests"
+    __table_args__ = (
+        Index("ix_tool_access_requests_tenant_status", "tenant_id", "status"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("toolreq"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    tool_id: str = Field(index=True)
+    tool_name: str = Field(default="")
+    agent_id: str = Field(index=True)
+    agent_name: str = Field(default="")
+    requested_by_user_id: str = Field(index=True)
+    requested_by_username: str = Field(default="")
+    status: str = Field(default="pending", index=True)
+    reviewed_by_user_id: Optional[str] = Field(default=None, index=True)
+    reviewed_by_username: Optional[str] = None
+    review_note: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    reviewed_at: Optional[datetime] = None
+
+
+class UserNotification(SQLModel, table=True):
+    """站内消息：右上角「我的消息」。"""
+
+    __tablename__ = "user_notifications"
+    __table_args__ = (
+        Index("ix_user_notifications_tenant_user", "tenant_id", "user_id"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("notif"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    kind: str = Field(default="system", index=True)
+    title: str
+    message: str = Field(default="")
+    link: Optional[str] = None
+    read_at: Optional[datetime] = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)

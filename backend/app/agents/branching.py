@@ -440,6 +440,11 @@ def is_bound_resource_visible_for_agent(
         return False
     if getattr(resource, "tenant_id", None) != tenant_id:
         return False
+    # Tools are tenant-level definitions referenced by employees. Once a
+    # binding exists, removing the tool from the open gallery must not make it
+    # silently disappear from the employees still referencing it.
+    if resource_type == "tool":
+        return True
     if _binding_is_private(binding) or _metadata_is_private(_resource_metadata(resource)):
         return True
     return is_open_gallery_resource(
@@ -604,7 +609,6 @@ def visible_tool_rows(
             row
             for row in rows
             if is_open_gallery_resource(db, tenant_id, "tool", row)
-            and (include_inactive or _tool_runtime_enabled(db, row))
         ]
 
     bindings = db.exec(
@@ -633,8 +637,12 @@ def visible_tool_rows(
 
 
 def _tool_runtime_enabled(db: Session, row: Tool) -> bool:
-    if not row.enabled:
-        return False
+    """Tool definitions have no global on/off switch.
+
+    Only the MCP server's own availability is a runtime gate; employee-level
+    enable/disable is represented by the binding status checked above.
+    """
+
     if not row.mcp_server_id:
         return True
     server = db.get(MCPServer, row.mcp_server_id)

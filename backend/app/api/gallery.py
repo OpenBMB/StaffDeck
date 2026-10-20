@@ -133,8 +133,8 @@ def gallery_counts(
         for row in db.exec(
             select(Tool)
             .where(Tool.tenant_id == tenant_id)
-            .options(load_only(Tool.id, Tool.tenant_id, Tool.enabled))
+            .options(load_only(Tool.id, Tool.tenant_id))
         ).all()
-        if row.enabled and is_open_gallery_resource(db, tenant_id, "tool", row, prefetch=prefetch)
+        if is_open_gallery_resource(db, tenant_id, "tool", row, prefetch=prefetch)
     )
     return counts

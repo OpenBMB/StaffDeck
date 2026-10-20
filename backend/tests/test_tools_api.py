@@ -211,7 +211,7 @@ def test_delete_tool_is_tenant_scoped() -> None:
         assert db.get(Tool, tool.id) is not None
 
 
-def test_open_gallery_delete_tool_hides_gallery_without_removing_agent_binding() -> None:
+def test_delete_referenced_tool_is_blocked_until_employee_binding_is_removed() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(
@@ -246,15 +246,16 @@ def test_open_gallery_delete_tool_hides_gallery_without_removing_agent_binding()
         ensure_open_gallery_binding(db, "tenant_demo", "tool", tool.id, "active")
         db.commit()
 
-        result = delete_tool(
-            tool.id,
-            "tenant_demo",
-            db,
-            agent_id="agent_overall",
-            current_user=_admin_user(),
-        )
+        with pytest.raises(HTTPException) as exc_info:
+            delete_tool(
+                tool.id,
+                "tenant_demo",
+                db,
+                agent_id="agent_overall",
+                current_user=_admin_user(),
+            )
 
-        assert result == {"status": "hidden"}
+        assert exc_info.value.status_code == 409
         assert db.get(Tool, tool.id) is not None
         branch_binding = db.exec(
             select(AgentResourceBinding).where(
@@ -265,8 +266,23 @@ def test_open_gallery_delete_tool_hides_gallery_without_removing_agent_binding()
             )
         ).one()
         assert branch_binding.status == "active"
-        assert list_tools("tenant_demo", bucket=None, agent_id="agent_overall", db=db) == []
-        assert list_tools("tenant_demo", bucket=None, agent_id="agent_branch", db=db) == []
+        # The employee reference keeps the definition usable even if it is
+        # removed from the open gallery.
+        assert [row.id for row in list_tools("tenant_demo", None, "agent_branch", db)] == [tool.id]
+
+        branch_binding.status = "deleted"
+        db.add(branch_binding)
+        db.commit()
+
+        result = delete_tool(
+            tool.id,
+            "tenant_demo",
+            db,
+            agent_id="agent_overall",
+            current_user=_admin_user(),
+        )
+        assert result == {"status": "deleted"}
+        assert db.get(Tool, tool.id) is None
 
 
 def test_open_gallery_tool_read_returns_persisted_creator_metadata() -> None:
@@ -725,3 +741,86 @@ def _test_session():
 
 def _mock_mcp_server_path() -> Path:
     return Path(__file__).resolve().parents[1] / "mock_servers" / "mcp_stdio_server.py"
+
+
+def test_list_my_tools_returns_cross_scope_items_created_by_current_user() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        employee = AgentProfile(id="agent_writer", tenant_id="tenant_demo", name="Writer")
+        db.add(employee)
+        own_tool = Tool(
+            id="tool_own",
+            tenant_id="tenant_demo",
+            name="own.tool",
+            method="POST",
+            url="https://example.test/own",
+        )
+        other_tool = Tool(
+            id="tool_other",
+            tenant_id="tenant_demo",
+            name="other.tool",
+            method="POST",
+            url="https://example.test/other",
+        )
+        gallery_tool = Tool(
+            id="tool_gallery",
+            tenant_id="tenant_demo",
+            name="gallery.tool",
+            method="POST",
+            url="https://example.test/gallery",
+        )
+        db.add_all([own_tool, other_tool, gallery_tool])
+        db.flush()
+        db.add_all(
+            [
+                AgentResourceBinding(
+                    tenant_id="tenant_demo",
+                    agent_id=employee.id,
+                    resource_type="tool",
+                    resource_id=own_tool.id,
+                    status="active",
+                    metadata_json={
+                        "owner_user_id": "user_member",
+                        "created_by_user_id": "user_member",
+                        "owner_agent_id": employee.id,
+                    },
+                ),
+                AgentResourceBinding(
+                    tenant_id="tenant_demo",
+                    agent_id=employee.id,
+                    resource_type="tool",
+                    resource_id=other_tool.id,
+                    status="active",
+                    metadata_json={
+                        "owner_user_id": "user_other",
+                        "created_by_user_id": "user_other",
+                        "owner_agent_id": employee.id,
+                    },
+                ),
+                AgentResourceBinding(
+                    tenant_id="tenant_demo",
+                    agent_id="agent_overall",
+                    resource_type="tool",
+                    resource_id=gallery_tool.id,
+                    status="active",
+                    metadata_json={
+                        "owner_user_id": "user_member",
+                        "created_by_user_id": "user_member",
+                        "scope": "open_gallery",
+                    },
+                ),
+            ]
+        )
+        db.commit()
+
+        rows = list_tools(
+            "tenant_demo",
+            None,
+            None,
+            db,
+            mine=True,
+            current_user=_member_user(),
+        )
+
+        assert {row.name for row in rows} == {"own.tool", "gallery.tool"}
+        assert {row.metadata.get("owner_agent_id") for row in rows} == {None, employee.id}

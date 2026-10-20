@@ -5,23 +5,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlmodel import Session
 
+from app.a2a import recover_codex_a2a_tasks, stop_codex_a2a_tasks
+from app.a2a import router as a2a_router
 from app.api import (
     agent_apps,
     agent_shares,
     agents,
     ai_review,
+    api_key_applications,
     app_updates,
     auth,
     channels,
     chat,
     evolution,
     feedback,
+    gallery,
     general_skill_shares,
     general_skills,
-    gallery,
     knowledge,
     knowledge_bases,
-    api_key_applications,
     laya,
     memories,
     mock,
@@ -35,12 +37,12 @@ from app.api import (
     sessions,
     skills,
     teams,
+    tool_access,
     tools,
     traces,
     ui_config,
 )
 from app.async_jobs import shutdown_async_jobs, start_async_jobs
-from app.a2a import recover_codex_a2a_tasks, router as a2a_router, stop_codex_a2a_tasks
 from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
 from app.core.harness_recovery import (
@@ -57,8 +59,8 @@ from app.public_api.webhooks import enqueue_due_webhook_deliveries
 from app.runtime_lock import acquire_runtime_instance_lock, release_runtime_instance_lock
 from app.scheduled_tasks.worker import start_background_worker, stop_background_worker
 from app.security.auth import read_token_payload, share_scope_from_payload
-from app.tools.a2a_recovery import recover_a2a_client_tasks
 from app.teams.sweeper import start_timeout_sweeper, stop_timeout_sweeper
+from app.tools.a2a_recovery import recover_a2a_client_tasks
 from app.version import app_version
 
 settings = get_settings()
@@ -203,6 +205,8 @@ app.include_router(teams.router)
 app.include_router(teams.threads_router)
 app.include_router(tools.router)
 app.include_router(tools.mcp_router)
+app.include_router(tool_access.router)
+app.include_router(tool_access.notifications_router)
 app.include_router(gallery.router)
 app.include_router(agent_apps.router)
 app.include_router(sessions.router)

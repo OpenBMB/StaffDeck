@@ -9,12 +9,12 @@ import {
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { cn } from '@/lib/utils';
-import { KeyRound } from 'lucide-react';
+import { Bell, KeyRound } from 'lucide-react';
 
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconEdit from '../assets/icons/edit.svg?react';
 import IconLogout from '../assets/icons/logout.svg?react';
-import { api } from '../api/client';
+import { api, TENANT_ID } from '../api/client';
 import {
   getEnterpriseAuthSession,
   mergeEnterpriseAuthSessionUser,
@@ -24,6 +24,7 @@ import {
 import LanguageSwitcher from './LanguageSwitcher';
 import AccountApiKeyDialog from './AccountApiKeyDialog';
 import EditDepartmentDialog from './EditDepartmentDialog';
+import UserNotificationsDialog, { NOTIFICATIONS_CHANGED_EVENT } from './UserNotificationsDialog';
 
 /** 只允许 http/https/data:image/blob 协议的图片地址,其余一律视为无效。 */
 function safeImageUrl(value: string): string {
@@ -88,6 +89,8 @@ export default function AppHeader({
   const [apiKeyOpen, setApiKeyOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [editDepartmentOpen, setEditDepartmentOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const displayName = user?.display_name || user?.username || '';
@@ -144,6 +147,36 @@ export default function AppHeader({
 
   const avatarPointer = user?.avatar_url || '';
   const userId = user?.id || '';
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadUnread = () => {
+      if (!getEnterpriseAuthSession()?.token) {
+        setUnreadNotificationCount(0);
+        return;
+      }
+      api
+        .get<{ count: number }>(`/api/enterprise/notifications/unread-count?tenant_id=${TENANT_ID}`)
+        .then((result) => {
+          if (!cancelled) setUnreadNotificationCount(Math.max(0, Number(result.count) || 0));
+        })
+        .catch(() => {
+          if (!cancelled) setUnreadNotificationCount(0);
+        });
+    };
+    loadUnread();
+    const timer = window.setInterval(loadUnread, 30_000);
+    const onChange = () => loadUnread();
+    window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, onChange);
+    window.addEventListener('focus', onChange);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener(NOTIFICATIONS_CHANGED_EVENT, onChange);
+      window.removeEventListener('focus', onChange);
+    };
+  }, [userId]);
+
   useEffect(() => {
     void loadAvatar();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -238,11 +271,19 @@ export default function AppHeader({
               aria-label="账户菜单"
               className="flex h-[32px] shrink-0 items-center gap-[8px] rounded-[10px] pl-[4px] pr-[8px] outline-none"
             >
-              <span className="grid size-[32px] shrink-0 place-items-center overflow-hidden rounded-full bg-[#eef1fb] text-[14px] font-medium leading-none text-[#7e96dc]">
-                {safeAvatarUrl ? (
-                  <img src={safeAvatarUrl} alt="" className="size-full object-cover" />
-                ) : (
-                  (initial ?? '--')
+              <span className="relative grid size-[32px] shrink-0 place-items-center overflow-visible rounded-full bg-[#eef1fb] text-[14px] font-medium leading-none text-[#7e96dc]">
+                <span className="grid size-full place-items-center overflow-hidden rounded-full">
+                  {safeAvatarUrl ? (
+                    <img src={safeAvatarUrl} alt="" className="size-full object-cover" />
+                  ) : (
+                    (initial ?? '--')
+                  )}
+                </span>
+                {unreadNotificationCount > 0 && (
+                  <span
+                    aria-label="有未读消息"
+                    className="absolute right-0 top-0 size-[8px] rounded-full bg-[#f5483b] ring-[1.5px] ring-white"
+                  />
                 )}
               </span>
               <IconChevronDown className="size-[14px] shrink-0 text-[#757F9C]" />
@@ -354,6 +395,28 @@ export default function AppHeader({
               )}
               {user && (
                 <DropdownMenuItem
+                  onSelect={() => setNotificationsOpen(true)}
+                  className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
+                >
+                  <span className="relative inline-flex size-[16px] shrink-0 items-center justify-center">
+                    <Bell className="size-[16px]" />
+                    {unreadNotificationCount > 0 && (
+                      <span
+                        aria-label="有未读消息"
+                        className="absolute -right-[2px] -top-[2px] size-[7px] rounded-full bg-[#f5483b] ring-[1.5px] ring-white"
+                      />
+                    )}
+                  </span>
+                  我的消息
+                  {unreadNotificationCount > 0 && (
+                    <span className="ml-auto rounded-full bg-[#f5483b] px-[6px] py-[1px] text-[10px] leading-[14px] text-white">
+                      {unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}
+                    </span>
+                  )}
+                </DropdownMenuItem>
+              )}
+              {user && (
+                <DropdownMenuItem
                   onSelect={() => setApiKeyOpen(true)}
                   className="h-[36px] cursor-pointer gap-2 rounded-[10px] px-[12px] text-[14px] text-[#464C5E]"
                 >
@@ -391,6 +454,10 @@ export default function AppHeader({
         currentDepartment={user?.department || ''}
         onClose={() => setEditDepartmentOpen(false)}
         onSaved={() => void refreshSessionUser()}
+      />
+      <UserNotificationsDialog
+        open={notificationsOpen}
+        onClose={() => setNotificationsOpen(false)}
       />
     </header>
   );

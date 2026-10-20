@@ -174,8 +174,6 @@ def _validate_capability_refs(db: Session, row: APISOPDraft, card: SkillCard) ->
                 )
             ).first()
             unavailable = not resource or resource.tenant_id != row.tenant_id or not binding
-            if resource_type == "tool" and resource and not resource.enabled:
-                unavailable = True
             if resource_type == "general_skill" and resource and resource.status != "published":
                 unavailable = True
             if resource_type == "knowledge_base" and resource and resource.status != "active":

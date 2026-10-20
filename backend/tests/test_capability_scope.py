@@ -290,8 +290,11 @@ def test_create_update_and_read_apis_round_trip_capability_scope() -> None:
             db=db,
             current_user=admin,
         )
-        assert private_tool.id != tool.id
+        # Tools are shared definitions: employee-scope edits update the same row
+        # instead of creating an implicit private clone.
+        assert private_tool.id == tool.id
         assert private_tool.capability_scope == "sop_specific"
+        assert db.get(Tool, tool.id).url == "https://example.test/private-lookup"
 
         knowledge_base = create_knowledge_base(
             KnowledgeBaseCreateRequest(

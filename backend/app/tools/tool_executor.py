@@ -16,7 +16,7 @@ from app.config import get_settings
 from app.db.models import MCPServer, Tool
 from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
 from app.tools.a2a_client import A2AClient, A2AClientError
-from app.tools.http_request import prepare_get_request
+from app.tools.http_request import split_http_arguments
 from app.tools.mcp_client import MCPClientError, execute_mcp_tool, execute_mcp_tool_result
 from app.tools.tool_schema import MCPAppDescriptor, ToolCall, ToolError, ToolResult
 
@@ -50,15 +50,14 @@ class ToolExecutor:
             ).first()
         if not tool:
             return self._error(tool_call.name, "NOT_FOUND", "工具不存在或未配置。")
-        if not tool.enabled:
-            return self._error(tool.name, "DISABLED", "工具当前未启用。")
         if agent_id and tool.id not in {
             row.id
             for row in visible_tool_rows(self.db, tenant_id, agent_id, include_inactive=False)
         }:
             return self._error(tool.name, "NOT_ALLOWED", "当前员工未启用该工具。")
         if (
-            active_skill_id
+            (tool.tool_type or "http") != "http"
+            and active_skill_id
             and tool.allowed_skills_json
             and active_skill_id not in tool.allowed_skills_json
         ):
@@ -91,21 +90,29 @@ class ToolExecutor:
             tool.url,
             self._resolve_headers(tool.headers_json or {}, tool.auth_json or {}),
         )
+        config = tool.config_json if isinstance(tool.config_json, dict) else {}
+        request_options = config.get("http") if isinstance(config.get("http"), dict) else None
+        request_url, query, body, header_params = split_http_arguments(
+            tool.url,
+            tool.method,
+            tool_call.arguments,
+            request_options,
+        )
+        headers.update(header_params)
         policy = self._execution_policy(
             tool,
             timeout_seconds_override=timeout_seconds_override,
         )
         try:
             with httpx.Client(timeout=policy.timeout_seconds) as client:
-                if tool.method.upper() == "GET":
-                    request_url, request_kwargs = prepare_get_request(tool.url, tool_call.arguments)
-                    response = client.request(
-                        tool.method.upper(), request_url, headers=headers, **request_kwargs
-                    )
-                else:
-                    response = client.request(
-                        tool.method.upper(), tool.url, headers=headers, json=tool_call.arguments
-                    )
+                request_kwargs: dict[str, Any] = {}
+                if query:
+                    request_kwargs["params"] = query
+                if body or (tool.method.upper() != "GET" and not request_options):
+                    request_kwargs["json"] = body
+                response = client.request(
+                    tool.method.upper(), request_url, headers=headers, **request_kwargs
+                )
                 response.raise_for_status()
                 return ToolResult(
                     tool_name=tool.name,

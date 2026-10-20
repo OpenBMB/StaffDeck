@@ -201,7 +201,7 @@ def test_counts_cover_all_modules_with_frontend_filters():
         db.add(_gallery_binding("knowledge_base", kb_default.id))
         db.add(_gallery_binding("knowledge_base", kb_offline.id))
 
-        # tools: enabled 计数；disabled 不计。
+        # tools: 广场内所有工具定义都计数；全局 enabled 已废弃。
         tool_on = Tool(
             tenant_id=TENANT,
             name="搜天气",
@@ -237,4 +237,4 @@ def test_counts_cover_all_modules_with_frontend_filters():
         assert counts.general_skills == 1
         # “资料库”计入；“默认知识库”空库不计；下线库不计。
         assert counts.knowledge == 1
-        assert counts.tools == 1
+        assert counts.tools == 2

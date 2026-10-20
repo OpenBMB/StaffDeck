@@ -2,7 +2,7 @@ import { ApiOutlined, CheckOutlined, ExperimentOutlined, ToolOutlined } from '..
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Activity, Copy, FlaskConical, RotateCcw, TerminalSquare, Users, XCircle } from 'lucide-react';
+import { Ban, CircleCheck, FlaskConical } from 'lucide-react';
 import { pinyin } from 'pinyin-pro';
 
 import { api, TENANT_ID } from '../api/client';
@@ -48,6 +48,7 @@ import {
   formatDateTime,
 } from '@/lib/enterprise-ui';
 import CodeBlock from '../components/CodeBlock';
+import { JsonTextarea } from '../components/JsonTextarea';
 import IconAdd from '../assets/icons/add.svg?react';
 import IconArrowRight from '../assets/icons/arrow-right.svg?react';
 import IconBriefcase from '../assets/icons/cap-briefcase.svg?react';
@@ -71,9 +72,7 @@ import { isTeamScope, readEmployeeScope } from '../lib/agent-scope-storage';
 import { StatusBadge } from './scheduled-tasks/StatusBadge';
 import type {
   AgentProfileRead,
-  A2ATaskRunRead,
   CapabilityScope,
-  CodexA2AAdapterRead,
   ToolRead,
   MCPServerRead,
   MCPServerConnection,
@@ -93,10 +92,10 @@ type ToolPageProps = {
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const TOOL_PAGE_SIZE = 10;
 const TOOL_FORM_INITIAL_VALUES = {
-  tool_type: 'http' as 'http' | 'a2a' | 'mcp',
+  tool_type: 'http' as 'http' | 'mcp',
   method: 'POST',
   enabled: true,
-  bucket: '未分桶',
+  bucket: '未分组',
   headers: '{}',
   auth: '{}',
   mcp_config: '{}',
@@ -120,6 +119,16 @@ const TRANSPORT_OPTIONS: { value: MCPTransport; label: string; hint: string }[] 
   { value: 'stdio', label: 'Stdio（本地命令）', hint: '启动本地进程并通过标准输入输出通信' },
   { value: 'builtin', label: '内置 Demo', hint: '使用内置的 builtin.demo MCP，仅用于演示' },
 ];
+
+function toolGroup(row: ToolRead): string {
+  const value = (row.bucket || '').trim();
+  return !value || value === '未分桶' ? '未分组' : value;
+}
+
+function toolBindingEnabled(row: ToolRead): boolean {
+  if (row.binding_status) return row.binding_status === 'active';
+  return Boolean(row.enabled);
+}
 
 export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageProps = {}) {
   const [rows, setRows] = useState<ToolRead[]>([]);
@@ -211,21 +220,20 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
 
   useEffect(() => {
     if (searchParams.get('add') !== 'plaza') return;
-    if (!agentScopeLoaded) return;
-    const resourceId = searchParams.get('resourceId') || undefined;
-    void openImportTools('plaza', resourceId);
+    // 工具不再支持从广场直接复制：统一走工具广场的「申请使用」审批流程。
+    navigate('/enterprise/platform/tools', { replace: true });
     const next = new URLSearchParams(searchParams);
     next.delete('add');
     next.delete('resourceId');
     setSearchParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentScopeLoaded, isOverallAgent, searchParams, setSearchParams]);
+  }, [searchParams, setSearchParams]);
 
-  const visibleRows = useMemo(() => (isOverallAgent ? rows : rows.filter((row) => row.enabled)), [isOverallAgent, rows]);
+  const visibleRows = useMemo(() => rows, [rows]);
   const bucketStats = useMemo(() => buildBucketStats(visibleRows), [visibleRows]);
   const bucketSelectOptions = useMemo(
     () => [
-      { value: '__all__', label: '全部分桶' },
+      { value: '__all__', label: '全部分组' },
       ...bucketStats.map((item) => ({ value: item.bucket, label: `${item.bucket} (${item.total})` })),
     ],
     [bucketStats],
@@ -233,14 +241,14 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
   const filteredRows = useMemo(() => {
     const text = searchText.trim().toLowerCase();
     return visibleRows.filter((row) => {
-      const bucketMatch = bucketFilter === '__all__' || (row.bucket || '未分桶') === bucketFilter;
+      const bucketMatch = bucketFilter === '__all__' || toolGroup(row) === bucketFilter;
       if (!bucketMatch) return false;
       if (!text) return true;
       return [
         row.name,
         row.display_name || '',
         row.description || '',
-        row.bucket || '',
+        toolGroup(row),
         row.url,
         resourceCreatorName(row),
       ].some((value) => value.toLowerCase().includes(text));
@@ -252,10 +260,12 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
   const stats = useMemo(
     () => ({
       total: visibleRows.length,
-      enabled: visibleRows.filter((row) => row.enabled).length,
+      enabled: isOverallAgent
+        ? visibleRows.filter((row) => (row.reference_count || 0) > 0).length
+        : visibleRows.filter(toolBindingEnabled).length,
       buckets: bucketStats.length,
     }),
-    [visibleRows, bucketStats],
+    [visibleRows, bucketStats, isOverallAgent],
   );
 
   // 工具集是租户级的,员工范围内只展示该员工已导入其工具的服务器,数量也按员工可见口径算
@@ -304,12 +314,12 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
       navigate('/enterprise/tools/mcp/new');
       return;
     }
-    if (key === 'plaza') {
-      void openImportTools('plaza');
+    if (key === 'swagger') {
+      navigate('/enterprise/tools/import/swagger');
       return;
     }
-    if (key === 'employee') {
-      void openImportTools('employee');
+    if (key === 'request') {
+      navigate('/enterprise/platform/tools');
     }
   }
 
@@ -379,7 +389,7 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
       const sourceRows = await api.get<ToolRead[]>(
         `/api/enterprise/tools?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(sourceAgentId)}`,
       );
-      const enabledRows = sourceRows.filter((item) => item.enabled);
+      const enabledRows = sourceRows.filter(toolBindingEnabled);
       setImportSourceTools(enabledRows);
       return enabledRows;
     } catch (error) {
@@ -454,6 +464,25 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
     void loadImportSourceTools(nextSource);
   }
 
+  async function setToolEnabled(row: ToolRead, enabled: boolean) {
+    const payload = buildToolPayload({ ...toolToFormValues(row), enabled });
+    if (!payload) return;
+    try {
+      const saved = await api.put<ToolRead>(
+        `/api/enterprise/tools/${row.id}?tenant_id=${TENANT_ID}${agentQuery}`,
+        payload,
+      );
+      setRows((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+      notify.success(enabled ? '已对当前员工启用工具' : '已对当前员工停用工具');
+      announceEnterpriseCapabilityCatalogChange({
+        resourceType: 'tool',
+        agentId: agentId || undefined,
+      });
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '更新工具状态失败');
+    }
+  }
+
   function renderActions(row: ToolRead) {
     const isMcpChild = row.tool_type === 'mcp' && Boolean(row.mcp_server_id);
     return (
@@ -470,6 +499,19 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
               <IconEdit />
               编辑
             </DropdownMenuItem>
+          )}
+          {!isOverallAgent && (
+            toolBindingEnabled(row) ? (
+              <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void setToolEnabled(row, false)}>
+                <Ban />
+                对当前员工停用
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => void setToolEnabled(row, true)}>
+                <CircleCheck />
+                对当前员工启用
+              </DropdownMenuItem>
+            )
           )}
           <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => navigate(`/enterprise/tools/${row.id}/test`)}>
             <FlaskConical />
@@ -512,23 +554,17 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
     },
     {
       key: 'bucket',
-      title: '分桶',
+      title: '分组',
       width: 130,
-      render: (row) => <StatusBadge tone="gray">{row.bucket || '未分桶'}</StatusBadge>,
+      render: (row) => <StatusBadge tone="gray">{toolGroup(row)}</StatusBadge>,
     },
     {
       key: 'type',
       title: '类型',
       width: 90,
       render: (row) => (
-        <StatusBadge tone={row.tool_type === 'mcp' || row.tool_type === 'a2a' ? 'blue' : 'gray'}>{row.tool_type === 'mcp' ? 'MCP' : row.tool_type === 'a2a' ? 'A2A' : 'HTTP'}</StatusBadge>
+        <StatusBadge tone={row.tool_type === 'mcp' ? 'blue' : 'gray'}>{row.tool_type === 'mcp' ? 'MCP' : 'HTTP'}</StatusBadge>
       ),
-    },
-    {
-      key: 'capability_scope',
-      title: '能力范围',
-      width: 105,
-      render: (row) => <CapabilityScopeBadge value={row.capability_scope} />,
     },
     {
       key: 'creator',
@@ -549,10 +585,18 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
     },
     {
       key: 'enabled',
-      title: '启用',
-      width: 90,
+      title: isOverallAgent ? '引用' : '员工状态',
+      width: 110,
       render: (row) => (
-        <StatusBadge tone={row.enabled ? 'green' : 'gray'}>{row.enabled ? '已启用' : '已停用'}</StatusBadge>
+        isOverallAgent ? (
+          <StatusBadge tone={(row.reference_count || 0) > 0 ? 'blue' : 'gray'}>
+            {(row.reference_count || 0) > 0 ? `${row.reference_count} 个员工` : '未引用'}
+          </StatusBadge>
+        ) : (
+          <StatusBadge tone={toolBindingEnabled(row) ? 'green' : 'gray'}>
+            {toolBindingEnabled(row) ? '已启用' : '已停用'}
+          </StatusBadge>
+        )
       ),
     },
     {
@@ -676,10 +720,17 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
         {renderActions(row)}
       </div>
       <div className="mt-[8px] flex flex-wrap items-center gap-[6px]">
-        <StatusBadge tone="gray">{row.bucket || '未分桶'}</StatusBadge>
-        <StatusBadge tone={row.tool_type === 'mcp' || row.tool_type === 'a2a' ? 'blue' : 'gray'}>{row.tool_type === 'mcp' ? 'MCP' : row.tool_type === 'a2a' ? 'A2A' : 'HTTP'}</StatusBadge>
-        <CapabilityScopeBadge value={row.capability_scope} />
-        <StatusBadge tone={row.enabled ? 'green' : 'gray'}>{row.enabled ? '已启用' : '已停用'}</StatusBadge>
+        <StatusBadge tone="gray">{toolGroup(row)}</StatusBadge>
+        <StatusBadge tone={row.tool_type === 'mcp' ? 'blue' : 'gray'}>{row.tool_type === 'mcp' ? 'MCP' : 'HTTP'}</StatusBadge>
+        {isOverallAgent ? (
+          <StatusBadge tone={(row.reference_count || 0) > 0 ? 'blue' : 'gray'}>
+            {(row.reference_count || 0) > 0 ? `${row.reference_count} 个员工引用` : '未被引用'}
+          </StatusBadge>
+        ) : (
+          <StatusBadge tone={toolBindingEnabled(row) ? 'green' : 'gray'}>
+            {toolBindingEnabled(row) ? '已启用' : '已停用'}
+          </StatusBadge>
+        )}
       </div>
       <p className="mt-[8px] line-clamp-1 wrap-break-word text-[12px] text-[#858b9c]">
         {row.method} · {row.url}
@@ -721,16 +772,16 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
                   新建空白工具
                 </DropdownMenuItem>
               )}
-              {!isOverallAgent && (
-                <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => handleCreateAction('plaza')}>
+              {canManageCurrentScope && (
+                <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => handleCreateAction('swagger')}>
                   <IconTool className="size-[14px]" />
-                  从广场复制
+                  从 Swagger 导入
                 </DropdownMenuItem>
               )}
               {!isOverallAgent && (
-                <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => handleCreateAction('employee')}>
-                  <FlaskConical />
-                  从数字员工复制
+                <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => handleCreateAction('request')}>
+                  <IconTool className="size-[14px]" />
+                  去工具广场申请使用
                 </DropdownMenuItem>
               )}
             </DropdownMenuContent>
@@ -741,8 +792,8 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
       <div className="flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_24px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
         <div className="flex flex-wrap items-stretch gap-[20px]" aria-label="工具统计">
           <StatCard label="工具总数" value={stats.total} className="basis-[220px]" />
-          <StatCard label="已启用" value={stats.enabled} tone="green" className="basis-[220px]" />
-          <StatCard label="分桶" value={stats.buckets} className="basis-[220px]" />
+          <StatCard label={isOverallAgent ? '被引用工具' : '已启用'} value={stats.enabled} tone="green" className="basis-[220px]" />
+          <StatCard label="分组" value={stats.buckets} className="basis-[220px]" />
         </div>
 
         {visibleServers.length > 0 && (
@@ -826,7 +877,7 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
                 data-lpignore="true"
                 data-bwignore="true"
                 value={searchText}
-                placeholder="搜索工具名称、描述、URL 或分桶"
+                placeholder="搜索工具名称、描述、URL 或分组"
                 onChange={(event) => setSearchText(event.target.value)}
                 className="h-full min-w-0 flex-1 bg-transparent text-[12px] text-[#17191f] outline-none placeholder:text-[#c0c6d4]"
               />
@@ -842,7 +893,7 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
               )}
             </label>
             <UISelect value={bucketFilter} onValueChange={setBucketFilter}>
-              <SelectTrigger className={cn(SELECT_TRIGGER_CLASS, 'w-[180px]')} aria-label="分桶筛选">
+              <SelectTrigger className={cn(SELECT_TRIGGER_CLASS, 'w-[180px]')} aria-label="分组筛选">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -935,7 +986,7 @@ export default function ToolsPage({ currentUser, onLogout, embedded }: ToolPageP
         title={deleteTarget ? `${isOverallAgent ? '删除' : '移除'}工具「${deleteTarget.display_name || deleteTarget.name}」？` : ''}
         description={
           isOverallAgent
-            ? '删除后，引用该工具的技能将无法继续调用它，操作不可撤销。'
+            ? '删除后，所有引用该工具的数字员工都将无法调用它，操作不可撤销。若仍被员工引用，需要先移除引用。'
             : '从当前员工移除后，工具广场中的原始工具不会被删除。'
         }
         confirmText={isOverallAgent ? '删除' : '移除'}
@@ -992,11 +1043,10 @@ export function McpServerEditPage(props: ToolPageProps = {}) {
  * 新建工具时顶部的类型切换条：HTTP 工具 / MCP 服务器。
  * 点击即跳转到对应的新建页，体验上像同一个「新建工具」流程里的分支。
  */
-function ToolTypeSwitcher({ active, onProtocolChange }: { active: 'http' | 'a2a' | 'mcp'; onProtocolChange?: (protocol: 'http' | 'a2a') => void }) {
+function ToolTypeSwitcher({ active, onProtocolChange }: { active: 'http' | 'mcp'; onProtocolChange?: (protocol: 'http') => void }) {
   const navigate = useNavigate();
-  const options: { value: 'http' | 'a2a' | 'mcp'; label: string; hint: string; to: string }[] = [
+  const options: { value: 'http' | 'mcp'; label: string; hint: string; to: string }[] = [
     { value: 'http', label: 'HTTP 工具', hint: '配置单个 HTTP 接口作为工具', to: '/enterprise/tools/new' },
-    { value: 'a2a', label: 'A2A Agent', hint: '通过 A2A SendMessage 调用远程智能体', to: '/enterprise/tools/new' },
     { value: 'mcp', label: 'MCP 服务器', hint: '连接 MCP Server，自动发现并同步其工具集', to: '/enterprise/tools/mcp/new' },
   ];
   return (
@@ -1055,12 +1105,18 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
   const [values, setValues] = useState<ToolFormValues>({ ...TOOL_FORM_INITIAL_VALUES });
   const [tool, setTool] = useState<ToolRead | null>(null);
   const [loading, setLoading] = useState(false);
-  const [bucketOptions, setBucketOptions] = useState<{ value: string; label: string }[]>([{ value: '未分桶', label: '未分桶' }]);
+  const [bucketOptions, setBucketOptions] = useState<{ value: string; label: string }[]>([{ value: '未分组', label: '未分组' }]);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { toolId } = useParams();
   const isEdit = mode === 'edit';
-  const requestedToolType = searchParams.get('type') === 'a2a' ? 'a2a' : 'http';
+  const requestedToolType = 'http' as const;
+  const scopedAgentId = searchParams.has('agent_id')
+    ? searchParams.get('agent_id')
+    : readEmployeeScope();
+  const scopedAgentQuery = scopedAgentId
+    ? `&agent_id=${encodeURIComponent(scopedAgentId)}`
+    : '';
 
   const setField = <K extends keyof ToolFormValues>(name: K, value: ToolFormValues[K]) =>
     setValues((prev) => ({ ...prev, [name]: value }));
@@ -1077,16 +1133,15 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
     }
     if (!toolId) return;
     setLoading(true);
-    const agentQuery = currentAgentQuery();
     api
-      .get<ToolRead>(`/api/enterprise/tools/${toolId}?tenant_id=${TENANT_ID}${agentQuery}`)
+      .get<ToolRead>(`/api/enterprise/tools/${toolId}?tenant_id=${TENANT_ID}${scopedAgentQuery}`)
       .then((row) => {
         setTool(row);
         setValues(toolToFormValues(row));
       })
       .catch((error) => notify.error(error instanceof Error ? error.message : '加载工具失败'))
       .finally(() => setLoading(false));
-  }, [isEdit, requestedToolType, toolId]);
+  }, [isEdit, requestedToolType, scopedAgentQuery, toolId]);
 
   async function save() {
     if (!String(values.name || '').trim()) {
@@ -1101,14 +1156,13 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
     if (!payload) return;
     setLoading(true);
     try {
-      const agentQuery = currentAgentQuery();
       const saved = isEdit && toolId
-        ? await api.put<ToolRead>(`/api/enterprise/tools/${toolId}${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, payload)
-        : await api.post<ToolRead>(`/api/enterprise/tools${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, payload);
+        ? await api.put<ToolRead>(`/api/enterprise/tools/${toolId}${scopedAgentQuery ? `?${scopedAgentQuery.slice(1)}` : ''}`, payload)
+        : await api.post<ToolRead>(`/api/enterprise/tools${scopedAgentQuery ? `?${scopedAgentQuery.slice(1)}` : ''}`, payload);
       notify.success('已保存');
       announceEnterpriseCapabilityCatalogChange({
         resourceType: 'tool',
-        agentId: readEmployeeScope() || undefined,
+        agentId: scopedAgentId || undefined,
       });
       setTool(saved);
       setValues(toolToFormValues(saved));
@@ -1142,7 +1196,7 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
         {isEdit && tool && (
           <UIButton
             variant="outline"
-            onClick={() => navigate(`/enterprise/tools/${tool.id}/test`)}
+            onClick={() => navigate(`/enterprise/tools/${tool.id}/test${scopedAgentId ? `?agent_id=${encodeURIComponent(scopedAgentId)}` : ''}`)}
             className={RETURN_BUTTON_CLASS}
           >
             <ExperimentOutlined />
@@ -1154,13 +1208,18 @@ function ToolEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'edit' 
         </UIButton>
       </div>
       {!isEdit && <ToolTypeSwitcher active={values.tool_type} onProtocolChange={(protocol) => setValues((previous) => ({ ...previous, tool_type: protocol, method: 'POST' }))} />}
+      {isEdit && tool && (tool.reference_count || 0) > 0 && (
+        <div className="mb-[16px] rounded-[12px] border border-amber-200 bg-amber-50 px-[14px] py-[10px] text-[12px] leading-[1.6] text-amber-800">
+          该工具正被 {tool.reference_count} 个数字员工引用。保存后会修改共享定义，所有引用员工都会使用新配置。
+        </div>
+      )}
       <div className="grid grid-cols-1 items-start gap-[20px] xl:grid-cols-2">
         <SectionCard title="工具定义" loading={loading && isEdit && !tool}>
           <ToolFormFields values={values} setField={setField} bucketOptions={bucketOptions} lockName={isEdit} />
         </SectionCard>
         <div className="flex w-full flex-col gap-[20px]">
           <ToolProbeCard values={values} />
-          {isEdit && tool && <SavedToolTestCard tool={tool} />}
+          {isEdit && tool && <SavedToolTestCard tool={tool} agentId={scopedAgentId} />}
         </div>
       </div>
     </div>
@@ -1240,17 +1299,23 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { toolId } = useParams();
+  const [searchParams] = useSearchParams();
+  const scopedAgentId = searchParams.has('agent_id')
+    ? searchParams.get('agent_id')
+    : readEmployeeScope();
+  const scopedAgentQuery = scopedAgentId
+    ? `&agent_id=${encodeURIComponent(scopedAgentId)}`
+    : '';
 
   useEffect(() => {
     if (!toolId) return;
     setLoading(true);
-    const agentQuery = currentAgentQuery();
     api
-      .get<ToolRead>(`/api/enterprise/tools/${toolId}?tenant_id=${TENANT_ID}${agentQuery}`)
+      .get<ToolRead>(`/api/enterprise/tools/${toolId}?tenant_id=${TENANT_ID}${scopedAgentQuery}`)
       .then(setTool)
       .catch((error) => notify.error(error instanceof Error ? error.message : '加载工具失败'))
       .finally(() => setLoading(false));
-  }, [toolId]);
+  }, [scopedAgentQuery, toolId]);
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
@@ -1268,7 +1333,7 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
         {tool && (
           <UIButton
             variant="outline"
-            onClick={() => navigate(`/enterprise/tools/${tool.id}/edit`)}
+            onClick={() => navigate(`/enterprise/tools/${tool.id}/edit${scopedAgentId ? `?agent_id=${encodeURIComponent(scopedAgentId)}` : ''}`)}
             className={RETURN_BUTTON_CLASS}
           >
             <IconEdit className="size-3.5" />
@@ -1285,7 +1350,7 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
                   <ToolOutlined />
                 </div>
                 <div className="min-w-0">
-                  <span className="text-[12px] font-semibold text-[#1a71ff]">{tool.bucket || '未分桶'}</span>
+                  <span className="text-[12px] font-semibold text-[#1a71ff]">{toolGroup(tool)}</span>
                   <h4 className="my-[4px] text-[18px] font-semibold wrap-break-word text-[#18181a]">
                     {tool.display_name || tool.name}
                   </h4>
@@ -1293,9 +1358,8 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
                     {tool.description || '暂无描述'}
                   </p>
                   <div className="flex flex-wrap items-center gap-[6px]">
-                    <StatusBadge tone={tool.tool_type === 'mcp' || tool.tool_type === 'a2a' ? 'blue' : 'gray'}>{toolTypeLabel(tool)}</StatusBadge>
-                    <CapabilityScopeBadge value={tool.capability_scope} />
-                    <StatusBadge tone={tool.enabled ? 'green' : 'gray'}>{tool.enabled ? '已启用' : '已停用'}</StatusBadge>
+                    <StatusBadge tone={tool.tool_type === 'mcp' ? 'blue' : 'gray'}>{toolTypeLabel(tool)}</StatusBadge>
+                    <StatusBadge tone={toolBindingEnabled(tool) ? 'green' : 'gray'}>{toolBindingEnabled(tool) ? '已启用' : '已停用'}</StatusBadge>
                     <StatusBadge tone="gray">{tool.method}</StatusBadge>
                   </div>
                 </div>
@@ -1343,107 +1407,10 @@ export function ToolTestPage({ currentUser, onLogout }: ToolPageProps = {}) {
             </>
           )}
         </SectionCard>
-        {tool && <SavedToolTestCard tool={tool} standalone />}
+        {tool && <SavedToolTestCard tool={tool} standalone agentId={scopedAgentId} />}
       </div>
-      {tool?.tool_type === 'a2a' && <A2ARunsPanel tool={tool} />}
     </div>
   );
-}
-
-const A2A_TERMINAL_STATES = new Set(['completed', 'failed', 'canceled', 'cancelled', 'rejected']);
-
-function A2ARunsPanel({ tool }: { tool: ToolRead }) {
-  const [runs, setRuns] = useState<A2ATaskRunRead[]>([]);
-  const [adapter, setAdapter] = useState<CodexA2AAdapterRead | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const agentQuery = currentAgentQuery();
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const [nextRuns, nextAdapter] = await Promise.all([
-        api.get<A2ATaskRunRead[]>(`/api/enterprise/tools/${tool.id}/a2a-runs?tenant_id=${TENANT_ID}${agentQuery}&limit=20`),
-        api.get<CodexA2AAdapterRead>(`/api/enterprise/tools/a2a/codex-adapter?tenant_id=${TENANT_ID}${agentQuery}`),
-      ]);
-      setRuns(nextRuns);
-      setAdapter(nextAdapter);
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : '加载 A2A 任务记录失败');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void load();
-    // Tool identity is the stable boundary for this panel.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool.id]);
-
-  async function cancel(run: A2ATaskRunRead) {
-    try {
-      await api.post(`/api/enterprise/tools/${tool.id}/a2a-runs/${run.id}:cancel?tenant_id=${TENANT_ID}${agentQuery}`, {});
-      notify.success('已提交取消请求');
-      await load();
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : '取消 A2A 任务失败');
-    }
-  }
-
-  const codexEndpoint = adapter ? new URL(adapter.endpoint_url, window.location.origin).toString() : '';
-  const isCodexConnection = Boolean(codexEndpoint && tool.url.replace(/\/$/, '') === codexEndpoint.replace(/\/$/, ''));
-
-  return (
-    <SectionCard
-      className="mt-[20px]"
-      title={<span className="flex items-center gap-[8px]"><Activity className="size-[16px]" />A2A 持久化任务</span>}
-      extra={<UIButton variant="ghost" size="sm" onClick={() => void load()} disabled={loading}><RotateCcw className={cn('size-[14px]', loading && 'animate-spin')} />刷新</UIButton>}
-      loading={loading && runs.length === 0}
-      bodyClassName="flex flex-col gap-[14px]"
-    >
-      <div className={cn('grid gap-[12px] rounded-[14px] border p-[16px] md:grid-cols-[minmax(0,1fr)_auto]', isCodexConnection ? 'border-emerald-200 bg-emerald-50/60' : 'border-sky-200 bg-sky-50/50')}>
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-[8px]">
-            <TerminalSquare className="size-[16px]" />
-            <strong className="text-[13px] text-[#2f3442]">{isCodexConnection ? 'Codex CLI Adapter' : '标准 A2A Agent'}</strong>
-            {isCodexConnection && <StatusBadge tone={adapter?.enabled ? 'green' : 'red'}>{adapter?.enabled ? '已连接' : '未启用'}</StatusBadge>}
-          </div>
-          <p className="mt-[7px] font-mono text-[11px] leading-[17px] break-all text-[#687083]">{tool.url}</p>
-          {isCodexConnection && adapter && <p className="mt-[4px] text-[11px] text-[#687083]">命令 {adapter.command} · 最长 {adapter.timeout_seconds}s · {adapter.token_configured ? '已配置凭证' : '无凭证'}</p>}
-        </div>
-        <div className="flex items-center gap-[8px] text-[11px] text-[#687083]"><span className="size-[7px] rounded-full bg-emerald-400" />任务、事件和产物均持久化</div>
-      </div>
-
-      {runs.length === 0 ? (
-        <div className="rounded-[14px] border border-dashed border-[#dfe3ea] px-[20px] py-[28px] text-center text-[12px] text-[#858b9c]">尚无 A2A 调用记录。测试或正式调用后，长任务状态会保留在这里。</div>
-      ) : runs.map((run) => {
-        const open = expanded === run.id;
-        const terminal = A2A_TERMINAL_STATES.has(run.status);
-        return (
-          <div key={run.id} className="overflow-hidden rounded-[14px] border border-[#e4e7ec] bg-white shadow-[0_1px_2px_rgba(16,24,40,0.03)]">
-            <button type="button" className="flex w-full items-center gap-[12px] px-[16px] py-[14px] text-left hover:bg-[#fafbfc]" onClick={() => setExpanded(open ? null : run.id)}>
-              <span className={cn('size-[9px] shrink-0 rounded-full', run.status === 'completed' ? 'bg-emerald-400' : run.status === 'failed' ? 'bg-red-400' : terminal ? 'bg-slate-400' : 'animate-pulse bg-sky-400')} />
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-x-[10px] gap-y-[4px]"><strong className="text-[13px] text-[#2f3442]">{a2aStatusLabel(run.status)}</strong><span className="font-mono text-[11px] text-[#858b9c]">{run.remote_task_id || run.id}</span></div>
-                <p className="mt-[3px] text-[11px] text-[#858b9c]">更新于 {formatDateTime(run.updated_at)} · {run.events.length} 个事件 · {run.artifacts.length} 个产物{run.recovery_attempts ? ` · 恢复 ${run.recovery_attempts} 次` : ''}</p>
-              </div>
-              {!terminal && <UIButton variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); void cancel(run); }}><XCircle className="size-[13px]" />取消</UIButton>}
-              <IconChevronDown className={cn('size-[14px] text-[#858b9c] transition-transform', open && 'rotate-180')} />
-            </button>
-            {open && <div className="grid gap-[14px] border-t border-[#eceef1] bg-[#fafbfc] p-[16px] lg:grid-cols-2">
-              <div><span className={SUBSECTION_TITLE_CLASS}>事件时间线</span><div className="mt-[10px] flex max-h-[280px] flex-col gap-[8px] overflow-auto pr-[4px]">{run.events.map((event) => <div key={`${run.id}-${event.sequence}`} className="grid grid-cols-[34px_minmax(0,1fr)] gap-[8px] text-[11px]"><span className="font-mono text-[#9aa0af]">#{event.sequence}</span><div><strong className="text-[#464c5e]">{event.event_type}</strong><span className="ml-[8px] text-[#9aa0af]">{formatDateTime(event.created_at)}</span></div></div>)}</div></div>
-              <div className="flex flex-col gap-[10px]"><span className={SUBSECTION_TITLE_CLASS}>持久化状态</span><CodeBlock className="max-h-[280px] whitespace-pre-wrap wrap-break-word" code={formatJson({ task_id: run.remote_task_id, context_id: run.context_id, codex_session_id: run.codex_session_id, status: run.status, cancel_requested: run.cancel_requested, artifacts: run.artifacts, error: run.error })} language="json" /></div>
-            </div>}
-          </div>
-        );
-      })}
-    </SectionCard>
-  );
-}
-
-function a2aStatusLabel(status: string): string {
-  return ({ submitted: '已提交', working: '执行中', running: '执行中', completed: '已完成', failed: '失败', canceled: '已取消', cancelled: '已取消', rejected: '已拒绝', 'input-required': '等待输入' } as Record<string, string>)[status] || status;
 }
 
 type McpFormValues = {
@@ -1797,7 +1764,7 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
               />
             </Field>
 
-            <Field label="分桶" htmlFor="mcp-bucket">
+            <Field label="分组" htmlFor="mcp-bucket">
               <Input
                 id="mcp-bucket"
                 placeholder="MCP 工具"
@@ -1891,15 +1858,12 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
                     onChange={(event) => setField('url', event.target.value)}
                   />
                 </Field>
-                <Field label="Headers JSON" htmlFor="mcp-headers">
-                  <Textarea
-                    id="mcp-headers"
-                    rows={4}
-                    className={MONO_INPUT_CLASS}
-                    value={values.headers}
-                    onChange={(event) => setField('headers', event.target.value)}
-                  />
-                </Field>
+                <JsonTextarea
+                  label="Headers JSON"
+                  rows={4}
+                  value={values.headers}
+                  onChange={(value) => setField('headers', value)}
+                />
               </>
             )}
 
@@ -1923,15 +1887,12 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
                     onChange={(event) => setField('args', event.target.value)}
                   />
                 </Field>
-                <Field label="Env JSON" htmlFor="mcp-env">
-                  <Textarea
-                    id="mcp-env"
-                    rows={4}
-                    className={MONO_INPUT_CLASS}
-                    value={values.env}
-                    onChange={(event) => setField('env', event.target.value)}
-                  />
-                </Field>
+                <JsonTextarea
+                  label="Env JSON"
+                  rows={4}
+                  value={values.env}
+                  onChange={(value) => setField('env', value)}
+                />
                 <Field
                   label="工作目录（cwd）"
                   htmlFor="mcp-cwd"
@@ -2038,11 +1999,11 @@ function ToolFormFields({
       </div>
 
       <div className="grid grid-cols-1 gap-[16px] sm:grid-cols-2">
-        <Field label="工具分桶" htmlFor="tool-bucket">
+        <Field label="工具分组" htmlFor="tool-bucket">
           <Input
             id="tool-bucket"
             list="tool-bucket-options"
-            placeholder="选择或输入分桶"
+            placeholder="选择或输入分组"
             value={values.bucket || ''}
             onChange={(event) => setField('bucket', event.target.value)}
           />
@@ -2082,22 +2043,20 @@ function ToolFormFields({
             </SelectContent>
           </UISelect>
         </Field>}
-        <Field label={values.tool_type === 'a2a' ? 'A2A Endpoint URL' : 'URL'} htmlFor="tool-url">
+        <Field label="URL" htmlFor="tool-url">
           <Input
             id="tool-url"
-            placeholder={values.tool_type === 'a2a' ? 'https://agent.example.com/a2a' : '/api/mock/order/query'}
+            placeholder="/api/mock/order/query"
             value={values.url || ''}
             onChange={(event) => setField('url', event.target.value)}
           />
         </Field>
       </div>
 
-      {values.tool_type === 'a2a' && <A2AConnectionFields values={values} setField={setField} />}
-
       <Field
         label="调用超时上限（秒）"
         htmlFor="tool-timeout-seconds"
-        hint="每个工具独立生效，支持 1–3600 秒；A2A 长任务会在此时间内持续订阅或轮询。"
+        hint="每个工具独立生效，支持 1–3600 秒。"
       >
         <Input
           id="tool-timeout-seconds"
@@ -2114,132 +2073,37 @@ function ToolFormFields({
       </Field>
 
       <div className="grid grid-cols-1 gap-[16px] sm:grid-cols-2">
-        <Field label="Headers JSON" htmlFor="tool-headers">
-          <Textarea
-            id="tool-headers"
-            rows={4}
-            className={MONO_INPUT_CLASS}
-            value={values.headers}
-            onChange={(event) => setField('headers', event.target.value)}
-          />
-        </Field>
-        <Field label="Auth JSON" htmlFor="tool-auth">
-          <Textarea
-            id="tool-auth"
-            rows={4}
-            className={MONO_INPUT_CLASS}
-            value={values.auth}
-            onChange={(event) => setField('auth', event.target.value)}
-          />
-        </Field>
+        <JsonTextarea
+          label="Headers JSON"
+          rows={4}
+          value={values.headers}
+          onChange={(value) => setField('headers', value)}
+        />
+        <JsonTextarea
+          label="Auth JSON"
+          rows={4}
+          value={values.auth}
+          onChange={(value) => setField('auth', value)}
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-[16px] sm:grid-cols-2">
-        <Field label="Input Schema" htmlFor="tool-input-schema">
-          <Textarea
-            id="tool-input-schema"
-            rows={5}
-            className={MONO_INPUT_CLASS}
-            value={values.input_schema}
-            onChange={(event) => setField('input_schema', event.target.value)}
-          />
-        </Field>
-        <Field label="Output Schema" htmlFor="tool-output-schema">
-          <Textarea
-            id="tool-output-schema"
-            rows={5}
-            className={MONO_INPUT_CLASS}
-            value={values.output_schema}
-            onChange={(event) => setField('output_schema', event.target.value)}
-          />
-        </Field>
-      </div>
-
-      <Field label="Allowed Skills" htmlFor="tool-allowed-skills" hint="留空表示所有技能可调用，多个技能用英文逗号分隔。">
-        <Input
-          id="tool-allowed-skills"
-          placeholder="skill_id_1,skill_id_2"
-          value={values.allowed_skills || ''}
-          onChange={(event) => setField('allowed_skills', event.target.value)}
+        <JsonTextarea
+          label="Input Schema"
+          rows={5}
+          value={values.input_schema}
+          onChange={(value) => setField('input_schema', value)}
         />
-      </Field>
-
-      <CapabilityScopeControl
-        value={normalizeCapabilityScope(values.capability_scope)}
-        onChange={(value) => setField('capability_scope', value)}
-        resourceType="tool"
-      />
-
-      <div className="flex items-center justify-between rounded-[12px] border border-[#eceef1] bg-[#fafbfc] px-[14px] py-[12px]">
-        <div className="flex flex-col gap-[2px]">
-          <span className={FIELD_LABEL_CLASS}>启用工具</span>
-          <span className={HINT_CLASS}>停用后员工将无法调用该工具。</span>
-        </div>
-        <Switch checked={values.enabled} onCheckedChange={(next) => setField('enabled', next)} />
+        <JsonTextarea
+          label="Output Schema"
+          rows={5}
+          value={values.output_schema}
+          onChange={(value) => setField('output_schema', value)}
+        />
       </div>
+
     </div>
   );
-}
-
-function A2AConnectionFields({
-  values,
-  setField,
-}: {
-  values: ToolFormValues;
-  setField: <K extends keyof ToolFormValues>(name: K, value: ToolFormValues[K]) => void;
-}) {
-  const [adapter, setAdapter] = useState<CodexA2AAdapterRead | null>(null);
-  const config = safeJsonObject(values.mcp_config);
-  const updateConfig = (patch: Record<string, unknown>) => {
-    setField('mcp_config', JSON.stringify({ ...config, ...patch }, null, 2));
-  };
-
-  useEffect(() => {
-    api.get<CodexA2AAdapterRead>(`/api/enterprise/tools/a2a/codex-adapter?tenant_id=${TENANT_ID}${currentAgentQuery()}`)
-      .then(setAdapter)
-      .catch(() => setAdapter(null));
-  }, []);
-
-  const useCodex = () => {
-    if (!adapter) return;
-    setField('url', new URL(adapter.endpoint_url, window.location.origin).toString());
-    updateConfig({
-      agent_card_url: new URL(adapter.agent_card_url, window.location.origin).toString(),
-      discover_agent_card: true,
-      require_agent_card: true,
-      streaming: true,
-      subscribe: true,
-      a2a_version: '1.0',
-      accepted_output_modes: ['text/plain', 'application/json', 'application/octet-stream'],
-    });
-    setField('timeout_seconds', Math.min(3600, Math.max(1, adapter.timeout_seconds)));
-  };
-
-  return (
-    <div className="flex flex-col gap-[14px] rounded-[14px] border border-sky-200 bg-sky-50/40 p-[16px]">
-      <div className="flex flex-wrap items-start justify-between gap-[12px]">
-        <div><p className="text-[13px] font-semibold text-[#2f3442]">A2A 长任务连接</p><p className="mt-[4px] text-[11px] leading-[17px] text-[#687083]">自动发现 Agent Card；优先流式订阅，断线后回退轮询。任务、事件和产物由 StaffDeck 持久化。</p></div>
-        {adapter && <UIButton type="button" variant="outline" size="sm" onClick={useCodex} disabled={!adapter.enabled}><TerminalSquare className="size-[14px]" />{adapter.enabled ? '连接本机 Codex' : 'Codex Adapter 未启用'}</UIButton>}
-      </div>
-      <div className="grid gap-[12px] md:grid-cols-2">
-        <SwitchRowCompact label="发现 Agent Card" hint="读取 /.well-known/agent-card.json" checked={config.discover_agent_card !== false} onChange={(checked) => updateConfig({ discover_agent_card: checked })} />
-        <SwitchRowCompact label="强制 Agent Card" hint="发现失败时终止而非继续尝试" checked={config.require_agent_card === true} onChange={(checked) => updateConfig({ require_agent_card: checked })} />
-        <SwitchRowCompact label="流式消息" hint="优先 SendStreamingMessage" checked={config.streaming !== false} onChange={(checked) => updateConfig({ streaming: checked })} />
-        <SwitchRowCompact label="订阅远程任务" hint="工作中任务使用 SubscribeToTask" checked={config.subscribe !== false} onChange={(checked) => updateConfig({ subscribe: checked })} />
-      </div>
-      <div className="grid gap-[12px] md:grid-cols-2">
-        <Field label="Agent Card URL（可选）" htmlFor="tool-a2a-card-url"><Input id="tool-a2a-card-url" value={String(config.agent_card_url || '')} placeholder="https://agent.example.com/.well-known/agent-card.json" onChange={(event) => updateConfig({ agent_card_url: event.target.value })} /></Field>
-        <Field label="轮询间隔（秒）" htmlFor="tool-a2a-poll"><Input id="tool-a2a-poll" type="number" min={0.1} max={30} step={0.1} value={Number(config.poll_interval_seconds || 0.5)} onChange={(event) => updateConfig({ poll_interval_seconds: Number(event.target.value) || 0.5 })} /></Field>
-      </div>
-      <Field label="高级配置 JSON" htmlFor="tool-a2a-config" hint="保留协议扩展字段；结构化选项会同步写入这里。">
-        <Textarea id="tool-a2a-config" rows={7} className={MONO_INPUT_CLASS} value={values.mcp_config} onChange={(event) => setField('mcp_config', event.target.value)} placeholder={'{\n  "a2a_version": "1.0",\n  "subscribe": true\n}'} />
-      </Field>
-    </div>
-  );
-}
-
-function SwitchRowCompact({ label, hint, checked, onChange }: { label: string; hint: string; checked: boolean; onChange: (checked: boolean) => void }) {
-  return <label className="flex min-h-[58px] items-center justify-between gap-[12px] rounded-[12px] border border-white bg-white/80 px-[13px] py-[10px]"><span><span className="block text-[12px] font-medium text-[#464c5e]">{label}</span><span className="mt-[2px] block text-[10px] leading-[15px] text-[#858b9c]">{hint}</span></span><Switch checked={checked} onCheckedChange={onChange} /></label>;
 }
 
 function ToolProbeCard({ values }: { values: ToolFormValues }) {
@@ -2314,22 +2178,17 @@ function ToolProbeCard({ values }: { values: ToolFormValues }) {
       )}
     >
       <p className={HINT_CLASS}>无需保存，直接用当前配置测试连接。</p>
-      <div className="flex flex-col gap-[8px]">
-        <span className={SUBSECTION_TITLE_CLASS}>
-          {isGetMethod ? '测试参数 JSON（拼到 URL Query）' : '测试参数 JSON（作为请求 Body）'}
-        </span>
-        <p className={HINT_CLASS}>
-          {isGetMethod
+      <JsonTextarea
+        label={isGetMethod ? '测试参数 JSON（拼到 URL Query）' : '测试参数 JSON（作为请求 Body）'}
+        hint={
+          isGetMethod
             ? 'GET 会把这里的字段作为查询参数追加到 URL；参数值填写未编码原文，例如 timezone 用 Asia/Shanghai。'
-            : '非 GET 请求会把这里的 JSON 作为请求体发送；仅 URL 查询串不会变成请求 Body。'}
-        </p>
-        <Textarea
-          rows={5}
-          className={MONO_INPUT_CLASS}
-          value={sampleJson}
-          onChange={(event) => setSampleJson(event.target.value)}
-        />
-      </div>
+            : '非 GET 请求会把这里的 JSON 作为请求体发送；仅 URL 查询串不会变成请求 Body。'
+        }
+        rows={5}
+        value={sampleJson}
+        onChange={setSampleJson}
+      />
       <div className="flex flex-col gap-[8px]">
         <span className={SUBSECTION_TITLE_CLASS}>探测结果</span>
         <Textarea rows={8} readOnly className={MONO_INPUT_CLASS} value={result} />
@@ -2338,7 +2197,15 @@ function ToolProbeCard({ values }: { values: ToolFormValues }) {
   );
 }
 
-function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; standalone?: boolean }) {
+function SavedToolTestCard({
+  tool,
+  standalone = false,
+  agentId,
+}: {
+  tool: ToolRead;
+  standalone?: boolean;
+  agentId?: string | null;
+}) {
   const [testJson, setTestJson] = useState(() => JSON.stringify(exampleFromSchema(tool.input_schema), null, 2));
   const [testResult, setTestResult] = useState('');
   const [loading, setLoading] = useState(false);
@@ -2358,7 +2225,9 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
     }
     setLoading(true);
     try {
-      const agentQuery = currentAgentQuery();
+      const agentQuery = agentId !== undefined
+        ? (agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '')
+        : currentAgentQuery();
       const response = await api.post(`/api/enterprise/tools/${tool.id}/test${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, {
         tenant_id: TENANT_ID,
         arguments: argumentsJson,
@@ -2396,15 +2265,12 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
           <StatusBadge tone="gray">{toolTypeLabel(tool)}</StatusBadge>
         </span>
       </div>
-      <div className="flex flex-col gap-[10px]">
-        <span className={SUBSECTION_TITLE_CLASS}>测试参数</span>
-        <Textarea
-          rows={8}
-          className={MONO_INPUT_CLASS}
-          value={testJson}
-          onChange={(event) => setTestJson(event.target.value)}
-        />
-      </div>
+      <JsonTextarea
+        label="测试参数"
+        rows={8}
+        value={testJson}
+        onChange={setTestJson}
+      />
       <div className="flex flex-col gap-[10px]">
         <div className="flex items-center justify-between gap-[10px]">
           <span className={SUBSECTION_TITLE_CLASS}>调用结果</span>
@@ -2424,7 +2290,7 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
 
 async function loadBucketOptions() {
   const rows = await api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${currentAgentQuery()}`);
-  return Array.from(new Set(['未分桶', ...rows.map((row) => row.bucket || '未分桶')]))
+  return Array.from(new Set(['未分组', ...rows.map((row) => toolGroup(row))]))
     .map((value) => ({ value, label: value }));
 }
 
@@ -2437,8 +2303,8 @@ function toolToFormValues(row: ToolRead): ToolFormValues {
   return {
     ...TOOL_FORM_INITIAL_VALUES,
     ...row,
-    bucket: row.bucket || '未分桶',
-    tool_type: row.tool_type === 'mcp' || row.tool_type === 'a2a' ? row.tool_type : 'http',
+    bucket: toolGroup(row),
+    tool_type: row.tool_type === 'mcp' ? 'mcp' : 'http',
     headers: JSON.stringify(row.headers || {}, null, 2),
     auth: JSON.stringify(row.auth || {}, null, 2),
     mcp_config: JSON.stringify(row.mcp_config || {}, null, 2),
@@ -2447,6 +2313,7 @@ function toolToFormValues(row: ToolRead): ToolFormValues {
     allowed_skills: (row.allowed_skills || []).join(','),
     timeout_seconds: row.execution_policy?.timeout_seconds ?? 8,
     capability_scope: normalizeCapabilityScope(row.capability_scope),
+    enabled: row.binding_status ? row.binding_status === 'active' : row.enabled,
   };
 }
 
@@ -2457,13 +2324,14 @@ function buildToolPayload(values: ToolFormValues) {
       name: String(values.name || '').trim(),
       display_name: values.display_name,
       description: values.description,
-      bucket: values.bucket || '未分桶',
+      bucket: values.bucket || '未分组',
       tool_type: values.tool_type || 'http',
       method: values.method,
       url: String(values.url || '').trim(),
       headers: parseJson(values.headers, {}),
       auth: parseJson(values.auth, {}),
-      mcp_config: values.tool_type === 'mcp' || values.tool_type === 'a2a' ? parseJson(values.mcp_config, {}) : {},
+      // HTTP 工具也保留 mcp_config 中的 http 映射（Swagger 导入的 path/query/header 参数位置）。
+      mcp_config: parseJson(values.mcp_config, {}),
       execution_policy: {
         timeout_seconds: Math.max(1, Math.min(3600, Number(values.timeout_seconds) || 8)),
       },
@@ -2482,10 +2350,10 @@ function buildToolPayload(values: ToolFormValues) {
 function buildBucketStats(rows: ToolRead[]) {
   const map = new Map<string, { bucket: string; total: number; enabled: number; disabled: number }>();
   rows.forEach((row) => {
-    const bucket = row.bucket || '未分桶';
+    const bucket = toolGroup(row);
     const item = map.get(bucket) || { bucket, total: 0, enabled: 0, disabled: 0 };
     item.total += 1;
-    if (row.enabled) item.enabled += 1;
+    if (toolBindingEnabled(row) || (row.reference_count || 0) > 0) item.enabled += 1;
     else item.disabled += 1;
     map.set(bucket, item);
   });
@@ -2520,7 +2388,7 @@ function schemaPropertyCount(schema: Record<string, unknown>): string {
 }
 
 function toolTypeLabel(tool: ToolRead): string {
-  return tool.tool_type === 'mcp' ? 'MCP 服务' : tool.tool_type === 'a2a' ? 'A2A Agent' : 'HTTP 接口';
+  return tool.tool_type === 'mcp' ? 'MCP 服务' : 'HTTP 接口';
 }
 
 function serverToFormValues(row: MCPServerRead): McpFormValues {

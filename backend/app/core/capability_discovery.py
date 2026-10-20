@@ -223,11 +223,19 @@ def _model_input_schema(schema: dict[str, object]) -> dict[str, object]:
 
 
 def _is_initially_expanded(descriptor: CapabilityDescriptor) -> bool:
+    # HTTP tools are first-class agent tools. Employees only carry a handful of
+    # them, so expand their full schemas up front instead of forcing the model
+    # to discover/describe them before the first call. MCP tools stay in the
+    # progressively-disclosed catalog.
+    is_http_tool = (
+        descriptor.kind == "tool" and descriptor.metadata.get("tool_type") == "http"
+    )
     return (
         descriptor.kind == "internal"
         or descriptor.name in ALWAYS_EXPANDED_CAPABILITIES
         or descriptor.capability_scope == "sop_specific"
         or bool(descriptor.metadata.get("sop_explicitly_allowed"))
+        or is_http_tool
     )
 
 

@@ -6,7 +6,18 @@ import {
   ToolOutlined,
   UsergroupAddOutlined,
 } from '../icons';
-import { notify } from '@/components/ui';
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  Select as UISelect,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Textarea,
+  notify,
+} from '@/components/ui';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { RevealGroup } from '@/components/RevealGroup';
 import type { ComponentType, ReactNode, SVGProps } from 'react';
@@ -158,18 +169,16 @@ const PLATFORM_CONFIGS: PlatformConfig[] = [
     signals: ['流程推进', '执行规范', '可复制'],
     icon: <ProfileOutlined />,
   },
-/*
   {
     kind: 'tools',
     title: '工具广场',
-    subtitle: '可开放给员工调用和测试的工具能力。',
-    detail: '前往工具页按现有流程配置和测试工具。',
-    useLabel: '前往工具页',
-    metricLabel: '工具能力',
-    signals: ['调用权限', '测试可用', '工具配置'],
+    subtitle: '可申请给数字员工使用的工具能力。',
+    detail: '查看工具名称与用途，申请后由工具创建者审批。',
+    useLabel: '申请使用',
+    metricLabel: '工具',
+    signals: ['申请审批', '绑定员工', '默认关闭'],
     icon: <ToolOutlined />,
   },
-  */
 ];
 
 const PLATFORM_BY_KIND = new Map(PLATFORM_CONFIGS.map((item) => [item.kind, item]));
@@ -407,6 +416,10 @@ export default function OpenPlatformPage({
   // 「全部」tab 的刷新按钮已移除；key 仅保留重挂载能力
   const [allRefreshKey] = useState(0);
   const [confirmTarget, setConfirmTarget] = useState<{ kind: PlatformKind; item: PlatformItem } | null>(null);
+  const [toolRequestItem, setToolRequestItem] = useState<PlatformItem | null>(null);
+  const [toolRequestAgentId, setToolRequestAgentId] = useState('');
+  const [toolRequestNote, setToolRequestNote] = useState('');
+  const [toolRequestSubmitting, setToolRequestSubmitting] = useState(false);
 
   // 已加载过的模块不重复拉；同一模块并发只发一次请求（ref 与 state 同步写，保证守卫是同步准确的）。
   const agentsCacheRef = useRef<AgentProfileRead[] | null>(null);
@@ -553,6 +566,14 @@ export default function OpenPlatformPage({
   const targetEmployee = currentAgent && canManageEmployeeAgent(currentAgent, currentUser)
     ? currentAgent
     : agents.find((item) => canManageEmployeeAgent(item, currentUser) && !item.is_overall);
+  const requestableEmployees = useMemo(
+    () => agents.filter((item) => (
+      !item.is_overall
+      && item.status === 'active'
+      && canManageEmployeeAgent(item, currentUser)
+    )),
+    [agents, currentUser],
+  );
 
   const platformItems = useMemo<Record<PlatformKind, PlatformItem[]>>(() => ({
     // Agent 广场的数据来自本地清单文件（src/data/agent-catalog.json），不请求后端：
@@ -622,16 +643,14 @@ export default function OpenPlatformPage({
         meta: `${item.skill_id} / ${item.version}`,
         tags: [item.business_domain || '业务流程', `${item.total_call_count || item.call_count || 0} 次调用`],
       })),
-    tools: tools
-      .filter((item) => item.enabled)
-      .map((item) => ({
-        id: item.id,
-        deleteKey: item.id,
-        title: resourceDisplayNameWithCreator(item.display_name || item.name, item),
-        description: item.description || '可配置到员工工具的工具。',
-        meta: `${item.bucket || '工具'} / ${item.tool_type.toUpperCase()}`,
-        tags: [item.method, item.enabled ? '已启用' : '已停用'],
-      })),
+    tools: tools.map((item) => ({
+      id: item.id,
+      deleteKey: item.id,
+      title: resourceDisplayNameWithCreator(item.display_name || item.name, item),
+      description: item.description || '可配置到员工工具的工具。',
+      meta: `${item.bucket || '工具'} / ${item.tool_type.toUpperCase()}`,
+      tags: [item.method, `${item.reference_count || 0} 个员工引用`],
+    })),
   }), [generalSkills, knowledgeBases, isAdmin, skills, tools, visibleAgents]);
 
   const filteredItems = useMemo(() => {
@@ -796,12 +815,63 @@ export default function OpenPlatformPage({
       }
       return;
     }
+    if (platformKind === 'tools') {
+      const item = platformItems.tools.find((entry) => entry.id === itemId);
+      if (!item) {
+        notify.warning('工具不存在或已从广场移除');
+        return;
+      }
+      if (!requestableEmployees.length) {
+        notify.warning('当前没有可管理的数字员工，请先创建员工');
+        return;
+      }
+      const preferredAgentId = requestableEmployees.some((employee) => employee.id === agentId)
+        ? agentId
+        : requestableEmployees.some((employee) => employee.id === targetEmployee?.id && !targetEmployee?.is_overall)
+          ? targetEmployee?.id || ''
+          : requestableEmployees[0].id;
+      setToolRequestItem(item);
+      setToolRequestAgentId(preferredAgentId);
+      setToolRequestNote('');
+      return;
+    }
     if (!ensureTargetEmployee()) return;
     const resourceParam = itemId ? `&resourceId=${encodeURIComponent(itemId)}` : '';
     if (platformKind === 'knowledge') navigate(`/enterprise/knowledge?add=plaza${resourceParam}`);
     if (platformKind === 'general-skills') navigate(`/enterprise/general-skills?add=plaza${resourceParam}`);
     if (platformKind === 'skills') navigate(`/enterprise/skills?add=plaza${resourceParam}`);
-    if (platformKind === 'tools') navigate('/enterprise/tools?add=plaza');
+  }
+
+  async function submitToolAccessRequest() {
+    if (!toolRequestItem) return;
+    if (!toolRequestAgentId) {
+      notify.warning('请选择要使用该工具的数字员工');
+      return;
+    }
+    const note = toolRequestNote.trim();
+    if (!note) {
+      notify.warning('请填写申请备注，说明为什么需要使用该工具');
+      return;
+    }
+    const employee = agents.find((item) => item.id === toolRequestAgentId);
+    setToolRequestSubmitting(true);
+    try {
+      await api.post(
+        `/api/enterprise/tool-access-requests/tools/${encodeURIComponent(toolRequestItem.id)}`,
+        {
+          tenant_id: TENANT_ID,
+          agent_id: toolRequestAgentId,
+          note,
+        },
+      );
+      notify.success(`已提交申请，审批通过后会绑定到「${employee?.name || '所选员工'}」`);
+      setToolRequestItem(null);
+      setToolRequestNote('');
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '提交工具使用申请失败');
+    } finally {
+      setToolRequestSubmitting(false);
+    }
   }
 
   function platformItemDeleteKey(platformKind: PlatformKind, item: PlatformItem): string {
@@ -1005,6 +1075,89 @@ export default function OpenPlatformPage({
         loading={Boolean(confirmTarget) && deletingItemKey === (confirmTarget ? platformItemDeleteKey(confirmTarget.kind, confirmTarget.item) : '')}
         onConfirm={() => void runDelete()}
       />
+    );
+  }
+
+  function renderToolRequestDialog() {
+    return (
+      <Dialog
+        open={Boolean(toolRequestItem)}
+        onOpenChange={(next) => {
+          if (!next) {
+            setToolRequestItem(null);
+            setToolRequestNote('');
+          }
+        }}
+      >
+        <DialogContent className="flex w-[calc(100%-32px)] flex-col gap-0 overflow-hidden rounded-[16px] p-0 sm:max-w-[500px]">
+          <div className="border-b border-[#eceef1] px-[20px] py-[16px]">
+            <DialogTitle className="text-[16px] font-semibold text-[#18181a]">
+              申请使用工具
+            </DialogTitle>
+          </div>
+          <div className="flex flex-col gap-[16px] px-[20px] py-[18px]">
+            <div className="rounded-[12px] border border-[#eceef1] bg-[#fafbfc] px-[14px] py-[12px]">
+              <strong className="block text-[14px] font-medium text-[#18181a]">
+                {toolRequestItem?.title || ''}
+              </strong>
+              <p className="mt-[4px] text-[12px] leading-[1.55] text-[#858b9c]">
+                {toolRequestItem?.description || '申请审批通过后，工具会绑定到所选员工，并默认关闭。'}
+              </p>
+            </div>
+            <div className="flex flex-col gap-[6px]">
+              <label className="text-[12px] font-medium text-[#18181a]" htmlFor="tool-request-agent">
+                使用该工具的数字员工
+              </label>
+              <UISelect value={toolRequestAgentId} onValueChange={setToolRequestAgentId}>
+                <SelectTrigger id="tool-request-agent" className="h-[38px] w-full rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-[12px] text-[13px]">
+                  <SelectValue placeholder="选择数字员工" />
+                </SelectTrigger>
+                <SelectContent>
+                  {requestableEmployees.map((employee) => (
+                    <SelectItem key={employee.id} value={employee.id}>
+                      {employee.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </UISelect>
+            </div>
+            <div className="flex flex-col gap-[6px]">
+              <label className="text-[12px] font-medium text-[#18181a]" htmlFor="tool-request-note">
+                申请备注
+              </label>
+              <Textarea
+                id="tool-request-note"
+                rows={4}
+                value={toolRequestNote}
+                onChange={(event) => setToolRequestNote(event.target.value)}
+                placeholder="说明为什么需要使用这个工具，例如：销售员工需要查询客户所在城市的天气，用于安排上门拜访。"
+              />
+              <span className="text-[11px] leading-[1.5] text-[#858b9c]">
+                备注会展示给工具创建者，用于判断是否通过申请。
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-[10px] border-t border-[#eceef1] px-[20px] py-[12px]">
+            <UIButton
+              variant="outline"
+              onClick={() => {
+                setToolRequestItem(null);
+                setToolRequestNote('');
+              }}
+              className="h-8 rounded-[10px] border-[0.5px] border-[#e3e7f1] bg-white px-5 text-[12px] font-normal text-[#757f9c]"
+            >
+              取消
+            </UIButton>
+            <UIButton
+              disabled={toolRequestSubmitting}
+              onClick={() => void submitToolAccessRequest()}
+              className="h-8 rounded-[10px] bg-[#18181a] px-5 text-[12px] font-normal text-white hover:bg-[#303030]"
+            >
+              {toolRequestSubmitting ? '提交中…' : '提交申请'}
+            </UIButton>
+          </div>
+        </DialogContent>
+      </Dialog>
     );
   }
 
@@ -1224,6 +1377,7 @@ export default function OpenPlatformPage({
 
       {renderItemDrawer()}
       {renderConfirm()}
+      {renderToolRequestDialog()}
 
       {transfer && (
         <div aria-live="polite" className="fixed bottom-[24px] right-[24px] z-[60] w-[300px] rounded-[14px] border border-[#e4e9f2] bg-white/95 p-[14px] shadow-[0_8px_24px_rgba(0,0,0,0.12)]">

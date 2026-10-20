@@ -1353,9 +1353,7 @@ def _with_available_tools(db: Session, request: SkillDistillRequest) -> SkillDis
 def _with_available_context_for_rewrite(
     db: Session, request: SkillRewriteRequest
 ) -> SkillRewriteRequest:
-    tools = db.exec(
-        select(Tool).where(Tool.tenant_id == request.tenant_id, Tool.enabled == True)  # noqa: E712
-    ).all()
+    tools = db.exec(select(Tool).where(Tool.tenant_id == request.tenant_id)).all()
     available_tools = _dedupe_capability_catalog(
         [
             *request.available_tools,

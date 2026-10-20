@@ -796,6 +796,7 @@ def test_agent_summary_resources_match_operational_resource_lists() -> None:
             ("skill", skill.id),
             ("general_skill", general_skill.id),
             ("tool", tool.id),
+            ("tool", disabled_tool.id),
             ("knowledge_base", kb.id),
         }
         assert [
@@ -807,8 +808,9 @@ def test_agent_summary_resources_match_operational_resource_lists() -> None:
             for row in list_general_skills("tenant_demo", db, agent.id)
             if row.status == "published"
         ] == [general_skill.id]
-        assert [row.id for row in list_tools("tenant_demo", None, agent.id, db) if row.enabled] == [
-            tool.id
+        assert [row.id for row in list_tools("tenant_demo", None, agent.id, db)] == [
+            disabled_tool.id,
+            tool.id,
         ]
         assert set(visible_knowledge_base_versions(db, "tenant_demo", agent.id)) == {kb.id}
 
