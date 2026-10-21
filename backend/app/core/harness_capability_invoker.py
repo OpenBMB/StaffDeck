@@ -68,8 +68,8 @@ from app.harness.sandbox import parse_network_policy
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.search_payload import (
-    KNOWLEDGE_PAYLOAD_MAX_CHARS,
     compact_knowledge_search_payload,
+    knowledge_payload_budget,
     serialized_chars,
 )
 from app.knowledge.service import KnowledgeService
@@ -1140,7 +1140,11 @@ class HarnessCapabilityInvoker:
         # 「全量证据」不变。交给模型与下游的 ``data`` 换成精简投影（见
         # app/knowledge/search_payload.py）——不精简就会被 _persist_large_json_result
         # 换成沙箱文件指针，模型读不全 160KB JSON，只能换词重搜（实测多花两轮）。
-        compacted = compact_knowledge_search_payload(payload)
+        # 内联预算按命中条数自适应：命中 15~20 条时固定 24K 塞不下，会被
+        # _persist_large_json_result 换成沙箱文件指针（模型只能 read_file 盲读）。
+        # 压缩与落盘判定必须共用同一个预算。
+        payload_budget = knowledge_payload_budget(payload)
+        compacted = compact_knowledge_search_payload(payload, max_chars=payload_budget)
         result = {
             "success": True,
             "data": compacted,
@@ -1167,15 +1171,16 @@ class HarnessCapabilityInvoker:
                 "query": query,
                 "raw_chars": raw_chars,
                 "inline_chars": inline_chars,
+                "budget_chars": payload_budget,
                 "chunk_count": result["chunk_count"],
                 "evidence_count": len(compacted.get("evidence_pack") or []),
-                "inline": inline_chars <= KNOWLEDGE_PAYLOAD_MAX_CHARS,
+                "inline": inline_chars <= payload_budget,
             },
         )
         return self._persist_large_json_result(
             result,
             call_id=call_id,
-            inline_max_chars=KNOWLEDGE_PAYLOAD_MAX_CHARS,
+            inline_max_chars=payload_budget,
         )
 
     def _invoke_external_tool(

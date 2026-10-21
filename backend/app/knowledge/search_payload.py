@@ -34,6 +34,13 @@ from typing import Any
 #: 内联载荷（``data`` 的序列化长度）上限。与 ``read_file`` 的 25KB 单次上限同量级：
 #: 模型一次就能读完，不再需要「指针 → 读文件 → 读不全 → 重搜」的往返。
 KNOWLEDGE_PAYLOAD_MAX_CHARS = 24_000
+#: 命中条数的免费基数：≤ 这个数时预算恒为 :data:`KNOWLEDGE_PAYLOAD_MAX_CHARS`。
+KNOWLEDGE_PAYLOAD_BASE_ENTRIES = 10
+#: 超过基数后每条追加的预算。一篇 FAQ 被切成多个 chunk 时命中数会到 15~20 条，
+#: 固定 24K 只能把正文裁到下限、甚至整包落成沙箱文件（模型得 ``read_file`` 盲读）。
+KNOWLEDGE_PAYLOAD_CHARS_PER_ENTRY = 1_500
+#: 内联预算硬上限：再大就不如落文件，避免把上下文窗口塞爆。
+KNOWLEDGE_PAYLOAD_HARD_MAX_CHARS = 60_000
 #: 单条证据正文的初始预算。8 条 × 1500 ≈ 12K，加上定位字段与其余区块仍在上限内。
 KNOWLEDGE_EVIDENCE_CONTENT_CHAR_LIMIT = 1_500
 #: 兜底 chunk 正文（仅 evidence_pack 为空时使用）。
@@ -62,6 +69,32 @@ _CHUNK_METADATA_KEYS = (
 _CONCEPT_SOURCE_REF_KEYS = ("source_path", "document_id", "section_path", "page", "target")
 _DOCUMENT_OUTLINE_LIMIT = 12
 _BUCKET_SECTION_PATH_LIMIT = 4
+
+
+def knowledge_payload_budget(payload: dict[str, Any]) -> int:
+    """本次检索允许直连内联的载荷预算（按命中条数自适应）。
+
+    固定 24K 在「命中 10 条左右」时刚好够；命中 15~20 条时，即使正文压到下限
+    也塞不进去，整包被换成沙箱文件指针——模型拿不到证据只能 `read_file` 盲读
+    JSON（单次 25KB，还要接力），再 `read_knowledge_chunk` 取原文，一次问答白白
+    多两次模型往返。这里按条数线性放大预算，并设硬上限。
+
+    ``_persist_large_json_result`` 必须用同一个返回值做落盘判定，否则「压缩放宽、
+    落盘阈值不变」等于白改。
+    """
+
+    if not isinstance(payload, dict):
+        return KNOWLEDGE_PAYLOAD_MAX_CHARS
+    entries = 0
+    for key in ("evidence_pack", "chunks"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            entries = max(entries, len(value))
+    extra_entries = max(0, entries - KNOWLEDGE_PAYLOAD_BASE_ENTRIES)
+    return min(
+        KNOWLEDGE_PAYLOAD_HARD_MAX_CHARS,
+        KNOWLEDGE_PAYLOAD_MAX_CHARS + extra_entries * KNOWLEDGE_PAYLOAD_CHARS_PER_ENTRY,
+    )
 
 
 def compact_knowledge_search_payload(

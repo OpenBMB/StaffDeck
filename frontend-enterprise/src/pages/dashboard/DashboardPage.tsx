@@ -272,6 +272,11 @@ export default function DashboardPage({
   const selectedKnowledgeCount = visibleKnowledgeBases.length;
   const selectedGeneralSkillCount = agentResourceCount(selectedAgent, 'general_skill');
   const selectedSkillCount = agentResourceCount(selectedAgent, 'skill');
+  // 「工具」只算这个员工真正启用的：绑定状态 active（员工侧停用不算）且工具本身
+  // enabled（工具被停用也不算）。整体员工（广场）没有绑定记录，回退到可见且启用。
+  const selectedToolCount = selectedAgent.is_overall
+    ? activeTools.length
+    : tools.filter((item) => item.binding_status === 'active' && item.enabled).length;
   const employeeScheduledTasks = scheduledTasks.filter((item) => item.agent_id === selectedAgent.id && item.status !== 'archived');
   const activeScheduledTasks = employeeScheduledTasks.filter((item) => item.status === 'active');
   const dashboardMetrics = employeeDashboardMetrics(employeeSessions, feedbackSummary);
@@ -388,10 +393,11 @@ export default function DashboardPage({
                 {systemSummary}
               </p>
 
-              <div className="flex w-full max-w-[514px] gap-3">
+              <div className="flex w-full max-w-[640px] gap-3">
                 <HeroMetric value={selectedKnowledgeCount} label="资料" />
                 <HeroMetric value={selectedGeneralSkillCount} label="技能" />
                 <HeroMetric value={selectedSkillCount} label="SOP" />
+                <HeroMetric value={selectedToolCount} label="工具" />
                 <HeroMetric value={activeScheduledTasks.length} label="定时任务" />
               </div>
             </div>

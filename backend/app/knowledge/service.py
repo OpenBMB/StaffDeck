@@ -1212,7 +1212,11 @@ class KnowledgeService:
             ranked_hits = _select_diverse_chunk_hits(
                 ranked_candidates, selected_buckets, request.max_chunks
             )
-            ranked_chunks = _expand_related_chunks(ranked_hits, chunks)
+            ranked_chunks = _expand_related_chunks(
+                ranked_hits,
+                chunks,
+                max_chunks=request.max_chunks,
+            )
             span.finish(selected_count=len(ranked_chunks))
         with observed_span(
             "knowledge_span",
@@ -2907,10 +2911,28 @@ def _select_diverse_chunk_hits(
 def _expand_related_chunks(
     ranked_hits: list[KnowledgeChunk],
     candidates: list[KnowledgeChunk],
+    *,
+    max_chunks: int | None = None,
 ) -> list[KnowledgeChunk]:
-    """Return each hit and every chunk from its contiguous source section."""
+    """Return each hit plus a **bounded** window of its contiguous source section.
+
+    2026-10-21：这里原本把命中 chunk 所在的 ``related_group`` 整组返回。一篇 FAQ
+    就是一个组，``max_chunks=8`` 实测被撑到 17~19 条；精简载荷随即超过内联预算，
+    被落成沙箱 JSON 文件——模型只能 ``read_file`` 盲读 55KB JSON，再
+    ``read_knowledge_chunk`` 重取原文，一次问答多两次模型往返。
+
+    现在：单个命中最多扩到 ``RELATED_CHUNK_MAX_COUNT`` 条（含自身，与没有
+    ``related_chunk_ids`` 时的窗口口径一致），扩展后总数不超过
+    ``max(max_chunks, 直接命中数)``；直接命中永远保留，只压缩扩展部分。
+    """
+
     if not ranked_hits:
         return []
+    hit_ids = {hit.id for hit in ranked_hits}
+    # 传了 max_chunks 才限制总量；没传时保持旧行为（只受窗口上限约束）
+    total_limit = max(1, int(max_chunks)) if max_chunks else None
+    if total_limit is not None:
+        total_limit = max(total_limit, len(hit_ids))
     candidates_by_id = {chunk.id: chunk for chunk in candidates}
     candidates_by_group: dict[str, list[KnowledgeChunk]] = {}
     for chunk in candidates:
@@ -2940,16 +2962,33 @@ def _expand_related_chunks(
             )
             group = _related_chunk_window(full_group, hit_index)
         if group:
+            ordered = sorted(group, key=lambda row: (row.chunk_index, row.id))
             if group_id in seen_groups:
                 if hit.id not in seen:
                     expanded.append(hit)
                     seen.add(hit.id)
                 continue
             seen_groups.add(group_id)
-            for chunk in sorted(group, key=lambda row: (row.chunk_index, row.id)):
-                if chunk.id not in seen:
-                    expanded.append(chunk)
-                    seen.add(chunk.id)
+            # 显式 related_chunk_ids 也要受窗口上限约束，否则整组会撑爆内联预算
+            window = ordered
+            if len(ordered) > RELATED_CHUNK_MAX_COUNT:
+                hit_index = next(
+                    (index for index, chunk in enumerate(ordered) if chunk.id == hit.id),
+                    0,
+                )
+                window = _related_chunk_window(ordered, hit_index)
+            for chunk in window:
+                if chunk.id in seen:
+                    continue
+                # 直接命中永远保留；扩展条目受总上限约束
+                if (
+                    chunk.id not in hit_ids
+                    and total_limit is not None
+                    and len(expanded) >= total_limit
+                ):
+                    continue
+                expanded.append(chunk)
+                seen.add(chunk.id)
             continue
         if hit.id not in seen:
             expanded.append(hit)

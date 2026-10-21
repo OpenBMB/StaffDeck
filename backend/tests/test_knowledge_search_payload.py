@@ -12,8 +12,10 @@ import json
 from app.core.context_projection import compact_knowledge_context
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.search_payload import (
+    KNOWLEDGE_PAYLOAD_HARD_MAX_CHARS,
     KNOWLEDGE_PAYLOAD_MAX_CHARS,
     compact_knowledge_search_payload,
+    knowledge_payload_budget,
     serialized_chars,
 )
 
@@ -283,3 +285,30 @@ def test_serialized_chars_matches_json_dump_used_by_persistence() -> None:
     assert serialized_chars(value) == len(
         json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     )
+
+
+def test_budget_scales_with_hit_count() -> None:
+    """内联预算按命中条数自适应：≤10 条维持 24K，再多按条追加，封顶 60K。"""
+
+    assert knowledge_payload_budget({"evidence_pack": [_evidence(1)] * 10}) == (
+        KNOWLEDGE_PAYLOAD_MAX_CHARS
+    )
+    assert knowledge_payload_budget({"evidence_pack": [_evidence(1)] * 19}) == 37_500
+    assert knowledge_payload_budget({"chunks": [_chunk(1)] * 100}) == (
+        KNOWLEDGE_PAYLOAD_HARD_MAX_CHARS
+    )
+
+
+def test_large_hit_sets_fit_the_scaled_budget() -> None:
+    """19 条命中的真实场景：固定 24K 压到下限仍超预算（会落沙箱文件），
+    自适应预算下必须能完整内联，模型不必 read_file 盲读。"""
+
+    payload = _payload(chunk_count=19)
+    payload["evidence_pack"] = [_evidence(index) for index in range(1, 20)]
+    budget = knowledge_payload_budget(payload)
+
+    compacted = compact_knowledge_search_payload(payload, max_chars=budget)
+
+    assert budget > KNOWLEDGE_PAYLOAD_MAX_CHARS
+    assert serialized_chars(compacted) <= budget
+    assert len(compacted["evidence_pack"]) == 19

@@ -64,6 +64,7 @@ def init_db() -> None:
 
     # _configure_sqlite_runtime()
     SQLModel.metadata.create_all(engine)
+    """
     _migrate_tool_binding_semantics()
     _migrate_ai_review_schema()
     _migrate_mcp_server_timeout()
@@ -71,6 +72,7 @@ def init_db() -> None:
     _migrate_general_skill_category()
     _migrate_free_model_schema()
     _migrate_ui_config_knowledge_citations()
+    """
     # _migrate_sqlite_skill_schema()
     # _migrate_pg_api_key_schema()
     # _migrate_user_ldap_schema()
