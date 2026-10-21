@@ -51,6 +51,20 @@ def test_panel_script_includes_panel_defaults() -> None:
     assert json.dumps(config["panel"], ensure_ascii=False) in body
 
 
+def test_member_enterprise_business_trip_scenario_uses_its_own_form() -> None:
+    """成员企业出差报销（workflowid=356）与普通出差报销字段不同，定位器不能复用。"""
+    config = oa_assistant._load_config()
+    scenario = next(s for s in config["scenarios"] if s["id"] == "business_trip_member")
+    assert scenario["enabled"] is True
+    assert "workflowid=356" in scenario["url"]
+    assert scenario["line_items"]["row_fields"]["scene"]["selector"] == (
+        'div[data-fieldmark="field22284_{i}"]'
+    )
+    overrides = scenario["field_overrides"]
+    assert overrides["expense_type"]["selector"] == 'div[data-fieldmark="field22283"]'
+    assert overrides["e_ticket"]["selector"] == 'div[data-fieldmark="field29327"]'
+
+
 def test_report_accepts_json_and_garbage() -> None:
     assert asyncio.run(oa_assistant.report(_request(b'{"kind":"run"}')))["ok"] is True
     # 非 JSON 不能把上报链路打挂

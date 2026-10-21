@@ -490,6 +490,110 @@
       "summary": "出差报销：上传发票自动生成报销明细（同「报销场景 + 税率」合并为一行、金额累计），发票类型按该票税率预选。"
     },
     {
+      "id": "business_trip_member",
+      "name": "出差报销(成员企业)",
+      "enabled": true,
+      "url": "https://oa.fosunholiday.com/spa/workflow/static4form/index.html?_rdm=1792551612274#/main/workflow/req?iscreate=1&workflowid=356&isagent=0&beagenter=0&f_weaver_belongto_userid=&f_weaver_belongto_usertype=0&preloadkey=1792551612274&timestamp=1792551612274&_key=ntaprn",
+      "reason_prefill": "出差费用报销",
+      "notices": [
+        "报销明细由发票自动解析生成（境内住宿 / 境内机票）；一张发票一行，金额按行累计，不取整。",
+        "火车票仅支持附件上传，暂时无法解析金额。"
+      ],
+      "line_items": {
+        "initial_rows": 0,
+        "add_row_selector": "[title*='添加'], [title*='新增'], a[class*='add'], i[class*='add'], span[class*='add'], a:has-text('添加'), a:has-text('新增')",
+        "del_row_selector": "i.detailBtn[title*='删除'], i[id^='delbutton'], [class*='detailButton'] [title*='删除'], i[class*='form-delete'], [name^='delbutton'], [title*='删除'], [title*='移除'], a[class*='delete'], i[class*='delete'], span[class*='delete'], a[class*='remove'], i[class*='remove'], a:has-text('－'), i:has-text('－')",
+        "group_by": "tax_rate",
+        "item_desc_template": "{scene}费",
+        "row_fields": {
+          "scene": {
+            "label": "报销场景",
+            "selector": "div[data-fieldmark=\"field22284_{i}\"]",
+            "mode": "select",
+            "by_label": "报销场景"
+          },
+          "invoice_type": {
+            "label": "发票类型",
+            "selector": "div[data-fieldmark=\"field22279_{i}\"]",
+            "mode": "select",
+            "by_label": "发票类型"
+          },
+          "item_desc": {
+            "label": "事项描述",
+            "selector": "#field22263_{i}",
+            "mode": "input",
+            "by_label": "事项描述"
+          },
+          "amount": {
+            "label": "金额",
+            "selector": "#field22301_{i}",
+            "mode": "input",
+            "by_label": "发票金额"
+          }
+        }
+      },
+      "fields": [
+        "expense_type",
+        "tax_exceeded",
+        "travel_entertainment",
+        "reason",
+        "trip_days",
+        "related_flow",
+        "company_name",
+        "cost_department",
+        "e_ticket",
+        "attachment",
+        "item_desc",
+        "invoice_type",
+        "amount"
+      ],
+      "field_overrides": {
+        "expense_type": {
+          "value": "差旅费用",
+          "selector": "div[data-fieldmark=\"field22283\"]"
+        },
+        "tax_exceeded": {
+          "value": "否",
+          "selector": "div[data-fieldmark=\"field22336\"]"
+        },
+        "travel_entertainment": {
+          "value": "是",
+          "selector": "div[data-fieldmark=\"field22289\"]"
+        },
+        "reason": {
+          "selector": "#field22249"
+        },
+        "trip_days": {
+          "selector": "#field22251"
+        },
+        "related_flow": {
+          "selector": "div[data-fieldmark=\"field22252\"]"
+        },
+        "company_name": {
+          "selector": "div[data-fieldmark=\"field22282\"]"
+        },
+        "e_ticket": {
+          "selector": "div[data-fieldmark=\"field29327\"]"
+        },
+        "attachment": {
+          "selector": "div[data-fieldmark=\"field22254\"]"
+        },
+        "cost_department": {
+          "enabled": false
+        },
+        "item_desc": {
+          "enabled": false
+        },
+        "invoice_type": {
+          "enabled": false
+        },
+        "amount": {
+          "enabled": false
+        }
+      },
+      "summary": "出差报销（成员企业）：表单为 workflowid=356 的「旅文成员企业个人费用报销」；字段与出差报销一致，定位器按成员企业表单重新采集。上传发票自动生成报销明细（同「报销场景 + 税率」合并为一行、金额累计），发票类型按该票税率预选。"
+    },
+    {
       "id": "company_payment",
       "name": "境内公司付款",
       "enabled": true,

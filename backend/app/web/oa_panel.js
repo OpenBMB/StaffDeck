@@ -2392,6 +2392,19 @@
   }
 
   scenarioSelect.addEventListener('change', function () { refreshPrefill(); syncScenarioFields(); });
+
+  // 当前 OA 页面能唯一对应一个场景时自动选中（如 workflowid=356 成员企业、56 公司付款）。
+  // workflowid=57 对应通讯/房租/交通/出差多个场景，无法区分，保持默认由用户手动选。
+  (function autoSelectScenarioFromUrl() {
+    var current = String(location.href).match(/[?&#]workflowid=(\d+)/);
+    if (!current) return;
+    var matched = scenarios.filter(function (s) {
+      var m = String(s.url || '').match(/[?&#]workflowid=(\d+)/);
+      return !!m && m[1] === current[1];
+    });
+    if (matched.length === 1) scenarioSelect.value = matched[0].id;
+  })();
+
   refreshPrefill();
   syncScenarioFields();
 
