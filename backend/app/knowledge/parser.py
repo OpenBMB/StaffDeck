@@ -72,25 +72,88 @@ def _extract_pdf(content: bytes) -> str:
 
 
 def _extract_docx(content: bytes) -> str:
-    try:
-        from docx import Document
+    """抽取 .docx 正文。
 
-        document = Document(BytesIO(content))
-        rows: list[str] = []
-        for paragraph in document.paragraphs:
-            text = paragraph.text.strip()
-            if not text:
-                continue
-            heading_level = _docx_heading_level(paragraph.style.name if paragraph.style else "")
-            rows.append(f"{'#' * heading_level} {text}" if heading_level else text)
-        for table in document.tables:
-            for row in table.rows:
-                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                if cells:
-                    rows.append(" | ".join(cells))
-        return "\n".join(rows)
-    except Exception:
+    三条路径依次尝试：
+    1. python-docx（正常文档，保留标题层级与表格）；
+    2. 裸 zip 解析 `word/document.xml`（python-docx 装不上或文档结构异常时兜底）；
+    3. 纯文本兜底 —— 后缀写成 `.docx`、内容其实是文本（把 .txt / 网页复制内容直接改名）
+       太常见了，与其报「无法解析」，不如按文本读进来。
+    """
+    if not content:
+        raise KnowledgeParseError("docx 文档内容为空。")
+    try:
+        return _extract_docx_with_python_docx(content)
+    except Exception:  # noqa: BLE001 - 逐级降级，最后统一给可读报错
+        pass
+    try:
         return _extract_docx_with_zip(content)
+    except Exception as exc:  # noqa: BLE001
+        plain = _decode_docx_as_plain_text(content)
+        if plain is not None:
+            return plain
+        raise KnowledgeParseError(_docx_error_message(content)) from exc
+
+
+def _extract_docx_with_python_docx(content: bytes) -> str:
+    from docx import Document
+
+    document = Document(BytesIO(content))
+    rows: list[str] = []
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        if not text:
+            continue
+        heading_level = _docx_heading_level(paragraph.style.name if paragraph.style else "")
+        rows.append(f"{'#' * heading_level} {text}" if heading_level else text)
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                rows.append(" | ".join(cells))
+    return "\n".join(rows)
+
+
+def _decode_docx_as_plain_text(content: bytes) -> str | None:
+    """把「其实是纯文本」的 .docx 当文本读；不像文本则返回 None。
+
+    用 NUL 字节先排掉二进制（ZIP / PDF / 旧版 .doc 里一定会有），
+    再看可打印字符占比，避免把乱码当成正文喂进知识库。
+    """
+    sample = content[:4096]
+    if b"\x00" in sample:
+        return None
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            text = content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if _looks_like_text(text):
+            return text
+    return None
+
+
+def _looks_like_text(text: str) -> bool:
+    sample = text[:4096]
+    if not sample.strip():
+        return False
+    printable = sum(1 for char in sample if char.isprintable() or char in "\r\n\t")
+    return printable / len(sample) >= 0.95
+
+
+def _docx_error_message(content: bytes) -> str:
+    """按真实文件头给出可执行的报错，而不是笼统的「无法解析」。"""
+    head = content[:8]
+    if head.startswith(b"\xd0\xcf\x11\xe0"):
+        return "这个文件其实是旧版 .doc 格式，请用 Word 另存为 .docx 后重新上传。"
+    if head.startswith(b"%PDF"):
+        return "这个文件其实是 PDF，请把后缀改回 .pdf 后重新上传。"
+    if head.startswith(b"PK"):
+        return "docx 文件已损坏（缺少 word/document.xml），请用 Word 另存为 .docx 后重新上传。"
+    return (
+        "无法解析该文件：它不是有效的 .docx（OOXML）包，也不像纯文本。"
+        "请用 Word 另存为 .docx，或直接上传 .txt / .md。"
+    )
 
 
 def _docx_heading_level(style_name: str) -> int | None:
@@ -99,11 +162,12 @@ def _docx_heading_level(style_name: str) -> int | None:
 
 
 def _extract_docx_with_zip(content: bytes) -> str:
-    try:
-        with ZipFile(BytesIO(content)) as archive:
-            xml = archive.read("word/document.xml").decode("utf-8", errors="ignore")
-    except Exception as exc:
-        raise KnowledgeParseError("无法解析 docx 文档。") from exc
+    """不装 python-docx 时的兜底：直接读 `word/document.xml` 的文本节点。
+
+    失败时把原始异常抛给 `_extract_docx`，由它决定是否降级成纯文本、以及给什么报错。
+    """
+    with ZipFile(BytesIO(content)) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8", errors="ignore")
     parser = _DocxTextExtractor()
     parser.feed(xml)
     return parser.text

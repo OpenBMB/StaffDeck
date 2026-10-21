@@ -293,6 +293,40 @@ def test_docx_headings_are_preserved_and_numbered_body_items_are_not_sections() 
     assert "2. 提交登记表乙" in sections[1]["content"]
 
 
+def test_text_file_renamed_as_docx_is_parsed_as_text() -> None:
+    """后缀写成 .docx、内容其实是纯文本（常见于把 .txt / 网页内容直接改名）时要能入库。"""
+    body = "1. 交通\r\n主题：度假村交通方式\r\n详情内容：单程 500 元。\r\n\r\n2. 礼遇\r\n主题：皇家俱乐部\r\n"
+    text, file_type = extract_text("resort.docx", body.encode("utf-8"))
+
+    assert file_type == "docx"
+    assert "1. 交通" in text
+    assert "详情内容：单程 500 元。" in text
+    assert "2. 礼遇" in text
+
+
+def test_gbk_text_file_renamed_as_docx_is_parsed() -> None:
+    body = "1. 交通\r\n主题：度假村交通方式\r\n"
+    text, _ = extract_text("resort.docx", body.encode("gb18030"))
+
+    assert "1. 交通" in text
+
+
+def test_old_doc_renamed_as_docx_reports_actionable_error() -> None:
+    ole_header = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 512
+
+    with pytest.raises(Exception) as excinfo:
+        extract_text("legacy.docx", ole_header)
+
+    assert "旧版 .doc" in str(excinfo.value)
+
+
+def test_binary_garbage_as_docx_is_still_rejected() -> None:
+    with pytest.raises(Exception) as excinfo:
+        extract_text("junk.docx", bytes(range(256)) * 4)
+
+    assert "无法解析" in str(excinfo.value)
+
+
 def test_pdf_pages_receive_stable_section_labels(monkeypatch) -> None:
     class FakePage:
         def __init__(self, text: str):
