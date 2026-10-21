@@ -8,7 +8,7 @@ dependencies = [
   # cryptography 49 macOS wheels dynamically link their bundled OpenSSL. PyInstaller
   # can then select Python's older libssl.3.dylib with the same basename, producing
   # an app that fails at startup with a missing SSL_get0_group_name symbol.
-  "cryptography>=42.0.0,<49.0.0",
+  "cryptography>=42.0.0,<51.0.0",
   "fastapi>=0.111.0",
   "greenlet>=3.0.3",
   "lark-channel-sdk==1.2.0",
