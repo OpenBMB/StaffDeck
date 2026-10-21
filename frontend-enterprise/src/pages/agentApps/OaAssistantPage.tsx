@@ -120,7 +120,7 @@ export default function OaAssistantPage({
         <section className="rounded-[20px] bg-white p-[20px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
           <div className="flex items-center gap-[8px]">
             <Bookmark className="size-[15px] text-[#757f9c]" />
-            <h2 className="text-[14px] font-medium text-[#18181a]">第一步：把按钮拖到书签栏</h2>
+            <h2 className="text-[14px] font-medium text-[#18181a]">第一步：把按钮拖到书签栏(暂不支持成员企业报销)</h2>
           </div>
           <p className="mt-[6px] text-[12px] leading-[1.8] text-[#858b9c]">
             书签栏默认隐藏，按 <kbd className="rounded border border-[#e3e7f1] bg-[#fafbfd] px-[5px] py-[1px] text-[11px]">Ctrl/⌘ + Shift + B</kbd> 显示。

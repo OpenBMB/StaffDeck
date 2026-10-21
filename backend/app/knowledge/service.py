@@ -2989,6 +2989,10 @@ def _expand_related_chunks(
                     continue
                 expanded.append(chunk)
                 seen.add(chunk.id)
+            # related_chunk_ids 可能不含自身：直接命中永远保留
+            if hit.id not in seen:
+                expanded.append(hit)
+                seen.add(hit.id)
             continue
         if hit.id not in seen:
             expanded.append(hit)
