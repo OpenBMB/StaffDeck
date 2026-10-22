@@ -1,7 +1,7 @@
 import base64
 import hashlib
 
-from app.core.harness_capability_invoker import HarnessCapabilityInvoker
+from app.core.engine.invoke import HarnessCapabilityInvoker
 
 
 def test_a2a_file_parts_become_harness_workspace_artifacts(tmp_path) -> None:

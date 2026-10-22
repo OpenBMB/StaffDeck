@@ -25,23 +25,23 @@ from app.core.base.conversation_context import (
 )
 from app.core.base.conversation_projection import ConversationProjection
 from app.core.base.graph_rules import GraphRules
-from app.core.harness_agent import HarnessExecutionCancelled
-from app.core.harness_session_lock import HarnessSessionBusy
-from app.core.harness_turn_store import HarnessTurnConflict
-from app.core.harness_v2_engine import (
+from app.core.engine.step_loop import HarnessExecutionCancelled
+from app.core.engine.session.lock import HarnessSessionBusy
+from app.core.engine.session.turn_store import HarnessTurnConflict
+from app.core.engine.turn import (
     HarnessV2Engine,
     _with_recoverable_first_session,
     get_or_create_harness_session,
 )
-from app.core.human_handoff_service import HumanHandoffService
+from app.core.engine.handoff import HumanHandoffService
 from app.core.converse.response import (
     ResponseGenerator,
     format_runtime_failure_reply,
     model_failure_suggestion,
 )
-from app.core.skill_runtime import SkillRuntime
+from app.core.engine.skill_runtime import SkillRuntime
 from app.core.plan.slash import SlashCommandError
-from app.core.turn_finalizer import TurnFinalizer
+from app.core.engine.finalizer import TurnFinalizer
 from app.core.base.ui_flags import knowledge_citations_hidden
 from app.db.models import (
     AgentProfile,

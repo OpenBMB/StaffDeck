@@ -7,7 +7,7 @@ from sqlalchemy import delete, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.core.harness_session_lock import HarnessSessionBusy
+from app.core.engine.session.lock import HarnessSessionBusy
 from app.db.models import (
     ChatSession,
     HarnessSessionLeaseRecord,

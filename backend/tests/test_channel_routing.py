@@ -3,7 +3,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.channels.service_intake as intake_module
-import app.core.agent_loop as agent_loop_module
+import app.core.engine.facade as agent_loop_module
 from app.channels.service_intake import process_inbound
 from app.channels.service_outbox import stage_channel_delivery
 from app.channels.service_routing import (

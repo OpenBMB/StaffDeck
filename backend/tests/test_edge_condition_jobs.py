@@ -220,13 +220,13 @@ def test_enqueue_job_fails_fast_on_unresolvable_func(monkeypatch) -> None:
 
 
 def test_engine_loader_skips_conversation_frames() -> None:
-    from app.core.harness_v2_engine import _load_edge_condition_specs
+    from app.core.engine.turn import _load_edge_condition_specs
 
     assert _load_edge_condition_specs(None, "tenant_a", object(), "conversation") == {}
 
 
 def test_engine_loader_returns_empty_without_skill() -> None:
-    from app.core.harness_v2_engine import _load_edge_condition_specs
+    from app.core.engine.turn import _load_edge_condition_specs
 
     assert _load_edge_condition_specs(None, "tenant_a", None, "sop") == {}
 
@@ -239,6 +239,6 @@ def test_engine_loader_swallows_db_errors() -> None:
         def exec(self, *args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("db down")
 
-    from app.core.harness_v2_engine import _load_edge_condition_specs
+    from app.core.engine.turn import _load_edge_condition_specs
 
     assert _load_edge_condition_specs(_BrokenDb(), "tenant_a", _Skill(), "sop") == {}

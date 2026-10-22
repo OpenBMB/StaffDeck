@@ -14,28 +14,28 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import ensure_open_gallery_binding
-from app.core import harness_agent as harness_agent_module
-from app.core import harness_v2_engine as harness_v2_engine_module
+from app.core.engine import step_loop as harness_agent_module
+from app.core.engine import turn as harness_v2_engine_module
 from app.core.plan import planner as turn_planner_module
-from app.core.agent_loop import AgentLoop
+from app.core.engine.facade import AgentLoop
 from app.core.capability.manifest import (
     CapabilityManifestBuilder,
     _available_invocation_name,
     general_skill_snapshot_digest,
     tool_snapshot_digest,
 )
-from app.core.harness_agent import HarnessTaskAgent, _transcript_for_model
-from app.core.harness_attachments import (
+from app.core.engine.step_loop import HarnessTaskAgent, _transcript_for_model
+from app.core.engine.attachments import (
     ValidatedTaskImagePayload,
     materialize_task_attachments,
     validated_task_image_payloads,
 )
-from app.core.harness_capability_invoker import (
+from app.core.engine.invoke import (
     HarnessCapabilityInvoker,
     _failure_was_not_sent,
 )
-from app.core.harness_session_cleanup import harness_task_workspace_path
-from app.core.harness_v2_engine import (
+from app.core.engine.session.cleanup import harness_task_workspace_path
+from app.core.engine.turn import (
     HarnessV2Engine,
     _combine_results,
     _enforce_required_slots,
@@ -49,7 +49,7 @@ from app.core.harness_v2_engine import (
     _turn_skill_projection,
     _with_recoverable_first_session,
 )
-from app.core.task_frame_store import (
+from app.core.engine.frames import (
     MAX_TASK_FRAMES_PER_TURN,
     TaskFrameClaimConflict,
     TaskFrameStore,
@@ -2434,7 +2434,7 @@ def test_large_external_json_result_uses_sandbox_reference_and_auto_resolves(
         )
 
     monkeypatch.setattr(
-        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        "app.core.engine.invoke.ToolExecutor.execute",
         fake_execute,
     )
     engine = _test_engine()
@@ -2536,7 +2536,7 @@ def test_mcp_app_descriptor_is_host_only_and_emitted_as_trace(
         )
 
     monkeypatch.setattr(
-        "app.core.harness_capability_invoker.ToolExecutor.execute",
+        "app.core.engine.invoke.ToolExecutor.execute",
         fake_execute,
     )
     trace_events: list[tuple[str, dict[str, object]]] = []
@@ -2596,7 +2596,7 @@ def test_knowledge_search_small_result_is_inlined_without_sandbox_reference(
         for index in range(50)
     ]
     monkeypatch.setattr(
-        "app.core.harness_capability_invoker.KnowledgeService.search",
+        "app.core.engine.invoke.KnowledgeService.search",
         lambda *_args, **_kwargs: KnowledgeSearchResponse(
             selected_concepts=inline_payload,
         ),
@@ -2647,7 +2647,7 @@ def test_knowledge_search_oversized_result_still_falls_back_to_sandbox_reference
         for index in range(400)
     ]
     monkeypatch.setattr(
-        "app.core.harness_capability_invoker.KnowledgeService.search",
+        "app.core.engine.invoke.KnowledgeService.search",
         lambda *_args, **_kwargs: KnowledgeSearchResponse(
             selected_concepts=huge_payload,
         ),
@@ -5831,7 +5831,7 @@ def test_direct_reply_answer_uses_module_prompt_path(monkeypatch) -> None:
     线上事故（2026-09-08）：误写成 ResponseGenerator.PROMPT_PATH（类上无此
     属性），直通每次 AttributeError 静默降级到标准路径，问候语耗时翻倍。
     """
-    from app.core import harness_v2_engine
+    from app.core.engine import turn as harness_v2_engine
     from app.core.converse.response import PROMPT_PATH
 
     captured: dict[str, object] = {}
@@ -5871,7 +5871,7 @@ def test_direct_reply_answer_uses_module_prompt_path(monkeypatch) -> None:
 
 
 def test_capability_intro_direct_answer_injects_summary(monkeypatch) -> None:
-    from app.core import harness_v2_engine
+    from app.core.engine import turn as harness_v2_engine
 
     captured: dict[str, object] = {}
 

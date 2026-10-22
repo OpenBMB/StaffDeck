@@ -1,4 +1,4 @@
-from app.core.agent_loop import AgentLoop
+from app.core.engine.facade import AgentLoop
 from app.session.session_schema import StepAgentResult
 from app.db.models import ChatSession, Skill
 

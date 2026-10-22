@@ -15,6 +15,7 @@ from app.db.models import (
     new_id,
     utc_now,
 )
+from app.core.plan.frame_policy import MAX_TASK_FRAMES_PER_TURN
 from app.session.session_schema import PlannedTaskFrame, TurnPlan
 
 
@@ -25,7 +26,6 @@ DEPENDENCY_WAITING_ERROR_CODES = {
 }
 HARNESS_CONTEXT_KEY = "harness_v2"
 FRAME_LEASE_SECONDS = 900
-MAX_TASK_FRAMES_PER_TURN = 8
 
 
 class TaskFrameClaimConflict(RuntimeError):

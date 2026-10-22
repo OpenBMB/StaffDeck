@@ -45,7 +45,7 @@ from app.api import (
 from app.async_jobs import shutdown_async_jobs, start_async_jobs
 from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
-from app.core.harness_recovery import (
+from app.core.engine.recovery import (
     recover_orphan_harness_runs,
     start_harness_recovery_sweeper,
     stop_harness_recovery_sweeper,

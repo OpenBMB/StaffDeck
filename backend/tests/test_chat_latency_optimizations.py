@@ -18,11 +18,11 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.core.harness_agent import (
+from app.core.engine.step_loop import (
     LIGHTWEIGHT_DIRECTIVE,
     HarnessTaskAgent,
 )
-from app.core.harness_capability_invoker import HarnessCapabilityInvoker
+from app.core.engine.invoke import HarnessCapabilityInvoker
 from app.core.base.request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,
@@ -284,7 +284,7 @@ def test_harness_task_agent_lightweight_first_iteration_falls_back_on_protocol_e
 
     agent = HarnessTaskAgent()
     original = HarnessTaskAgent.__module__
-    import app.core.harness_agent as ha
+    import app.core.engine.step_loop as ha
 
     saved = ha._generate_harness_action_json
     ha._generate_harness_action_json = fake_generate
@@ -340,7 +340,7 @@ def test_harness_task_agent_lightweight_success_avoids_main_model() -> None:
     lightweight = _model_config("轻量模型", "glm-flash")
     main = _model_config("主模型", "main-model")
 
-    import app.core.harness_agent as ha
+    import app.core.engine.step_loop as ha
 
     saved = ha._generate_harness_action_json
     ha._generate_harness_action_json = fake_generate
@@ -385,7 +385,7 @@ def test_harness_task_agent_no_lightweight_keeps_main_model() -> None:
 
     main = _model_config("主模型", "main-model")
 
-    import app.core.harness_agent as ha
+    import app.core.engine.step_loop as ha
 
     saved = ha._generate_harness_action_json
     ha._generate_harness_action_json = fake_generate
@@ -460,7 +460,7 @@ def test_knowledge_routing_uses_intent_model(monkeypatch) -> None:
 
     captured: dict = {}
     monkeypatch.setattr(
-        "app.core.harness_capability_invoker.KnowledgeService",
+        "app.core.engine.invoke.KnowledgeService",
         lambda db, laya_router=None: _RecordingKnowledgeService(captured),
     )
 
@@ -491,7 +491,7 @@ def test_knowledge_routing_falls_back_to_main_model(monkeypatch) -> None:
 
     captured: dict = {}
     monkeypatch.setattr(
-        "app.core.harness_capability_invoker.KnowledgeService",
+        "app.core.engine.invoke.KnowledgeService",
         lambda db, laya_router=None: _RecordingKnowledgeService(captured),
     )
 

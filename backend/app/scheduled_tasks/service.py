@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 
 from app.agents.branching import model_for_agent, visible_published_skills
 from app.core import AgentLoop
-from app.core.harness_turn_store import HarnessTurnConflict
+from app.core.engine.session.turn_store import HarnessTurnConflict
 from app.db import engine
 from app.db.models import (
     AgentEvent,

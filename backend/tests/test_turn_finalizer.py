@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app.core.turn_finalizer import TurnFinalizer
+from app.core.engine.finalizer import TurnFinalizer
 from app.session.session_schema import RouterDecision, StepAgentResult
 
 

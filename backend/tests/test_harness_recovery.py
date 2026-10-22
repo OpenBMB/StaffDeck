@@ -5,7 +5,7 @@ from datetime import timedelta
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.core.harness_recovery import RECOVERY_REPLY, recover_orphan_harness_runs
+from app.core.engine.recovery import RECOVERY_REPLY, recover_orphan_harness_runs
 from app.db.models import (
     AgentEvent,
     ChatSession,

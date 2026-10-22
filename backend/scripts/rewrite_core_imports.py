@@ -61,6 +61,24 @@ MOVES: dict[str, str] = {
     "app.core.slides_pptx": "app.core.artifacts.slides_pptx",
     "app.core.invoice_amount": "app.core.artifacts.invoice",
     "app.core.doc_review": "app.core.artifacts.doc_review",
+    # 批次 3：engine
+    "app.core.agent_loop": "app.core.engine.facade",
+    "app.core.harness_v2_engine": "app.core.engine.turn",
+    "app.core.harness_agent": "app.core.engine.step_loop",
+    "app.core.harness_capability_invoker": "app.core.engine.invoke",
+    "app.core.task_frame_store": "app.core.engine.frames",
+    "app.core.harness_recovery": "app.core.engine.recovery",
+    "app.core.harness_attachments": "app.core.engine.attachments",
+    "app.core.turn_finalizer": "app.core.engine.finalizer",
+    "app.core.human_handoff_service": "app.core.engine.handoff",
+    "app.core.skill_runtime": "app.core.engine.skill_runtime",
+    "app.core.harness_session_lease": "app.core.engine.session.lease",
+    "app.core.harness_session_lock": "app.core.engine.session.lock",
+    "app.core.harness_session_cleanup": "app.core.engine.session.cleanup",
+    "app.core.harness_turn_store": "app.core.engine.session.turn_store",
+    # 批次 3：旧执行路径残留，标 deprecated 但不删（仍被 3 个测试使用）
+    "app.core.step_agent": "app.core.engine.deprecated.step_agent",
+    "app.core.reflection_agent": "app.core.engine.deprecated.reflection_agent",
 }
 
 SCAN_ROOTS = ("app", "tests", "scripts")

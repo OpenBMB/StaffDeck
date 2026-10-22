@@ -1120,7 +1120,7 @@ def process_inbound(
             chat_session = db.get(ChatSession, session_id)
             if not event or not chat_session:
                 return False
-            from app.core.agent_loop import AgentLoop
+            from app.core.engine.facade import AgentLoop
 
             attachments: list = []
             if inbound.attachments:

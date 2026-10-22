@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from app.core.harness_agent import HarnessTaskAgent
+from app.core.engine.step_loop import HarnessTaskAgent
 from app.core.sop.step_executor import TRACE_EVENT, plan_sop_prefill_actions
 from app.core.base.request_compiler import (
     CapabilityManifest,
@@ -520,7 +520,7 @@ def test_malformed_requirement_degrades_silently() -> None:
 
 
 def test_harness_passthrough_node_completes_without_llm(monkeypatch) -> None:
-    from app.core import harness_agent as harness_agent_module
+    from app.core.engine import step_loop as harness_agent_module
     from app.db.models import ModelConfig
 
     def _fail_llm(*_args: Any, **_kwargs: Any) -> Any:
@@ -559,7 +559,7 @@ def test_harness_passthrough_node_completes_without_llm(monkeypatch) -> None:
 
 
 def test_harness_prefetch_executes_and_satisfies_required_knowledge(monkeypatch) -> None:
-    from app.core import harness_agent as harness_agent_module
+    from app.core.engine import step_loop as harness_agent_module
     from app.core.base.request_compiler import CapabilityDescriptor
     from app.db.models import ModelConfig
 
@@ -1342,7 +1342,7 @@ def test_tool_direct_call_skips_internal_tools() -> None:
 def test_harness_full_message_turn_completes_without_task_action_llm(monkeypatch) -> None:
     """集成（截图 bug 端到端）：首条消息带齐信息 + 抽齐 + 纯流转 →
     仅一次轻量抽取调用，零 task_action LLM 轮。"""
-    from app.core import harness_agent as harness_agent_module
+    from app.core.engine import step_loop as harness_agent_module
     from app.core.sop import scenes as scenes_module
     from app.db.models import ModelConfig
 
@@ -1719,7 +1719,7 @@ def test_harness_agent_passes_edge_condition_specs_to_executor() -> None:
     """集成：HarnessTaskAgent 必须把编译产物透传到执行器（否则场景 G 空转）。"""
 
     captured: list[Any] = []
-    import app.core.harness_agent as harness_module
+    import app.core.engine.step_loop as harness_module
     from app.db.models import ModelConfig
 
     original = harness_module.plan_sop_prefill_actions
@@ -1943,7 +1943,7 @@ def test_harness_agent_passes_slot_submission_to_executor() -> None:
     """集成：表单提交必须被透传到执行器（否则等于白提交，还会回落 LLM 抽取）。"""
 
     captured: list[Any] = []
-    import app.core.harness_agent as harness_module
+    import app.core.engine.step_loop as harness_module
     from app.db.models import ModelConfig
 
     original = harness_module.plan_sop_prefill_actions

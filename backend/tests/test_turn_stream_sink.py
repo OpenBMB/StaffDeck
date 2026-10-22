@@ -18,10 +18,10 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 import app.llm as llm_package
-from app.core import harness_v2_engine as engine_module
+from app.core.engine import turn as engine_module
 from app.core.converse import response as response_generator_module
-from app.core.agent_loop import AgentLoop, TurnStreamSink
-from app.core.harness_v2_engine import (
+from app.core.engine.facade import AgentLoop, TurnStreamSink
+from app.core.engine.turn import (
     HarnessV2Engine,
     _direct_reply_answer,
     _direct_reply_answer_stream,

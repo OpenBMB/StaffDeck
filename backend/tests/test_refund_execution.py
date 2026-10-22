@@ -9,7 +9,7 @@ from app.api.mock import (
     mock_product_purchase,
 )
 from app.api.mock import MockOrderQueryRequest
-from app.core.harness_agent import HarnessAction, _finish_result
+from app.core.engine.step_loop import HarnessAction, _finish_result
 from app.core.base.request_compiler import TaskRequirement
 from app.db.seed import DEMO_TOOLS, REFUND_SKILL
 

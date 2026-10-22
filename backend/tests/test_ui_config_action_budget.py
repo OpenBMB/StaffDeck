@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.api.ui_config import UIConfigUpdateRequest
-from app.core.agent_loop import AgentLoop
+from app.core.engine.facade import AgentLoop
 
 
 def test_agent_loop_action_budget_defaults_to_32_and_accepts_100() -> None:

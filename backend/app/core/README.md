@@ -19,12 +19,14 @@ artifacts（独立，只依赖 models / llm）
 |---|---|---|
 | `base/` | 横切基础：取消、UI 开关、请求编译、上下文投影、纯图规则（`graph_rules`） | 业务判断、模型调用 |
 | `converse/` | 把执行结果说成人话：回复生成、人设提示 | 检索、工具调用 |
-| `plan/` | 意图识别、任务拆分、斜杠命令、路由 | 具体执行 |
+| `plan/` | 意图识别、任务拆分、斜杠命令、路由、帧策略 | 具体执行 |
 | `capability/` | 能力清单、发现、重放策略、产物登记 | 能力调用本身 |
 | `sop/` | SOP 场景、节点执行、边条件、槽位表单（`slots/`） | 通用对话逻辑 |
-| `engine/` | 执行内核：门面、轮次编排、决策循环、能力调用、帧存储、会话租约、恢复 | 纯数据投影 |
+| `engine/` | 执行内核：`facade`(门面)、`turn`(轮次)、`step_loop`(决策循环)、`invoke`(能力调用)、`frames`(帧存储)、`session/`(租约锁清理)、`recovery`、`attachments`、`finalizer`、`handoff`、`skill_runtime` | 纯数据投影 |
 | `knowledge_flow/` | 检索决策与预取（知识入库在 `app/knowledge/`） | 文档解析 |
 | `artifacts/` | 产物生成：幻灯片、发票、文档审阅 | 对话编排 |
+
+`engine/deprecated/` 放旧执行路径（`StepAgent`、`ReflectionAgent`），生产代码已无引用，只剩 3 个历史测试在用，新代码不要碰。
 
 `engine` 内部 `invoke` 与 `step_loop` 互相调用，属正常：它们是同一个执行回路的两端，不要拆到两个包。
 
@@ -53,10 +55,11 @@ python scripts/rewrite_core_imports.py         # 搬文件后批量改引用（�
 | 0 | 校验与改写脚本 | 完成 |
 | 1 | `base`(6) + `converse`(2) | 完成，57 处引用已改 |
 | 2 | `plan`(4) + `capability`(4) + `sop`(6+`slots/`) + `knowledge_flow`(3) + `artifacts`(4)，另 `graph_rules` 入 `base` | 完成，97 处引用已改 |
-| 3 | `engine`(11) | 待做 |
+| 3 | `engine`(16)，含 `session/`(4) 与 `deprecated/`(2) | 完成，105 处引用已改 |
 | 4 | 拆 6 个超大文件（最大 3023 行） | 待做 |
 
-批次 2 后顶层平铺只剩 16 个，全部属于 `engine`（含两个待确认的旧路径残留 `step_agent` / `reflection_agent`）。
+批次 3 后 `app/core/` 顶层只剩 `__init__.py`（一行 re-export `AgentLoop`）。全部 46 个模块分属 8 个包，
+层级越界 0、跨包循环 0。剩下的是体积问题：`engine/turn.py` 3023 行、`engine/facade.py` 1908 行等 6 个文件超 800 行，由批次 4 处理。
 
 单文件上限 800 行，批次 4 完成后由 `--strict` 守住。
 

@@ -9,7 +9,7 @@ from sqlmodel import Session, SQLModel, select
 from sqlmodel import create_engine as sqlmodel_create_engine
 
 import app.channels.service_intake as intake_module
-import app.core.agent_loop as agent_loop_module
+import app.core.engine.facade as agent_loop_module
 from app.api import channels as channels_api
 from app.channels.service_intake import process_inbound
 from app.db import database, get_session

@@ -28,13 +28,13 @@ from app.core.capability.manifest import (
     general_skill_snapshot_digest,
     tool_snapshot_digest,
 )
-from app.core.harness_agent import HarnessExecutionCancelled
+from app.core.engine.step_loop import HarnessExecutionCancelled
 from app.core.capability.deliverables import (
     MAX_PUBLISHED_DELIVERABLES,
     find_published_deliverable,
     list_published_deliverables,
 )
-from app.core.harness_session_cleanup import harness_task_workspace_path
+from app.core.engine.session.cleanup import harness_task_workspace_path
 from app.core.base.request_compiler import CapabilityDescriptor, CapabilityManifest
 from app.core.capability.replay_policy import ToolReplayPolicy
 from app.db.models import (

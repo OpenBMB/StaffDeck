@@ -10,7 +10,7 @@ from typing import Any, Literal, Mapping
 from pydantic import BaseModel, Field, ValidationError
 
 from app import paths
-from app.core.harness_attachments import (
+from app.core.engine.attachments import (
     ValidatedTaskImagePayload,
     isolated_attachment_context,
 )

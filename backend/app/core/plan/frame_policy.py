@@ -7,6 +7,11 @@ from app.db.models import ChatSession, Skill
 from app.session.session_schema import PendingTask, RouterDecision, StepAgentResult
 from app.tools.tool_schema import ToolResult
 
+#: 一轮对话最多规划的 TaskFrame 数，超出部分截断。
+#: 原本定义在 `task_frame_store`，但规划层（`plan/planner.py`）也要用它——
+#: 规划不能依赖执行，所以按依赖方向下沉到策略层，由执行层反过来引用。
+MAX_TASK_FRAMES_PER_TURN = 8
+
 
 @dataclass
 class QueuedTaskContinuation:

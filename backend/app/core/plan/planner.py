@@ -14,7 +14,7 @@ from app.core.base.context_projection import (
     compact_pending_tasks,
 )
 from app.core.base.graph_rules import GraphRules
-from app.core.task_frame_store import MAX_TASK_FRAMES_PER_TURN
+from app.core.plan.frame_policy import MAX_TASK_FRAMES_PER_TURN
 from app.db.models import ChatSession, ModelConfig, Skill, new_id
 from app.llm import LLMClient, LLMError
 from app.llm.stage_protocol import (

@@ -17,30 +17,30 @@ from app.core.base.cancellation import is_chat_turn_cancelled
 from app.core.capability.discovery import project_capability_manifest
 from app.core.capability.manifest import CapabilityManifestBuilder
 from app.core.base.conversation_projection import ConversationProjection
-from app.core.harness_agent import (
+from app.core.engine.step_loop import (
     MODEL_UNAVAILABLE_FAILURE_CODE,
     HarnessExecutionCancelled,
     HarnessExecutionFenced,
     HarnessTaskAgent,
     _trace_capability_result,
 )
-from app.core.harness_attachments import (
+from app.core.engine.attachments import (
     materialize_task_attachments,
     validated_task_image_payloads,
 )
-from app.core.harness_capability_invoker import HarnessCapabilityInvoker
+from app.core.engine.invoke import HarnessCapabilityInvoker
 from app.core.knowledge_flow.prefetch import is_smalltalk
 from app.core.capability.deliverables import list_published_deliverables
-from app.core.harness_session_lease import (
+from app.core.engine.session.lease import (
     HarnessSessionLeaseLost,
     HarnessSessionLeaseStore,
     HarnessSessionLeaseToken,
 )
-from app.core.harness_session_lock import (
+from app.core.engine.session.lock import (
     acquire_harness_session,
     release_harness_session,
 )
-from app.core.harness_turn_store import HarnessTurnStore
+from app.core.engine.session.turn_store import HarnessTurnStore
 from app.core.plan.slash import (
     SlashCommandError,
     SlashCommandSelection,
@@ -52,7 +52,7 @@ from app.core.plan.slash import (
 )
 from app.core.sop.slots.form import build_slot_form
 from app.core.sop.slots.hydration import SlotHydrationPolicy
-from app.core.task_frame_store import (
+from app.core.engine.frames import (
     TaskFrameClaimConflict,
     TaskFrameStore,
     planned_frame_from_record,

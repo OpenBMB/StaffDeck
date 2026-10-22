@@ -15,8 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.agent_loop import TurnStreamSink
-from app.core.harness_agent import (
+from app.core.engine.facade import TurnStreamSink
+from app.core.engine.step_loop import (
     _generate_harness_action_json,
     _iteration_reply_preview,
     _reply_preview_sink,

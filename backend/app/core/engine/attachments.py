@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from sqlmodel import Session
 
-from app.core.harness_session_cleanup import (
+from app.core.engine.session.cleanup import (
     harness_path_segment,
     harness_task_workspace_path,
 )

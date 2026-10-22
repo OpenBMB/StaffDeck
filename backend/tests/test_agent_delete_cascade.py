@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.agents import delete_agent
-from app.core.harness_session_cleanup import harness_session_workspace_path
+from app.core.engine.session.cleanup import harness_session_workspace_path
 from app.db.models import (
     AgentProfile,
     AgentResourceBinding,

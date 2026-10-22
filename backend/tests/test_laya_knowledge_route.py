@@ -293,7 +293,7 @@ def test_select_documents_without_router_goes_straight_to_llm(monkeypatch: pytes
 
 
 def test_build_knowledge_laya_router_respects_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.core import harness_v2_engine as engine_module
+    from app.core.engine import turn as engine_module
 
     enabled = SimpleNamespace(
         laya_knowledge_route_enabled=True,

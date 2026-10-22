@@ -7,7 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.channels.service_autoroute as autoroute_module
 import app.channels.service_intake as intake_module
-import app.core.agent_loop as agent_loop_module
+import app.core.engine.facade as agent_loop_module
 from app.channels.service_autoroute import (
     AUTO_ROUTE_CONFIDENCE_THRESHOLD,
     RouteDecision,
