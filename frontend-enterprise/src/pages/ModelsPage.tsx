@@ -30,7 +30,6 @@ import {
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { UnderlineTabs } from '@/components/ui/underline-tabs';
 import { cn } from '@/lib/utils';
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_ITEM_DANGER_CLASS } from '@/lib/enterprise-ui';
 import { apiErrorMessage } from '@/lib/apiErrorMessages';
@@ -255,7 +254,6 @@ export default function ModelsPage({
   currentUser?: EnterpriseAuthUser;
   onLogout?: () => void;
 } = {}) {
-  const [tab, setTab] = useState<'models' | 'apikeys'>('models');
   const [rows, setRows] = useState<ModelConfigRead[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
@@ -689,18 +687,6 @@ export default function ModelsPage({
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]">
       <AppHeader className="items-center" onLogout={onLogout} userName={currentUser?.username} title="模型配置" />
 
-      <UnderlineTabs
-        className="mt-[20px]"
-        aria-label="模型与 API Key 管理"
-        value={tab}
-        onChange={setTab}
-        items={[
-          { value: 'models', label: '模型管理' },
-          { value: 'apikeys', label: 'API Key 管理' },
-        ]}
-      />
-
-      {tab === 'models' && (
       <div className="mt-[16px] mb-[16px] flex items-center justify-end gap-[12px]">
         <UIButton
           variant="outline"
@@ -720,9 +706,7 @@ export default function ModelsPage({
           新建模型
         </UIButton>
       </div>
-      )}
 
-      {tab === 'models' && (
       <div className="flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_24px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
         <div className="flex flex-col gap-[18px]">
           <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
@@ -784,13 +768,10 @@ export default function ModelsPage({
           )}
         </div>
       </div>
-      )}
 
-      {tab === 'apikeys' && (
-        <div className="mt-[16px]">
-          <ApiKeyApplicationsPanel currentUser={currentUser} />
-        </div>
-      )}
+      <div className="mt-[16px]">
+        <ApiKeyApplicationsPanel currentUser={currentUser} />
+      </div>
 
       <Dialog open={editorOpen} onOpenChange={(next) => !next && closeEditor()}>
         <DialogContent

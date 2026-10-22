@@ -10,9 +10,10 @@ from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from app.agents.free_model import clear_global_free_flag
+from app.config import get_settings
 from app.db import get_session
 from app.db.models import AgentModelBinding, ModelConfig, User, utc_now
-from app.config import get_settings
 from app.llm import LLMClient, LLMError
 from app.llm.model_config_resolver import (
     ResolvedModelConfig,
@@ -45,7 +46,6 @@ from app.security.encryption import (
 )
 from app.security.permissions import is_admin_user
 from app.security.tenant import ensure_tenant
-from app.agents.free_model import clear_global_free_flag
 
 router = APIRouter(
     prefix="/api/enterprise/model-configs",
@@ -133,7 +133,7 @@ def list_model_configs(
     ensure_tenant(db, tenant_id)
     filters = [ModelConfig.tenant_id == tenant_id, ModelConfig.user_id == current_user.id]
     if not include_global_free:
-        filters.append(ModelConfig.is_global_free == False)  # noqa: E712
+        filters.append(ModelConfig.is_global_free == False)
     rows = db.exec(select(ModelConfig).where(*filters)).all()
     return [model_config_read(row) for row in rows]
 
@@ -677,7 +677,7 @@ def _has_available_model(
     statement = select(ModelConfig).where(
         ModelConfig.tenant_id == tenant_id,
         ModelConfig.user_id == user_id,
-        (ModelConfig.enabled == True) | (ModelConfig.is_default == True),  # noqa: E712
+        (ModelConfig.enabled == True) | (ModelConfig.is_default == True),
     )
     if exclude_config_id:
         statement = statement.where(ModelConfig.id != exclude_config_id)
@@ -690,7 +690,7 @@ def _clear_default(db: Session, tenant_id: str, user_id: str | None = None) -> N
         .where(
             ModelConfig.tenant_id == tenant_id,
             ModelConfig.user_id == user_id,
-            ModelConfig.is_default == True,  # noqa: E712 - SQLModel expression.
+            ModelConfig.is_default == True,
         )
         .values(is_default=False, updated_at=utc_now())
     )
@@ -704,7 +704,7 @@ def _clear_intent_recognition(
         .where(
             ModelConfig.tenant_id == tenant_id,
             ModelConfig.user_id == user_id,
-            ModelConfig.is_intent_recognition == True,  # noqa: E712
+            ModelConfig.is_intent_recognition == True,
         )
         .values(is_intent_recognition=False, updated_at=utc_now())
     )
@@ -785,3 +785,5 @@ def _commit_or_conflict(db: Session) -> None:
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="MODEL_DEFAULT_CONFLICT") from exc
+
+
