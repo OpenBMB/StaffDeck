@@ -3,8 +3,8 @@
 
 重构期间用它守住三条底线，避免「搬完更乱」：
 
-1. **只允许向左依赖**：``base ← converse ← plan ← capability ← sop ← engine``，
-   ``knowledge_flow`` 只依赖 base，``artifacts`` 自成一体。
+1. **只允许向左依赖**：``base ← {converse, capability} ← plan ← sop ← knowledge_flow ← engine``，
+   ``artifacts`` 自成一体。
 2. **跨包不出现循环**：包内互相调用允许（``engine`` 里的 ``invoke`` 与
    ``step_loop`` 本来就互相调），跨包回环一定会把 import 变成运行时炸弹。
 3. **单文件不超过上限行数**：巨兽拆分完成后才能收紧到 800。
@@ -31,14 +31,17 @@ from pathlib import Path
 CORE_ROOT = Path(__file__).resolve().parent.parent / "app" / "core"
 
 #: 包 -> 层级。数字越小越底层，只允许依赖比自己小的层级。
+#: 顺序按**实测依赖**定的，不是按直觉：``slash_commands`` 用 ``capability_discovery``
+#: 的 ``model_descriptor``，``laya_router`` 用 ``sop_edge_eval`` 的边条件，所以
+#: capability 在 plan 之下、knowledge_flow 在 sop 之上。
 PACKAGE_LAYERS = {
     "base": 1,
     "artifacts": 1,
     "converse": 2,
-    "knowledge_flow": 2,
+    "capability": 2,
     "plan": 3,
-    "capability": 4,
-    "sop": 5,
+    "sop": 4,
+    "knowledge_flow": 5,
     "engine": 6,
 }
 

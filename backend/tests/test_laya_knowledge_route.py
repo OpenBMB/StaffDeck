@@ -15,8 +15,8 @@ from typing import Any, Callable
 
 import pytest
 
-from app.core.laya_client import LayaError
-from app.core.laya_router import (
+from app.core.knowledge_flow.laya_client import LayaError
+from app.core.knowledge_flow.routing import (
     LayaRouter,
     build_relevance_background,
     build_relevance_questions,

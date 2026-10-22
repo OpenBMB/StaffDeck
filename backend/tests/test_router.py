@@ -1,6 +1,6 @@
 import pytest
 
-from app.core.router import Router
+from app.core.plan.router import Router
 from app.db.models import ChatSession, Skill
 from app.llm import LLMClient, LLMError
 

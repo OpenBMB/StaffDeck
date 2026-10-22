@@ -29,10 +29,10 @@ from app.channels.service_outbox import stage_channel_delivery
 from app.chat_pubsub import RelaySubscriber, publish_relay_wake
 from app.core import AgentLoop
 from app.core.base.cancellation import cancel_chat_turn, is_chat_turn_cancelled
-from app.core.capability_manifest import CapabilityManifestBuilder
+from app.core.capability.manifest import CapabilityManifestBuilder
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.harness_turn_store import HarnessTurnStore
-from app.core.slash_commands import SlashCommandRead, slash_command_catalog
+from app.core.plan.slash import SlashCommandRead, slash_command_catalog
 from app.db import engine, get_session
 from app.db.models import (
     AgentEvent,

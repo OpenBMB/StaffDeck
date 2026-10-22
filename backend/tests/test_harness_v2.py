@@ -16,9 +16,9 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.agents.branching import ensure_open_gallery_binding
 from app.core import harness_agent as harness_agent_module
 from app.core import harness_v2_engine as harness_v2_engine_module
-from app.core import turn_planner as turn_planner_module
+from app.core.plan import planner as turn_planner_module
 from app.core.agent_loop import AgentLoop
-from app.core.capability_manifest import (
+from app.core.capability.manifest import (
     CapabilityManifestBuilder,
     _available_invocation_name,
     general_skill_snapshot_digest,
@@ -64,7 +64,7 @@ from app.core.base.request_compiler import (
     TaskRequestCompiler,
     TaskRequirement,
 )
-from app.core.turn_planner import TurnPlanner
+from app.core.plan.planner import TurnPlanner
 from app.db.models import (
     AgentEvent,
     AgentProfile,

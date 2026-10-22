@@ -1,7 +1,7 @@
 """AI 幻灯片生成：deck 数据模型、归一化与提示词。
 
 放在 `core` 而不是 `api` 是因为有两个消费方：生成接口（`app.api.agent_apps`）与
-PPTX 导出（`app.core.slides_pptx`）—— 导出只关心「一份合法的 deck 长什么样」。
+PPTX 导出（`app.core.artifacts.slides_pptx`）—— 导出只关心「一份合法的 deck 长什么样」。
 
 模型输出永远不可信，所有收敛都集中在 `sanitize_pages` / `finalize_deck`：
 版式越界、字段缺失、条目超量、骨架页与勾选不一致，都在这里兜住。

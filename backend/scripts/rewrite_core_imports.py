@@ -34,6 +34,33 @@ MOVES: dict[str, str] = {
     # 批次 1：converse
     "app.core.response_generator": "app.core.converse.response",
     "app.core.agent_identity_prompt": "app.core.converse.identity",
+    # 批次 2：plan
+    "app.core.turn_planner": "app.core.plan.planner",
+    "app.core.task_frame_policy": "app.core.plan.frame_policy",
+    "app.core.slash_commands": "app.core.plan.slash",
+    "app.core.router": "app.core.plan.router",
+    # 批次 2：capability
+    "app.core.capability_manifest": "app.core.capability.manifest",
+    "app.core.capability_discovery": "app.core.capability.discovery",
+    "app.core.tool_replay_policy": "app.core.capability.replay_policy",
+    "app.core.published_deliverables": "app.core.capability.deliverables",
+    # 批次 2：sop（graph_rules 归 base：它被 plan 与 sop 共用，必须放在两者之下）
+    "app.core.graph_rules": "app.core.base.graph_rules",
+    "app.core.sop_scenes": "app.core.sop.scenes",
+    "app.core.sop_step_executor": "app.core.sop.step_executor",
+    "app.core.sop_edge_eval": "app.core.sop.edge_eval",
+    "app.core.slot_form": "app.core.sop.slots.form",
+    "app.core.slot_display": "app.core.sop.slots.display",
+    "app.core.slot_hydration_policy": "app.core.sop.slots.hydration",
+    # 批次 2：knowledge_flow
+    "app.core.knowledge_prefetch": "app.core.knowledge_flow.prefetch",
+    "app.core.laya_router": "app.core.knowledge_flow.routing",
+    "app.core.laya_client": "app.core.knowledge_flow.laya_client",
+    # 批次 2：artifacts
+    "app.core.slides_deck": "app.core.artifacts.slides",
+    "app.core.slides_pptx": "app.core.artifacts.slides_pptx",
+    "app.core.invoice_amount": "app.core.artifacts.invoice",
+    "app.core.doc_review": "app.core.artifacts.doc_review",
 }
 
 SCAN_ROOTS = ("app", "tests", "scripts")
@@ -78,6 +105,10 @@ def rewrite(text: str) -> tuple[str, int]:
         package, module = target.rsplit(".", 1)
         # target 是完整路径（app.core.base.cancellation），拼回去时要去掉公共前缀
         package = package[len("app.core."):] if package.startswith("app.core.") else package
+        if module != name and not alias:
+            # 模块改名时必须保留原绑定名：`from app.core import invoice_amount` 改成
+            # `from app.core.artifacts import invoice` 会让调用点的 invoice_amount 全部 NameError。
+            return f"from app.core.{package} import {module} as {name}"
         return f"from app.core.{package} import {module}{alias}"
 
     return _MODULE_IMPORT.sub(_module_form, text), hits

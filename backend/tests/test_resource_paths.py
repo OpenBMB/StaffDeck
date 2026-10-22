@@ -1,5 +1,5 @@
 from app import paths
-from app.core.router import PROMPT_PATH
+from app.core.plan.router import PROMPT_PATH
 from app.general_skills.runner import PROMPT_DIR
 
 

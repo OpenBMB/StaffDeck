@@ -26,8 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
-from app.core.laya_client import LayaError, predict_raw
-from app.core.sop_edge_eval import _EdgeCondition
+from app.core.knowledge_flow.laya_client import LayaError, predict_raw
+from app.core.sop.edge_eval import _EdgeCondition
 from app.observability.spans import observed_span
 
 QUESTION_KEY = "next_node"

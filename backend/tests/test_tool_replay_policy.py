@@ -1,4 +1,4 @@
-from app.core.tool_replay_policy import (
+from app.core.capability.replay_policy import (
     TOOL_CALL_HISTORY_SLOT,
     TOOL_RESULTS_SLOT,
     ToolReplayPolicy,

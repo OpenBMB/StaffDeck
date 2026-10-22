@@ -24,7 +24,7 @@ from app.core.base.conversation_context import (
     build_conversation_context,
 )
 from app.core.base.conversation_projection import ConversationProjection
-from app.core.graph_rules import GraphRules
+from app.core.base.graph_rules import GraphRules
 from app.core.harness_agent import HarnessExecutionCancelled
 from app.core.harness_session_lock import HarnessSessionBusy
 from app.core.harness_turn_store import HarnessTurnConflict
@@ -40,7 +40,7 @@ from app.core.converse.response import (
     model_failure_suggestion,
 )
 from app.core.skill_runtime import SkillRuntime
-from app.core.slash_commands import SlashCommandError
+from app.core.plan.slash import SlashCommandError
 from app.core.turn_finalizer import TurnFinalizer
 from app.core.base.ui_flags import knowledge_citations_hidden
 from app.db.models import (

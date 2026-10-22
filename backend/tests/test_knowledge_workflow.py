@@ -17,7 +17,7 @@ from app.core.harness_v2_engine import (
     _is_knowledge_workflow_frame,
 )
 from app.core.base.request_compiler import CapabilityDescriptor, CapabilityManifest
-from app.core.turn_planner import PlannedTaskFrame
+from app.core.plan.planner import PlannedTaskFrame
 
 
 def _descriptor(name: str, kind: str = "internal", *, available: bool = True) -> CapabilityDescriptor:

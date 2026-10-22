@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from app.core.capability_discovery import model_descriptor
+from app.core.capability.discovery import model_descriptor
 from app.core.base.request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,

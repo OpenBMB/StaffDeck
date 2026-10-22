@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.slash_commands import (
+from app.core.plan.slash import (
     SlashCommandError,
     build_slash_turn_plan,
     force_capability_for_requirement,

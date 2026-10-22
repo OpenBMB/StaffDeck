@@ -12,7 +12,7 @@ from app.agents.schema import (
 )
 from app.api import agents as internal_agents
 from app.agents.branching import visible_skill
-from app.core.capability_manifest import CapabilityManifestBuilder
+from app.core.capability.manifest import CapabilityManifestBuilder
 from app.db import get_session
 from app.db.models import AgentProfile, ModelConfig
 from app.public_api.auth import (

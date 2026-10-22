@@ -14,8 +14,8 @@ from sqlmodel import select
 from app.aigw_cache import get_json, set_json
 from app.config import get_settings
 from app.core.base.cancellation import is_chat_turn_cancelled
-from app.core.capability_discovery import project_capability_manifest
-from app.core.capability_manifest import CapabilityManifestBuilder
+from app.core.capability.discovery import project_capability_manifest
+from app.core.capability.manifest import CapabilityManifestBuilder
 from app.core.base.conversation_projection import ConversationProjection
 from app.core.harness_agent import (
     MODEL_UNAVAILABLE_FAILURE_CODE,
@@ -29,8 +29,8 @@ from app.core.harness_attachments import (
     validated_task_image_payloads,
 )
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
-from app.core.knowledge_prefetch import is_smalltalk
-from app.core.published_deliverables import list_published_deliverables
+from app.core.knowledge_flow.prefetch import is_smalltalk
+from app.core.capability.deliverables import list_published_deliverables
 from app.core.harness_session_lease import (
     HarnessSessionLeaseLost,
     HarnessSessionLeaseStore,
@@ -41,7 +41,7 @@ from app.core.harness_session_lock import (
     release_harness_session,
 )
 from app.core.harness_turn_store import HarnessTurnStore
-from app.core.slash_commands import (
+from app.core.plan.slash import (
     SlashCommandError,
     SlashCommandSelection,
     build_slash_turn_plan,
@@ -50,8 +50,8 @@ from app.core.slash_commands import (
     resolve_capability,
     slash_command_message,
 )
-from app.core.slot_form import build_slot_form
-from app.core.slot_hydration_policy import SlotHydrationPolicy
+from app.core.sop.slots.form import build_slot_form
+from app.core.sop.slots.hydration import SlotHydrationPolicy
 from app.core.task_frame_store import (
     TaskFrameClaimConflict,
     TaskFrameStore,
@@ -61,7 +61,7 @@ from app.core.base.request_compiler import (
     TaskExecutionResult,
     TaskRequestCompiler,
 )
-from app.core.turn_planner import TurnPlanner, turn_plan_router_decision
+from app.core.plan.planner import TurnPlanner, turn_plan_router_decision
 from app.core.base.ui_flags import knowledge_citations_hidden
 from app.db.models import (
     ChatSession,
@@ -192,8 +192,8 @@ def _capability_summary_text(
     任何异常由调用方捕获后降级到标准路径。
     """
 
-    from app.core.capability_manifest import CapabilityManifestBuilder
-    from app.core.capability_discovery import project_capability_manifest
+    from app.core.capability.manifest import CapabilityManifestBuilder
+    from app.core.capability.discovery import project_capability_manifest
 
     manifest = CapabilityManifestBuilder(db).build(
         tenant_id,
@@ -2879,7 +2879,7 @@ def _build_laya_router(frame_kind: str) -> Any:
     if not settings.laya_sop_routing_enabled:
         return None
     try:
-        from app.core.laya_router import LayaRouter
+        from app.core.knowledge_flow.routing import LayaRouter
     except Exception:  # noqa: BLE001 - 旁路不可用不影响主链路
         logger.debug("Laya 旁路加载失败", exc_info=True)
         return None
@@ -2903,7 +2903,7 @@ def _build_knowledge_laya_router() -> Any:
     if not settings.laya_knowledge_route_enabled:
         return None
     try:
-        from app.core.laya_router import LayaRouter
+        from app.core.knowledge_flow.routing import LayaRouter
     except Exception:  # noqa: BLE001 - 旁路不可用不影响主链路
         logger.debug("Laya 知识路由旁路加载失败", exc_info=True)
         return None

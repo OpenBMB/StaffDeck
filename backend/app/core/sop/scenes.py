@@ -15,9 +15,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from app.core.slot_display import join_slot_labels, slot_label
-from app.core.slot_form import build_slot_form, is_confirm_field
-from app.core.sop_edge_eval import (
+from app.core.sop.slots.display import join_slot_labels, slot_label
+from app.core.sop.slots.form import build_slot_form, is_confirm_field
+from app.core.sop.edge_eval import (
     _EdgeCondition,
     _decision_direct_next,
     _edges_without_specs,

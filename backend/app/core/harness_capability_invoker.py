@@ -16,27 +16,27 @@ from sqlmodel import Session, select
 from app.capabilities.local_general_skill import (
     package_from_row,
 )
-from app.core.capability_discovery import (
+from app.core.capability.discovery import (
     CAPABILITY_SEARCH_MAX_RESULTS,
     catalog_entry,
     model_descriptor,
     search_capability_descriptors,
 )
-from app.core.capability_manifest import (
+from app.core.capability.manifest import (
     CapabilityAuthorizationError,
     CapabilityManifestBuilder,
     general_skill_snapshot_digest,
     tool_snapshot_digest,
 )
 from app.core.harness_agent import HarnessExecutionCancelled
-from app.core.published_deliverables import (
+from app.core.capability.deliverables import (
     MAX_PUBLISHED_DELIVERABLES,
     find_published_deliverable,
     list_published_deliverables,
 )
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.base.request_compiler import CapabilityDescriptor, CapabilityManifest
-from app.core.tool_replay_policy import ToolReplayPolicy
+from app.core.capability.replay_policy import ToolReplayPolicy
 from app.db.models import (
     ChatSession,
     GeneralSkill,

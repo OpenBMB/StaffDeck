@@ -42,8 +42,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from app.core.graph_rules import GraphRules
-from app.core.sop_scenes import SCENES, SceneContext, TRACE_EVENT  # noqa: F401  (TRACE_EVENT 供测试/诊断 re-export)
+from app.core.base.graph_rules import GraphRules
+from app.core.sop.scenes import SCENES, SceneContext, TRACE_EVENT  # noqa: F401  (TRACE_EVENT 供测试/诊断 re-export)
 
 __all__ = [
     "SCENES",

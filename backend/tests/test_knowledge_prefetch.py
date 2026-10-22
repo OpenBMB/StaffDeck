@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.knowledge_prefetch import (
+from app.core.knowledge_flow.prefetch import (
     QUERY_MAX_CHARS,
     plan_knowledge_prefill_actions,
 )
 from app.core.base.request_compiler import CapabilityDescriptor, CapabilityManifest
 
-import app.core.knowledge_prefetch as kf  # noqa: E402
+import app.core.knowledge_flow.prefetch as kf  # noqa: E402
 
 
 def _descriptor(

@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from app.config import get_settings
-from app.core.laya_client import LayaError, health_url, predict_raw
+from app.core.knowledge_flow.laya_client import LayaError, health_url, predict_raw
 from app.security.auth import get_current_user
 
 router = APIRouter(

@@ -21,7 +21,7 @@ from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.util import Emu, Inches, Pt
 
-from app.core.slides_deck import SKELETON_LAYOUTS, SLIDES_LAYOUTS, SlidesCard, SlidesDeck, SlidesPage
+from app.core.artifacts.slides import SKELETON_LAYOUTS, SLIDES_LAYOUTS, SlidesCard, SlidesDeck, SlidesPage
 
 # ------------------------------------------------------------------ 主题
 

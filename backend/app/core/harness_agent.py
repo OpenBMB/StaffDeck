@@ -23,8 +23,8 @@ from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
 from app.llm.json_field_stream import JsonStringFieldStream
 from app.observability.spans import llm_operation
-from app.core.knowledge_prefetch import plan_knowledge_prefill_actions
-from app.core.sop_step_executor import plan_sop_prefill_actions
+from app.core.knowledge_flow.prefetch import plan_knowledge_prefill_actions
+from app.core.sop.step_executor import plan_sop_prefill_actions
 from app.session.slot_policy import strip_router_generated_message_slots
 
 PROMPT_PATH = paths.resource_dir() / "app" / "llm" / "prompts" / "harness_agent_prompt.md"

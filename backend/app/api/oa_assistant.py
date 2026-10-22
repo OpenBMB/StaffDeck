@@ -22,7 +22,7 @@ from typing import Any
 from fastapi import APIRouter, File, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
-from app.core.invoice_amount import is_pdf_bytes, parse_invoice_uploads
+from app.core.artifacts.invoice import is_pdf_bytes, parse_invoice_uploads
 from sqlmodel import Session, select
 
 from app.db.database import engine

@@ -11,13 +11,13 @@ Agent 广场里的 Agent（清单由前端 `src/data/agent-catalog.json` 管理�
 
 - ``doc-review`` —— AI 文档审阅。上传 .docx 解析成段落块，支持一键审阅（问题清单）与
   对话式修改（错别字/归纳总结/润色），导出时在原文档上做段落级文本替换（保留原格式）。
-  核心逻辑在 `app.core.doc_review`。
+  核心逻辑在 `app.core.artifacts.doc_review`。
 
 模型归属是本模块的硬约束：生成必须使用**当前用户自己**在「模型配置」里配置并启用的模型，
 缺省不回落租户/管理员的默认模型（与 `model_for_agent` 的宽松策略不同），否则同一个 Agent 会
 用别人的额度出内容。
 
-deck 的结构、收敛与提示词都在 `app.core.slides_deck` —— 这里是「取参数 → 打模型 → 收敛」的薄壳。
+deck 的结构、收敛与提示词都在 `app.core.artifacts.slides` —— 这里是「取参数 → 打模型 → 收敛」的薄壳。
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, Upl
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
-from app.core.doc_review import (
+from app.core.artifacts.doc_review import (
     CHAT_SYSTEM_PROMPT,
     DOCX_MEDIA_TYPE,
     DocBlock,
@@ -43,7 +43,7 @@ from app.core.doc_review import (
     sanitize_issues,
     store_document,
 )
-from app.core.slides_deck import (
+from app.core.artifacts.slides import (
     SLIDES_OPERATION,
     SlidesDeck,
     build_slides_system_prompt,
@@ -220,7 +220,7 @@ def export_slides(request: SlidesExportRequest) -> Response:
 
     # 延迟导入：python-pptx 只在导出路径上用到，缺少它也不该让整个 Agent 广场 500。
     try:
-        from app.core.slides_pptx import build_slides_pptx
+        from app.core.artifacts.slides_pptx import build_slides_pptx
     except ImportError as exc:  # pragma: no cover - 依赖缺失属于部署问题
         raise HTTPException(status_code=500, detail="服务端缺少 PPTX 导出依赖（python-pptx）") from exc
 

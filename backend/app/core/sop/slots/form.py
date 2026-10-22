@@ -13,7 +13,7 @@ A2UI 把一个**表单描述**随助手消息一起下发，前端渲染成原�
 
 本模块只负责「把缺失字段编译成表单 schema」，纯函数、无 IO、不碰数据库：
 
-- **字段中文名** 复用 :mod:`app.core.slot_display`（技能自报 → 内置词典 → 原样）；
+- **字段中文名** 复用 :mod:`app.core.sop.slots.display`（技能自报 → 内置词典 → 原样）；
 - **控件类型** 由字段名推断（``is_*`` → 开关、``*_date`` → 日期、
   ``*_amount`` → 数字…），推断不出来就是文本框；
 - **下拉选项** 只从**图上已有的证据**里取：出边条件里与该字段比较过的字面量
@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
-from app.core.slot_display import slot_label
+from app.core.sop.slots.display import slot_label
 
 SCHEMA_KIND = "slot_form"
 
