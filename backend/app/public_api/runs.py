@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
 from app.core import AgentLoop
-from app.core.cancellation import cancel_chat_turn
+from app.core.base.cancellation import cancel_chat_turn
 from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.db import engine, get_session
 from app.db.models import (

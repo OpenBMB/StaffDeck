@@ -1,4 +1,4 @@
-from app.core.conversation_context import (
+from app.core.base.conversation_context import (
     ConversationContextSettings,
     build_conversation_context,
 )

@@ -13,10 +13,10 @@ from sqlmodel import select
 
 from app.aigw_cache import get_json, set_json
 from app.config import get_settings
-from app.core.cancellation import is_chat_turn_cancelled
+from app.core.base.cancellation import is_chat_turn_cancelled
 from app.core.capability_discovery import project_capability_manifest
 from app.core.capability_manifest import CapabilityManifestBuilder
-from app.core.conversation_projection import ConversationProjection
+from app.core.base.conversation_projection import ConversationProjection
 from app.core.harness_agent import (
     MODEL_UNAVAILABLE_FAILURE_CODE,
     HarnessExecutionCancelled,
@@ -57,12 +57,12 @@ from app.core.task_frame_store import (
     TaskFrameStore,
     planned_frame_from_record,
 )
-from app.core.task_request_compiler import (
+from app.core.base.request_compiler import (
     TaskExecutionResult,
     TaskRequestCompiler,
 )
 from app.core.turn_planner import TurnPlanner, turn_plan_router_decision
-from app.core.ui_flags import knowledge_citations_hidden
+from app.core.base.ui_flags import knowledge_citations_hidden
 from app.db.models import (
     ChatSession,
     HarnessRunRecord,
@@ -297,7 +297,7 @@ def _direct_reply_answer_stream(
     """``_direct_reply_answer`` 的流式版本：同一个请求体，改用
     ``generate_text_stream``，让纯问答轮次的首字延迟降到 TTFT。"""
 
-    from app.core import response_generator as response_generator_module
+    from app.core.converse import response as response_generator_module
 
     if capability_summary:
         execution_directive = (

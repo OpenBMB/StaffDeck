@@ -12,7 +12,7 @@ import pytest
 
 from app.core.harness_agent import HarnessTaskAgent
 from app.core.sop_step_executor import TRACE_EVENT, plan_sop_prefill_actions
-from app.core.task_request_compiler import (
+from app.core.base.request_compiler import (
     CapabilityManifest,
     TaskRequirement,
 )
@@ -560,7 +560,7 @@ def test_harness_passthrough_node_completes_without_llm(monkeypatch) -> None:
 
 def test_harness_prefetch_executes_and_satisfies_required_knowledge(monkeypatch) -> None:
     from app.core import harness_agent as harness_agent_module
-    from app.core.task_request_compiler import CapabilityDescriptor
+    from app.core.base.request_compiler import CapabilityDescriptor
     from app.db.models import ModelConfig
 
     llm_calls: list[dict[str, Any]] = []
@@ -1211,7 +1211,7 @@ def test_handoff_without_slots_uses_generic_reply() -> None:
 
 
 def _tool_requirement(**overrides: Any) -> Any:
-    from app.core.task_request_compiler import CapabilityDescriptor
+    from app.core.base.request_compiler import CapabilityDescriptor
 
     step = {
         "node_id": "n4",

@@ -5,7 +5,7 @@
 把 ≤0 的配置视为未配置并回退默认值，而不是 clamp 到 1。
 """
 
-from app.core.conversation_context import (
+from app.core.base.conversation_context import (
     COMPACTION_TRIGGER_RATIO,
     DEFAULT_CONTEXT_TOKEN_BUDGET,
     ConversationContextSettings,
@@ -46,7 +46,7 @@ def test_valid_settings_are_preserved() -> None:
 
 def test_zero_budget_does_not_trigger_compaction_on_small_talk() -> None:
     """6 条小消息 + budget=0 脏数据：修复后不应触发压缩。"""
-    from app.core.conversation_context import build_conversation_context
+    from app.core.base.conversation_context import build_conversation_context
 
     messages = [
         {"role": "user", "content": "你好", "_message_id": f"m{i}a", "_created_at": "2026-09-08T00:00:00"}

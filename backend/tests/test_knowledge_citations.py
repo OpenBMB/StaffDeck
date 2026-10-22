@@ -520,7 +520,7 @@ def test_renumber_citations_keeps_labels_contiguous_and_ids_unique() -> None:
 def test_globalize_citations_renumbers_across_frames_and_drops_duplicates() -> None:
     """各任务帧各自从 kref_1 起编号，全局化后不能撞 id，也不能跳号。"""
     from app.core.harness_v2_engine import _globalize_citations
-    from app.core.task_request_compiler import TaskExecutionResult
+    from app.core.base.request_compiler import TaskExecutionResult
 
     shared_excerpt = "年客流 2000 万人次。"
     first = TaskExecutionResult(

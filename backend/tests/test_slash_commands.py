@@ -10,7 +10,7 @@ from app.core.slash_commands import (
     resolve_capability,
     slash_command_catalog,
 )
-from app.core.task_request_compiler import (
+from app.core.base.request_compiler import (
     CapabilityCatalogEntry,
     CapabilityDescriptor,
     CapabilityManifest,

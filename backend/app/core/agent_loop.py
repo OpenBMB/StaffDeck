@@ -17,13 +17,13 @@ from app.agents.free_model import resolve_turn_default_model
 from app.agents.usage import bump_agent_usage
 from app.channels.service_outbox import stage_channel_delivery
 from app.chat_pubsub import publish_relay_wake
-from app.core.agent_identity_prompt import AgentIdentityPrompt
-from app.core.cancellation import clear_chat_turn_cancelled
-from app.core.conversation_context import (
+from app.core.converse.identity import AgentIdentityPrompt
+from app.core.base.cancellation import clear_chat_turn_cancelled
+from app.core.base.conversation_context import (
     ConversationContextSettings,
     build_conversation_context,
 )
-from app.core.conversation_projection import ConversationProjection
+from app.core.base.conversation_projection import ConversationProjection
 from app.core.graph_rules import GraphRules
 from app.core.harness_agent import HarnessExecutionCancelled
 from app.core.harness_session_lock import HarnessSessionBusy
@@ -34,7 +34,7 @@ from app.core.harness_v2_engine import (
     get_or_create_harness_session,
 )
 from app.core.human_handoff_service import HumanHandoffService
-from app.core.response_generator import (
+from app.core.converse.response import (
     ResponseGenerator,
     format_runtime_failure_reply,
     model_failure_suggestion,
@@ -42,7 +42,7 @@ from app.core.response_generator import (
 from app.core.skill_runtime import SkillRuntime
 from app.core.slash_commands import SlashCommandError
 from app.core.turn_finalizer import TurnFinalizer
-from app.core.ui_flags import knowledge_citations_hidden
+from app.core.base.ui_flags import knowledge_citations_hidden
 from app.db.models import (
     AgentProfile,
     ChannelBinding,

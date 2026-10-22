@@ -19,7 +19,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 import app.llm as llm_package
 from app.core import harness_v2_engine as engine_module
-from app.core import response_generator as response_generator_module
+from app.core.converse import response as response_generator_module
 from app.core.agent_loop import AgentLoop, TurnStreamSink
 from app.core.harness_v2_engine import (
     HarnessV2Engine,
@@ -27,7 +27,7 @@ from app.core.harness_v2_engine import (
     _direct_reply_answer_stream,
     _stream_status_for_trace,
 )
-from app.core.response_generator import ResponseGenerator
+from app.core.converse.response import ResponseGenerator
 from app.db.models import ChatSession, ModelConfig
 from app.llm import client as llm_client_module
 from app.session.session_schema import (
@@ -95,7 +95,7 @@ def _reset_stub_llm():
 @pytest.fixture
 def stub_llm(monkeypatch):
     # 三个引用点都要换：`app.llm.LLMClient`（harness 内的局部 import）、
-    # `app.llm.client.LLMClient`（同类引用）、`app.core.response_generator.LLMClient`
+    # `app.llm.client.LLMClient`（同类引用）、`app.core.converse.response.LLMClient`
     # （模块级 import 已把名字绑进该模块命名空间）。
     monkeypatch.setattr(llm_package, "LLMClient", _StubLLMClient)
     monkeypatch.setattr(llm_client_module, "LLMClient", _StubLLMClient)

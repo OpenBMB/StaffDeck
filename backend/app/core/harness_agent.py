@@ -14,7 +14,7 @@ from app.core.harness_attachments import (
     ValidatedTaskImagePayload,
     isolated_attachment_context,
 )
-from app.core.task_request_compiler import (
+from app.core.base.request_compiler import (
     CapabilityDescriptor,
     TaskExecutionResult,
     TaskRequirement,

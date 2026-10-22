@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.conversation_context import build_conversation_context
+from app.core.base.conversation_context import build_conversation_context
 from app.knowledge.citations import EMAIL_PATTERN, knowledge_source_candidates
 from app.llm.stage_protocol import TURN_STAGE_MESSAGES_KEY
 

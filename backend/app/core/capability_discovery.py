@@ -5,7 +5,7 @@ import json
 import re
 from typing import Iterable
 
-from app.core.task_request_compiler import (
+from app.core.base.request_compiler import (
     CapabilityCatalogEntry,
     CapabilityDescriptor,
     CapabilityManifest,

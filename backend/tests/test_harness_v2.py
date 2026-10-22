@@ -57,7 +57,7 @@ from app.core.task_frame_store import (
 )
 from app.config import get_settings
 from app.llm import LLMError
-from app.core.task_request_compiler import (
+from app.core.base.request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,
     TaskExecutionResult,
@@ -5832,7 +5832,7 @@ def test_direct_reply_answer_uses_module_prompt_path(monkeypatch) -> None:
     属性），直通每次 AttributeError 静默降级到标准路径，问候语耗时翻倍。
     """
     from app.core import harness_v2_engine
-    from app.core.response_generator import PROMPT_PATH
+    from app.core.converse.response import PROMPT_PATH
 
     captured: dict[str, object] = {}
 

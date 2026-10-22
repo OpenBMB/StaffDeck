@@ -16,7 +16,7 @@ from app.core.harness_v2_engine import (
     HarnessV2Engine,
     _is_knowledge_workflow_frame,
 )
-from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
+from app.core.base.request_compiler import CapabilityDescriptor, CapabilityManifest
 from app.core.turn_planner import PlannedTaskFrame
 
 

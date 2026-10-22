@@ -1,4 +1,4 @@
-from app.core.context_projection import (
+from app.core.base.context_projection import (
     compact_awaiting_input,
     compact_conversation_context,
     compact_knowledge_context,

@@ -13,7 +13,7 @@ from app.core.capability_discovery import (
     project_capability_manifest,
     search_capability_descriptors,
 )
-from app.core.task_request_compiler import (
+from app.core.base.request_compiler import (
     CapabilityDescriptor,
     CapabilityKind,
     CapabilityManifest,

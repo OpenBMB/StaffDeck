@@ -12,7 +12,7 @@ from __future__ import annotations
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.core.ui_flags import knowledge_citations_hidden
+from app.core.base.ui_flags import knowledge_citations_hidden
 from app.db.models import Message, Tenant, UIConfig
 from app.knowledge.citations import strip_citation_markers
 from app.session.message_read import message_read

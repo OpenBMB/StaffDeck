@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from app import paths
-from app.core.context_projection import (
+from app.core.base.context_projection import (
     compact_conversation_context,
     compact_current_step,
     compact_router_decision,

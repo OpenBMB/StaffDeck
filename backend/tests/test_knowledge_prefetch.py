@@ -14,7 +14,7 @@ from app.core.knowledge_prefetch import (
     QUERY_MAX_CHARS,
     plan_knowledge_prefill_actions,
 )
-from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
+from app.core.base.request_compiler import CapabilityDescriptor, CapabilityManifest
 
 import app.core.knowledge_prefetch as kf  # noqa: E402
 
@@ -315,7 +315,7 @@ def test_harness_conversation_with_skill_capability_skips_prefetch(
     """有技能能力（非纯知识库）时不预填：LLM 首轮决策照旧。"""
     from app.core import harness_agent as harness_agent_module
     from app.db.models import ModelConfig
-    from app.core.task_request_compiler import CapabilityManifest
+    from app.core.base.request_compiler import CapabilityManifest
 
     llm_calls: list[dict[str, Any]] = []
 

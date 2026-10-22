@@ -23,7 +23,7 @@ from app.core.harness_agent import (
     HarnessTaskAgent,
 )
 from app.core.harness_capability_invoker import HarnessCapabilityInvoker
-from app.core.task_request_compiler import (
+from app.core.base.request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,
     TaskRequirement,

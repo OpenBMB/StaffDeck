@@ -1,4 +1,4 @@
-from app.core.response_generator import ResponseGenerator
+from app.core.converse.response import ResponseGenerator
 from app.db.models import ChatSession, Skill
 from app.llm.client import LLMClient
 from app.session.session_schema import RouterDecision, StepAgentResult
@@ -653,7 +653,7 @@ def test_response_generator_skips_model_for_simple_step_question(monkeypatch) ->
     def fail_generate_text(*_args, **_kwargs):
         raise AssertionError("simple ask_user reply must not call the response model")
 
-    monkeypatch.setattr("app.core.response_generator.LLMClient.generate_text", fail_generate_text)
+    monkeypatch.setattr("app.core.converse.response.LLMClient.generate_text", fail_generate_text)
     reply = ResponseGenerator().generate(
         "我要报销",
         ChatSession(id="session_test", tenant_id="tenant_demo"),
@@ -672,7 +672,7 @@ def test_response_generator_stream_skips_model_for_simple_clarification(monkeypa
         raise AssertionError("simple clarification must not call the response model")
 
     monkeypatch.setattr(
-        "app.core.response_generator.LLMClient.generate_text_stream",
+        "app.core.converse.response.LLMClient.generate_text_stream",
         fail_generate_text_stream,
     )
     chunks = list(

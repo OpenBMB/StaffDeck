@@ -15,7 +15,7 @@ from app.agents.branching import (
     visible_tool_rows,
 )
 from app.capabilities.local_general_skill import package_from_row
-from app.core.task_request_compiler import (
+from app.core.base.request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,
     current_step_capability_refs,

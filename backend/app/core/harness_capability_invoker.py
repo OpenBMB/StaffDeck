@@ -35,7 +35,7 @@ from app.core.published_deliverables import (
     list_published_deliverables,
 )
 from app.core.harness_session_cleanup import harness_task_workspace_path
-from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
+from app.core.base.request_compiler import CapabilityDescriptor, CapabilityManifest
 from app.core.tool_replay_policy import ToolReplayPolicy
 from app.db.models import (
     ChatSession,

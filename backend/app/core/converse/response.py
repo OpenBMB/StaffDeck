@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterator
 
 from app import paths
-from app.core.context_projection import (
+from app.core.base.context_projection import (
     compact_citation_hints,
     compact_current_step,
     compact_knowledge_context,

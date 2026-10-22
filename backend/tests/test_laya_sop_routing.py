@@ -15,7 +15,7 @@ from app.core.laya_client import LayaError
 from app.core.laya_router import LayaRouter, build_criteria, build_question
 from app.core.sop_edge_eval import _EdgeCondition
 from app.core.sop_step_executor import TRACE_EVENT, plan_sop_prefill_actions
-from app.core.task_request_compiler import CapabilityManifest, TaskRequirement, _transitions
+from app.core.base.request_compiler import CapabilityManifest, TaskRequirement, _transitions
 
 
 def _sop_requirement(**overrides: Any) -> TaskRequirement:
