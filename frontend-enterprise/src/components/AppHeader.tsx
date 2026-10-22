@@ -165,7 +165,7 @@ export default function AppHeader({
         });
     };
     loadUnread();
-    const timer = window.setInterval(loadUnread, 30_000);
+    const timer = window.setInterval(loadUnread, 300_000);
     const onChange = () => loadUnread();
     window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, onChange);
     window.addEventListener('focus', onChange);
