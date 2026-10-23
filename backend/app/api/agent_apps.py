@@ -451,6 +451,23 @@ def export_doc(request: DocExportRequest, db: Session = Depends(get_session), cu
 #
 # 与前面几个能力不同，这里**不解析模型**：识别在 Indra OCR 服务里完成，
 # 既不需要 model_config_id，也不消耗大模型额度。没有配置模型的成员同样可以用。
+#
+# 开放 API（`app/public_api/ocr.py`）与企业端共用 `execute_ocr_upload`：同一套校验、
+# 同一套上游调用，只是换一种认证。路径与 scope 单点维护在这里，前端「API 接入」示例跟着变。
+
+OCR_OPEN_API_SCOPE = "ocr:run"
+OCR_OPEN_API_ENDPOINT_PATH = "/api/v1/ocr"
+OCR_OPEN_API_DOCS_PATH = "/api/v1/docs"
+
+
+class OcrApiAccessResponse(BaseModel):
+    """「API 接入」弹窗要展示的接入信息（路径与对外基址都由后端给，前端不再自己拼）。"""
+
+    required_scope: str
+    endpoint_path: str
+    docs_path: str
+    # 来自 PUBLIC_BASE_URL；为空表示未配置，前端回退到当前 origin
+    public_base_url: str
 
 
 @router.get("/ocr:status")
@@ -467,6 +484,19 @@ def ocr_status(current_user: User = Depends(get_current_user)) -> dict:
         "max_files": settings.indra_ocr_max_files,
         "max_file_mb": settings.indra_ocr_max_file_mb,
     }
+
+
+@router.get("/ocr:api-access", response_model=OcrApiAccessResponse)
+def ocr_api_access(current_user: User = Depends(get_current_user)) -> OcrApiAccessResponse:
+    """给前端「API 接入」弹窗用的接入信息：对外基址取自 PUBLIC_BASE_URL。"""
+
+    settings = get_settings()
+    return OcrApiAccessResponse(
+        required_scope=OCR_OPEN_API_SCOPE,
+        endpoint_path=OCR_OPEN_API_ENDPOINT_PATH,
+        docs_path=OCR_OPEN_API_DOCS_PATH,
+        public_base_url=(settings.public_base_url or "").rstrip("/"),
+    )
 
 
 def _ocr_http_error(exc: OcrError) -> HTTPException:
@@ -487,31 +517,26 @@ def _ocr_http_error(exc: OcrError) -> HTTPException:
     return HTTPException(status_code=502, detail=str(exc))
 
 
-@router.post("/ocr:run")
-def ocr_run(
-    tenant_id: str = Form(...),
-    files: list[UploadFile] = File(...),
-    format: str = Form("json"),
-    mode: str = Form(""),
-    dpi: int | None = Form(None),
-    max_pages: int | None = Form(None),
-    password: str = Form(""),
-    math: bool | None = Form(None),
-    furniture: bool | None = Form(None),
-    image_ocr: bool | None = Form(None),
-    include_lines: bool | None = Form(None),
-    include_blocks: bool | None = Form(None),
-    include_timings: bool | None = Form(None),
-    db: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+def execute_ocr_upload(
+    files: list[UploadFile],
+    *,
+    format: str = "json",
+    mode: str = "",
+    dpi: int | None = None,
+    max_pages: int | None = None,
+    password: str = "",
+    math: bool | None = None,
+    furniture: bool | None = None,
+    image_ocr: bool | None = None,
+    include_lines: bool | None = None,
+    include_blocks: bool | None = None,
+    include_timings: bool | None = None,
 ) -> dict:
-    """上传 PDF / 图片做 OCR，返回按页的 markdown、纯文本与（可选）行坐标/版面块。
+    """企业端工作台与开放 API 共用的执行体：校验 → 读文件 → 打上游 → 归一化。
 
     参数名与 indra.md 的 `/v1/ocr` 完全一致；布尔项传 ``None`` 时不透传，
     由上游用默认值（``include_lines`` / ``include_blocks`` 默认 true）。
     """
-
-    ensure_tenant(db, tenant_id)
 
     if dpi is not None and not 72 <= dpi <= 600:
         raise HTTPException(status_code=400, detail="dpi 需在 72~600 之间")
@@ -557,3 +582,40 @@ def ocr_run(
         return run_ocr(payload, options)
     except OcrError as exc:
         raise _ocr_http_error(exc) from exc
+
+
+@router.post("/ocr:run")
+def ocr_run(
+    tenant_id: str = Form(...),
+    files: list[UploadFile] = File(...),
+    format: str = Form("json"),
+    mode: str = Form(""),
+    dpi: int | None = Form(None),
+    max_pages: int | None = Form(None),
+    password: str = Form(""),
+    math: bool | None = Form(None),
+    furniture: bool | None = Form(None),
+    image_ocr: bool | None = Form(None),
+    include_lines: bool | None = Form(None),
+    include_blocks: bool | None = Form(None),
+    include_timings: bool | None = Form(None),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """上传 PDF / 图片做 OCR，返回按页的 markdown、纯文本与（可选）行坐标/版面块。"""
+
+    ensure_tenant(db, tenant_id)
+    return execute_ocr_upload(
+        files,
+        format=format,
+        mode=mode,
+        dpi=dpi,
+        max_pages=max_pages,
+        password=password,
+        math=math,
+        furniture=furniture,
+        image_ocr=image_ocr,
+        include_lines=include_lines,
+        include_blocks=include_blocks,
+        include_timings=include_timings,
+    )

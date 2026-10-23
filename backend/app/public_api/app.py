@@ -9,7 +9,7 @@ from sqlmodel import Session
 
 from app.config import get_settings
 from app.db import engine
-from app.public_api import agents, credentials, decisions, examples, gallery, jobs, operations, resources, runs, sessions, sops, webhooks
+from app.public_api import agents, credentials, decisions, examples, gallery, jobs, ocr, operations, resources, runs, sessions, sops, webhooks
 from app.public_api.errors import (
     PublicAPIError,
     public_api_error_handler,
@@ -72,4 +72,5 @@ def create_public_api_app() -> FastAPI:
     app.include_router(webhooks.router)
     app.include_router(examples.router)
     app.include_router(decisions.router)
+    app.include_router(ocr.router)
     return app

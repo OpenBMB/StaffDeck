@@ -526,11 +526,61 @@ describe('AgentAppPage', () => {
       const form = calls[0].body;
       expect(form.getAll('files')).toHaveLength(1);
       expect(form.get('format')).toBe('json');
+      // 固定值：DPI 200、页眉页脚过滤、行坐标与版面块开启（UI 不再暴露）
       expect(form.get('dpi')).toBe('200');
-      // 默认开启行坐标与版面块；耗时默认关闭
+      expect(form.get('furniture')).toBe('false');
       expect(form.get('include_lines')).toBe('true');
       expect(form.get('include_blocks')).toBe('true');
+      // 识别模式固定自动（不传）、耗时默认关闭（不传）
+      expect(form.get('mode')).toBeNull();
       expect(form.get('include_timings')).toBeNull();
+    });
+
+    it('参数区只留必要项：识别模式 / DPI / 页眉页脚 / 结构化附加都不再出现', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonCapable(ocrStatus)));
+      renderPage('ocr-assistant');
+
+      expect(await screen.findByText('识别内容')).toBeTruthy();
+      expect(screen.getByText('输出形态')).toBeTruthy();
+      expect(screen.getByText('页数上限')).toBeTruthy();
+      // 四组被砍掉的选项
+      expect(screen.queryByText('识别模式')).toBeNull();
+      expect(screen.queryByText('DPI')).toBeNull();
+      expect(screen.queryByText('结构化附加')).toBeNull();
+      expect(screen.queryByLabelText('页眉页脚')).toBeNull();
+      expect(screen.queryByLabelText('行坐标')).toBeNull();
+      // 保留下来的开关
+      expect(screen.getByLabelText('公式')).toBeTruthy();
+      expect(screen.getByLabelText('图片内文字')).toBeTruthy();
+    });
+
+    it('「API 接入」给出开放端点与 multipart 示例', async () => {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/ocr:api-access')) {
+          return jsonCapable({
+            required_scope: 'ocr:run',
+            endpoint_path: '/api/v1/ocr',
+            docs_path: '/api/v1/docs',
+            public_base_url: 'https://ocr.example.com',
+          });
+        }
+        return jsonCapable(ocrStatus);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      renderPage('ocr-assistant');
+
+      await userEvent.setup().click(await screen.findByRole('button', { name: /API 接入/ }));
+
+      expect(await screen.findByText('API 接入 · OCR 助手')).toBeTruthy();
+      expect(await screen.findByText('https://ocr.example.com/api/v1/ocr')).toBeTruthy();
+      expect(screen.getAllByText('ocr:run').length).toBeGreaterThan(0);
+
+      const sample = screen.getByTestId('ocr-api-sample-curl');
+      expect(sample.textContent).toContain("files=@scan.pdf");
+      expect(sample.textContent).toContain('Authorization: Bearer sd_live_');
+      // 接口说明里点明固定值，避免用户以为要自己传
+      expect(screen.getByText(/dpi/, { selector: 'code' })).toBeTruthy();
     });
 
     it('服务未配置时提示并禁用识别', async () => {

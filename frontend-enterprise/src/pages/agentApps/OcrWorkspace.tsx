@@ -1,6 +1,6 @@
 import type { DragEvent } from 'react';
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react';
-import { Copy, Download, FileText, Image as ImageIcon, LoaderCircle, Upload, X } from 'lucide-react';
+import { Code2, Copy, Download, FileText, Image as ImageIcon, LoaderCircle, Upload, X } from 'lucide-react';
 
 import AppHeader from '@/components/AppHeader';
 import { Checkbox, notify } from '@/components/ui';
@@ -19,6 +19,7 @@ import {
   type OcrStatus,
 } from '@/api/ocr';
 import AgentAppBackButton from './AgentAppBackButton';
+import OcrApiDialog from './OcrApiDialog';
 
 export type OcrWorkspaceProps = {
   entry: AgentCatalogEntry;
@@ -31,7 +32,6 @@ const ACCEPT = '.pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp';
 const ACCEPT_LABEL = 'PDF / PNG / JPEG / TIFF / BMP / WebP';
 
 const FALLBACK_LIMITS = { maxFiles: 10, maxFileMb: 50 };
-const DEFAULT_DPI = 200;
 
 const FIELD_LABEL_CLASS = 'flex items-center gap-[6px] text-[12px] font-medium leading-none text-[#18181a]';
 const FIELD_INPUT_CLASS =
@@ -116,7 +116,7 @@ function stripExtension(name: string): string {
 function PageBody({ page, view }: { page: OcrPage; view: PageView }) {
   if (view === 'lines') {
     if (page.lines.length === 0) {
-      return <span className={HINT_CLASS}>这页没有返回行坐标（可能关闭了「行坐标」或用了纯文本输出格式）。</span>;
+      return <span className={HINT_CLASS}>这页没有返回行坐标（纯文本输出格式通常不带，或这一页没有可用文字）。</span>;
     }
     return (
       <div className="flex flex-col gap-[2px] font-mono text-[11px] leading-[1.7] text-[#4f5669]">
@@ -137,7 +137,7 @@ function PageBody({ page, view }: { page: OcrPage; view: PageView }) {
 
   if (view === 'blocks') {
     if (page.blocks.length === 0) {
-      return <span className={HINT_CLASS}>这页没有返回版面块（可能关闭了「版面块」或用了纯文本输出格式）。</span>;
+      return <span className={HINT_CLASS}>这页没有返回版面块（纯文本输出格式通常不带）。</span>;
     }
     return (
       <div className="flex flex-col gap-[6px]">
@@ -277,9 +277,14 @@ function FileBlock({
  * OCR 助手工作台。
  *
  * 左栏是「文件 + 识别参数」，右栏是按页的结果。参数区完全对齐 `indra.md` 的
- * `/v1/ocr`：输出格式、识别模式、页数上限、DPI、密码，以及四个开关
- * （公式 / 页眉页脚 / 图片内文字 / 行坐标 / 版面块 / 耗时）。**没有模型选择器** ——
- * 这个能力不调大模型，不需要用户配置模型。
+ * `/v1/ocr`，但**只暴露真正会影响结果的几项**：输出形态、页数上限、PDF 密码，
+ * 以及「公式 / 图片内文字」两个开关。识别模式固定自动、DPI 固定 200、页眉页脚固定
+ * 过滤、行坐标与版面块固定返回 —— 这些固定值集中在 `@/api/ocr` 的 `FIXED_FORM_FIELDS`。
+ *
+ * **没有模型选择器** —— 这个能力不调大模型，不需要用户配置模型。
+ *
+ * 右上角的「API 接入」给出开放 API 端点与三种语言示例，能力与工作台完全一致
+ * （同一个 `execute_ocr_upload` 执行体）。
  *
  * 右栏刻意保留每页的「来源」徽章（文本层 / OCR / 混合 / 失败）：同一次识别里
  * 不同页的可信度并不相同，混在一起展示会让人误以为整份都是 OCR 出来的。
@@ -295,16 +300,11 @@ export default function OcrWorkspace({ entry, currentUser, onLogout }: OcrWorksp
   const [error, setError] = useState('');
 
   const [format, setFormat] = useState<OcrFormat>('json');
-  const [mode, setMode] = useState<'' | 'ocr'>('');
-  const [dpi, setDpi] = useState<number | null>(DEFAULT_DPI);
   const [maxPages, setMaxPages] = useState<number | null>(null);
   const [password, setPassword] = useState('');
   const [math, setMath] = useState(false);
-  const [furniture, setFurniture] = useState(false);
   const [imageOcr, setImageOcr] = useState(false);
-  const [includeLines, setIncludeLines] = useState(true);
-  const [includeBlocks, setIncludeBlocks] = useState(true);
-  const [includeTimings, setIncludeTimings] = useState(false);
+  const [apiOpen, setApiOpen] = useState(false);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -374,17 +374,10 @@ export default function OcrWorkspace({ entry, currentUser, onLogout }: OcrWorksp
     setError('');
     const options: OcrOptions = {
       format,
-      mode,
-      dpi,
       maxPages,
       password,
       math: math || null,
-      furniture: furniture || null,
       imageOcr: imageOcr || null,
-      // 「行坐标 / 版面块」默认是 true：只有用户主动取消才发 false
-      includeLines,
-      includeBlocks,
-      includeTimings: includeTimings || null,
     };
     try {
       const response = await runOcr(files, options);
@@ -428,7 +421,15 @@ export default function OcrWorkspace({ entry, currentUser, onLogout }: OcrWorksp
       />
 
       <div className="flex h-[calc(100vh-190px)] min-h-[560px] flex-col gap-[14px] rounded-[20px] bg-white p-[16px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
-        <div className="flex flex-wrap items-center justify-end gap-[10px]">
+        <div className="flex flex-wrap items-center justify-end gap-[12px]">
+          <button
+            type="button"
+            onClick={() => setApiOpen(true)}
+            className="flex h-[26px] items-center gap-[5px] rounded-[8px] border-[0.5px] border-[#e3e7f1] px-[10px] text-[12px] text-[#4f5669] transition-colors hover:border-[#cbd3e6] hover:bg-[#f6f7f9]"
+          >
+            <Code2 className="size-[12px]" />
+            API 接入
+          </button>
           <AgentAppBackButton />
         </div>
 
@@ -530,62 +531,19 @@ export default function OcrWorkspace({ entry, currentUser, onLogout }: OcrWorksp
               </div>
 
               <div className="flex flex-col gap-[6px]">
-                <div className={FIELD_LABEL_CLASS}>识别模式</div>
-                <div className={cn(SEGMENT_CLASS, 'w-full')}>
-                  {[
-                    { value: '' as const, label: '自动', hint: '有文字层就用文字层，没有才 OCR' },
-                    { value: 'ocr' as const, label: '强制 OCR', hint: '忽略文字层，整页走图文识别' },
-                  ].map((option) => (
-                    <button
-                      key={option.value || 'auto'}
-                      type="button"
-                      title={option.hint}
-                      aria-pressed={mode === option.value}
-                      onClick={() => setMode(option.value)}
-                      className={cn(
-                        'flex-1 rounded-[6px] py-[4px] text-[11px] transition-colors',
-                        mode === option.value
-                          ? 'bg-[#18181a] font-medium text-white'
-                          : 'text-[#757f9c] hover:text-[#18181a]',
-                      )}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-[8px]">
-                <div className="flex flex-col gap-[6px]">
-                  <div className={FIELD_LABEL_CLASS}>页数上限</div>
-                  <input
-                    type="number"
-                    min={1}
-                    max={2000}
-                    value={maxPages ?? ''}
-                    placeholder="全部"
-                    onChange={(event) => {
-                      const next = event.target.value.trim();
-                      setMaxPages(next ? Math.min(2000, Math.max(1, Number(next) || 1)) : null);
-                    }}
-                    className={FIELD_INPUT_CLASS}
-                  />
-                </div>
-                <div className="flex flex-col gap-[6px]">
-                  <div className={FIELD_LABEL_CLASS}>DPI</div>
-                  <input
-                    type="number"
-                    min={72}
-                    max={600}
-                    value={dpi ?? ''}
-                    placeholder={String(DEFAULT_DPI)}
-                    onChange={(event) => {
-                      const next = event.target.value.trim();
-                      setDpi(next ? Math.min(600, Math.max(72, Number(next) || DEFAULT_DPI)) : null);
-                    }}
-                    className={FIELD_INPUT_CLASS}
-                  />
-                </div>
+                <div className={FIELD_LABEL_CLASS}>页数上限</div>
+                <input
+                  type="number"
+                  min={1}
+                  max={2000}
+                  value={maxPages ?? ''}
+                  placeholder="全部"
+                  onChange={(event) => {
+                    const next = event.target.value.trim();
+                    setMaxPages(next ? Math.min(2000, Math.max(1, Number(next) || 1)) : null);
+                  }}
+                  className={FIELD_INPUT_CLASS}
+                />
               </div>
 
               <div className="flex flex-col gap-[6px]">
@@ -608,7 +566,6 @@ export default function OcrWorkspace({ entry, currentUser, onLogout }: OcrWorksp
                 <div className={FIELD_LABEL_CLASS}>识别内容</div>
                 {[
                   { label: '公式', hint: '把公式转成 LaTeX，适合论文与教材', checked: math, onChange: setMath },
-                  { label: '页眉页脚', hint: '保留页眉页脚（默认会过滤掉）', checked: furniture, onChange: setFurniture },
                   { label: '图片内文字', hint: '识别插图里的文字', checked: imageOcr, onChange: setImageOcr },
                 ].map((row) => (
                   <label key={row.label} className="flex cursor-pointer items-start gap-[8px]">
@@ -624,28 +581,9 @@ export default function OcrWorkspace({ entry, currentUser, onLogout }: OcrWorksp
                     </span>
                   </label>
                 ))}
-              </div>
-
-              <div className="flex flex-col gap-[8px]">
-                <div className={FIELD_LABEL_CLASS}>结构化附加</div>
-                {[
-                  { label: '行坐标', hint: '每行给 [x0,y0,x1,y1] 与置信度', checked: includeLines, onChange: setIncludeLines },
-                  { label: '版面块', hint: '标题 / 表格 / 段落等版面标签', checked: includeBlocks, onChange: setIncludeBlocks },
-                  { label: '耗时明细', hint: '每页各阶段耗时，排障用', checked: includeTimings, onChange: setIncludeTimings },
-                ].map((row) => (
-                  <label key={row.label} className="flex cursor-pointer items-start gap-[8px]">
-                    <Checkbox
-                      checked={row.checked}
-                      onCheckedChange={() => row.onChange(!row.checked)}
-                      aria-label={row.label}
-                      className="mt-[2px]"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-[12px] leading-[1.5] text-[#4f5669]">{row.label}</span>
-                      <span className="block text-[10px] leading-[1.4] text-[#a3aab9]">{row.hint}</span>
-                    </span>
-                  </label>
-                ))}
+                <span className={HINT_CLASS}>
+                  页眉页脚一律过滤；行坐标与版面块固定返回，不必额外设置。
+                </span>
               </div>
             </div>
 
@@ -801,6 +739,8 @@ export default function OcrWorkspace({ entry, currentUser, onLogout }: OcrWorksp
           </div>
         </div>
       </div>
+
+      <OcrApiDialog open={apiOpen} onClose={() => setApiOpen(false)} />
     </div>
   );
 }

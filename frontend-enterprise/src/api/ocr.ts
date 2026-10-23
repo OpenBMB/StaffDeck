@@ -69,26 +69,52 @@ export type OcrStatus = {
   max_file_mb: number;
 };
 
+/** 「API 接入」示例所需的接入信息。`public_base_url` 来自后端 PUBLIC_BASE_URL，可能为空。 */
+export type OcrApiAccess = {
+  required_scope: string;
+  endpoint_path: string;
+  docs_path: string;
+  public_base_url: string;
+};
+
 /**
  * 识别参数。字段名与 `indra.md` 的 `/v1/ocr` 一一对应；
  * `null` / `undefined` 表示不传，由上游用默认值。
+ *
+ * 工作台只暴露这几项：识别模式固定「自动」、DPI 固定 200、页眉页脚固定过滤，
+ * 结构化附加（行坐标 / 版面块）固定开启 —— 这些固定值见下面的 `FIXED_FORM_FIELDS`。
  */
 export type OcrOptions = {
   format: OcrFormat;
-  mode: '' | 'ocr';
-  dpi: number | null;
   maxPages: number | null;
   password: string;
   math: boolean | null;
-  furniture: boolean | null;
   imageOcr: boolean | null;
-  includeLines: boolean | null;
-  includeBlocks: boolean | null;
-  includeTimings: boolean | null;
+};
+
+/**
+ * 工作台不再给用户的项：一律取默认值。
+ *
+ * - `dpi` 200：与上游默认一致，显式传是为了不让上游改默认值后行为漂移；
+ * - `furniture` false：页眉页脚一律过滤掉；
+ * - `include_lines` / `include_blocks` true：「行」「版面块」两个视图的前提，
+ *   与上游默认一致；
+ * - `mode` 不传 = 自动（有文字层用文字层，没有才 OCR）；
+ * - `include_timings` 不传 = 不带各阶段耗时。
+ */
+const FIXED_FORM_FIELDS: Record<string, string> = {
+  dpi: '200',
+  furniture: 'false',
+  include_lines: 'true',
+  include_blocks: 'true',
 };
 
 export async function fetchOcrStatus(): Promise<OcrStatus> {
   return api.get<OcrStatus>('/api/enterprise/agent-apps/ocr:status');
+}
+
+export function fetchOcrApiAccess(): Promise<OcrApiAccess> {
+  return api.get<OcrApiAccess>('/api/enterprise/agent-apps/ocr:api-access');
 }
 
 /**
@@ -103,23 +129,12 @@ export async function runOcr(
   form.append('tenant_id', TENANT_ID);
   files.forEach((file) => form.append('files', file));
   form.append('format', options.format);
-  if (options.mode) form.append('mode', options.mode);
-  if (options.dpi) form.append('dpi', String(options.dpi));
   if (options.maxPages) form.append('max_pages', String(options.maxPages));
   if (options.password.trim()) form.append('password', options.password.trim());
-  const flags: Array<[string, boolean | null]> = [
-    ['math', options.math],
-    ['furniture', options.furniture],
-    ['image_ocr', options.imageOcr],
-    ['include_lines', options.includeLines],
-    ['include_blocks', options.includeBlocks],
-    ['include_timings', options.includeTimings],
-  ];
-  flags.forEach(([key, value]) => {
-    // 只有用户显式选过才发：上游对 include_lines/include_blocks 的默认值是 true，
-    // 一律发 false 会把行坐标悄悄关掉。
-    if (value !== null) form.append(key, value ? 'true' : 'false');
-  });
+  // 只有用户显式勾过才发：上游对 math / image_ocr 的默认值是关，不必替它决定
+  if (options.math !== null) form.append('math', options.math ? 'true' : 'false');
+  if (options.imageOcr !== null) form.append('image_ocr', options.imageOcr ? 'true' : 'false');
+  Object.entries(FIXED_FORM_FIELDS).forEach(([key, value]) => form.append(key, value));
 
   const response = await fetch(`${API_BASE_URL}/api/enterprise/agent-apps/ocr:run`, {
     method: 'POST',

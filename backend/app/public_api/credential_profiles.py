@@ -56,6 +56,8 @@ USER_FULL_ACCESS_SCOPES = frozenset(
         # 决策助手（Laya 决策头）是无状态的推理服务，不属于任何单个员工，
         # 因此只挂在账号级全量密钥上；员工级密钥（AGENT_RUNTIME_SCOPES）不授予。
         "decisions:run",
+        # OCR 助手同理：识别在 OCR 服务内完成，与租户内某个员工无关。
+        "ocr:run",
     }
 )
 
