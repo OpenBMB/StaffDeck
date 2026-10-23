@@ -24,7 +24,7 @@ export type AgentCatalogEntry = {
   tags: string[];
   /** 工作台路由 key：`/enterprise/agent-apps/:entryId`。 */
   entry: string;
-  /** 服务端能力标识，前端据此选择工作台实现（`slides` / `doc-review` / `decision` / `code-review`，未知能力给提示页）。 */
+  /** 服务端能力标识，前端据此选择工作台实现（`slides` / `doc-review` / `ocr` / `decision` / `code-review`，未知能力给提示页）。 */
   capability: string;
   /**
    * 仅管理员可见（如 AI CodeReviewer）。

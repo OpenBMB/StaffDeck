@@ -419,4 +419,164 @@ describe('AgentAppPage', () => {
     expect(await screen.findByText('该 Agent 暂时无法打开')).toBeTruthy();
     expect(screen.getByText(/清单里没有这个 Agent/)).toBeTruthy();
   });
+
+  describe('OCR 助手', () => {
+    const ocrStatus = { configured: true, formats: ['json', 'md', 'text'], max_files: 10, max_file_mb: 50 };
+
+    function jsonCapable(body: unknown): Response {
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => body,
+        text: async () => JSON.stringify(body ?? {}),
+      } as unknown as Response;
+    }
+
+    function ocrBody(overrides: Record<string, unknown> = {}) {
+      return {
+        model: 'indra-ocr',
+        results: [
+          {
+            filename: 'scan.pdf',
+            n_pages: 2,
+            elapsed_ms: 812.4,
+            error: null,
+            pages: [
+              {
+                index: 0,
+                source: 'ocr',
+                note: '',
+                rotation: 0,
+                skew: 0,
+                vertical: false,
+                n_lines: 2,
+                markdown: '# 行李寄存\n\n住客可在 L 层免费寄存。',
+                text: '行李寄存\n住客可在 L 层免费寄存。',
+                lines: [{ box: [72, 96, 521, 130], text: '行李寄存', conf: 0.987 }],
+                blocks: [{ label: 'Section-Header', bbox: [72, 96, 521, 130], text: '行李寄存' }],
+                timings: {},
+              },
+              {
+                index: 1,
+                source: 'text',
+                note: '',
+                rotation: 0,
+                skew: 0,
+                vertical: false,
+                n_lines: 3,
+                markdown: '第二页正文',
+                text: '第二页正文',
+                lines: [],
+                blocks: [],
+                timings: {},
+              },
+            ],
+          },
+        ],
+        summary: { file_count: 1, page_count: 2, elapsed_ms: 812.4, error_count: 0 },
+        ...overrides,
+      };
+    }
+
+    it('走 ocr 能力分发：没有模型选择器，未选文件时按钮禁用', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonCapable(ocrStatus)));
+      renderPage('ocr-assistant');
+
+      expect(await screen.findByText('Agent 广场 · OCR 助手')).toBeTruthy();
+      // 识别不调大模型：页面上不该出现模型下拉
+      expect(screen.queryByRole('button', { name: '选择模型' })).toBeNull();
+      expect(await screen.findByText(/不消耗大模型额度/)).toBeTruthy();
+      const button = screen.getByRole('button', { name: /开始识别/ });
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('选择文件后识别：按页展示 Markdown 与「来源」徽章', async () => {
+      const calls: { url: string; body: FormData }[] = [];
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/ocr:status')) return jsonCapable(ocrStatus);
+        if (url.includes('/ocr:run')) {
+          calls.push({ url, body: init?.body as FormData });
+          return jsonCapable(ocrBody());
+        }
+        return jsonResponse({});
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      renderPage('ocr-assistant');
+
+      // AppHeader 里也有一个头像上传的 file input，这里按 aria-label 精确定位
+      const input = (await screen.findByLabelText('选择要识别的文件')) as HTMLInputElement;
+      const file = new File(['%PDF-1.4'], 'scan.pdf', { type: 'application/pdf' });
+      fireEvent.change(input, { target: { files: [file] } });
+
+      const button = await screen.findByRole('button', { name: /开始识别/ });
+      await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+      await userEvent.setup().click(button);
+
+      expect(await screen.findByText('第 1 页')).toBeTruthy();
+      expect(screen.getByText('第 2 页')).toBeTruthy();
+      // 每页标注来源：同一次识别里不同页的可信度不同
+      expect(screen.getAllByText('OCR').length).toBeGreaterThan(0);
+      expect(screen.getByText('文本层')).toBeTruthy();
+      expect(await screen.findByText(/住客可在 L 层免费寄存/)).toBeTruthy();
+
+      // 请求是 multipart，参数按 indra.md 的字段名下发
+      expect(calls).toHaveLength(1);
+      const form = calls[0].body;
+      expect(form.getAll('files')).toHaveLength(1);
+      expect(form.get('format')).toBe('json');
+      expect(form.get('dpi')).toBe('200');
+      // 默认开启行坐标与版面块；耗时默认关闭
+      expect(form.get('include_lines')).toBe('true');
+      expect(form.get('include_blocks')).toBe('true');
+      expect(form.get('include_timings')).toBeNull();
+    });
+
+    it('服务未配置时提示并禁用识别', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => jsonCapable({ ...ocrStatus, configured: false })),
+      );
+      renderPage('ocr-assistant');
+
+      expect(await screen.findByText(/OCR 服务尚未配置/)).toBeTruthy();
+      const input = (await screen.findByLabelText('选择要识别的文件')) as HTMLInputElement;
+      fireEvent.change(input, {
+        target: { files: [new File(['x'], 'a.png', { type: 'image/png' })] },
+      });
+
+      const button = await screen.findByRole('button', { name: /开始识别/ });
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('识别失败时给出可重试的错误块', async () => {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/ocr:status')) return jsonCapable(ocrStatus);
+        if (url.includes('/ocr:run')) {
+          return {
+            ok: false,
+            status: 502,
+            statusText: 'Bad Gateway',
+            text: async () => JSON.stringify({ detail: '无法连接 OCR 服务' }),
+          } as unknown as Response;
+        }
+        return jsonResponse({});
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      renderPage('ocr-assistant');
+
+      const input = (await screen.findByLabelText('选择要识别的文件')) as HTMLInputElement;
+      fireEvent.change(input, {
+        target: { files: [new File(['x'], 'a.png', { type: 'image/png' })] },
+      });
+      const button = await screen.findByRole('button', { name: /开始识别/ });
+      await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+      await userEvent.setup().click(button);
+
+      expect(await screen.findByText('识别失败')).toBeTruthy();
+      expect(screen.getByRole('button', { name: '重试' })).toBeTruthy();
+    });
+  });
 });

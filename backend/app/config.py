@@ -186,6 +186,18 @@ class Settings(BaseSettings):
     mineru_token: str = ""
     mineru_api_base: str = "https://mineru.net"
 
+    # ---- Indra OCR 服务（Agent 广场「OCR 助手」）----
+    # 契约见仓库根目录 indra.md：POST {base}/v1/ocr，multipart 上传，需 X-API-Key。
+    # 必须经后端代理：密钥不能进前端产物，且内网地址浏览器也连不上。
+    # 默认值对齐 indra.md 里的本地样例地址；生产环境用 INDRA_OCR_BASE_URL 覆盖。
+    indra_ocr_base_url: str = "http://127.0.0.1:8000"
+    indra_ocr_api_key: str = ""
+    # 扫描件按页识别，一本 200 页的 PDF 可能要几分钟，超时给得比普通接口宽。
+    indra_ocr_timeout_seconds: float = 300.0
+    # 单次请求的文件数与单文件体积上限：先在服务端挡住滥用，别让上游被打满。
+    indra_ocr_max_files: int = 10
+    indra_ocr_max_file_mb: int = 50
+
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),
         env_file_encoding="utf-8", extra="ignore",

@@ -24,7 +24,7 @@ artifacts（独立，只依赖 models / llm）
 | `sop/` | SOP 场景、节点执行、边条件、槽位表单（`slots/`） | 通用对话逻辑 |
 | `engine/` | 执行内核：`facade`(门面)、`turn`(轮次)、`step_loop`(决策循环)、`invoke`(能力调用)、`frames`(帧存储)、`session/`(租约锁清理)、`recovery`、`attachments`、`finalizer`、`handoff`、`skill_runtime` | 纯数据投影 |
 | `knowledge_flow/` | 检索决策与预取（知识入库在 `app/knowledge/`） | 文档解析 |
-| `artifacts/` | 产物生成：幻灯片、发票、文档审阅 | 对话编排 |
+| `artifacts/` | 产物生成：幻灯片、发票、文档审阅、OCR 识别 | 对话编排 |
 
 `engine/deprecated/` 放旧执行路径（`StepAgent`、`ReflectionAgent`），生产代码已无引用，只剩 3 个历史测试在用，新代码不要碰。
 
