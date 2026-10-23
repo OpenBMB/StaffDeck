@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import app.async_jobs as async_jobs
 from app.async_jobs import AsyncJobQueue
-from app.core.agent_loop import AgentLoop
+from app.core.engine.facade import AgentLoop
 from app.db.models import ChatSession, ModelConfig
 from app.session.session_schema import ChatTurnRequest, StepAgentResult
 
@@ -135,7 +135,7 @@ def test_agent_loop_enqueues_memory_capture_without_running_it_inline(monkeypatc
         captured["args"] = args
         return SimpleNamespace(id="job_memory_1", name="memory.capture_turn")
 
-    monkeypatch.setattr("app.core.agent_loop.enqueue_memory_capture", fake_enqueue_memory_capture)
+    monkeypatch.setattr("app.core.engine.facade.enqueue_memory_capture", fake_enqueue_memory_capture)
 
     loop = object.__new__(AgentLoop)
     loop.events = _FakeEvents()

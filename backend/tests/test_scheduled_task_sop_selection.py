@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from app.core.harness_v2_engine import _apply_forced_sop_snapshot, _turn_slash_selection
-from app.core.slash_commands import SlashCommandError
+from app.core.engine.turn import _apply_forced_sop_snapshot, _turn_slash_selection
+from app.core.plan.slash import SlashCommandError
 from app.db.models import ScheduledTask, Skill
 from app.scheduled_tasks import service as scheduled_task_service
 from app.scheduled_tasks.service import (

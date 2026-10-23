@@ -1,4 +1,4 @@
-from app.core.graph_rules import GraphRules
+from app.core.base.graph_rules import GraphRules
 from app.skills.skill_schema import SkillCard, SkillGraphNode
 
 

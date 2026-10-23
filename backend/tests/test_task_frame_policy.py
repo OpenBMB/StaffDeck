@@ -1,4 +1,4 @@
-from app.core.task_frame_policy import TaskFramePolicy
+from app.core.plan.frame_policy import TaskFramePolicy
 from app.db.models import ChatSession
 from app.session.session_schema import PendingTask, RouterDecision
 

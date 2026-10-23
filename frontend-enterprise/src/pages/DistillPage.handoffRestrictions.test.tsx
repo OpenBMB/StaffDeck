@@ -11,7 +11,7 @@ describe('SOP node handoff restrictions', () => {
         type: 'handoff',
         allowed_actions: ['answer_user', 'handoff_human'],
         assignee_user_id: 'user-1',
-        assignee_notify_channel: 'wecom',
+        assignee_notify_channel: 'web',
       },
       'response',
     );
@@ -28,7 +28,7 @@ describe('SOP node handoff restrictions', () => {
         type: 'response',
         allowed_actions: ['answer_user'],
         assignee_user_id: 'user-1',
-        assignee_notify_channel: 'wecom',
+        assignee_notify_channel: 'web',
       },
       'handoff',
     );
@@ -36,7 +36,7 @@ describe('SOP node handoff restrictions', () => {
     expect(node.type).toBe('handoff');
     expect(node.allowed_actions).toEqual(['answer_user']);
     expect(node.assignee_user_id).toBe('user-1');
-    expect(node.assignee_notify_channel).toBe('wecom');
+    expect(node.assignee_notify_channel).toBe('web');
   });
 
   it('omits the handoff action option for non-handoff node types', () => {
@@ -66,25 +66,17 @@ describe('SOP node handoff restrictions', () => {
   });
 });
 
-describe('handoffAssigneeUserOptions channel variants', () => {
-  it('offers supported private-message channel variants and skips others', () => {
+describe('handoffAssigneeUserOptions', () => {
+  it('offers exactly one web-inbox option per internal member', () => {
     const options = handoffAssigneeUserOptions([
-      {
-        id: 'user-1',
-        username: 'alice',
-        channel_identities: [
-          { channel: 'wechat', external_user_id: 'ou_1' },
-          { channel: 'dingtalk', external_user_id: 'staff_1' },
-          { channel: 'wecom', external_user_id: 'wecom_1' },
-        ],
-      },
+      { id: 'user-1', username: 'alice' },
       { id: 'user-2', username: 'bob', source: 'web' },
+      // 渠道功能已移除，来源不是 web 的外部账号不再进入处理人选项
       { id: 'user-3', username: 'lazy', source: 'wecom' },
     ]);
 
     expect(options).toEqual([
       { value: 'user-1', label: 'alice（网页端）' },
-      { value: 'user-1::wecom', label: 'alice（企业微信）' },
       { value: 'user-2', label: 'bob（网页端）' },
     ]);
   });

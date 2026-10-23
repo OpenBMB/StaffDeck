@@ -62,7 +62,7 @@ class MemoryService:
         model_config: ModelConfig,
         conversation_messages: list[dict[str, str]],
     ) -> list[MemoryRecord]:
-        from app.core.context_projection import compact_step_result
+        from app.core.base.context_projection import compact_step_result
 
         if not request.user_id:
             return []

@@ -27,7 +27,7 @@ from app.api.agent_apps import (
     export_slides,
     generate_slides,
 )
-from app.core import slides_deck
+from app.core.artifacts import slides as slides_deck
 from app.db.models import ModelConfig, Tenant, User
 
 

@@ -10,6 +10,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import delete, func
 from sqlalchemy.exc import IntegrityError
@@ -32,7 +33,10 @@ from app.db.models import (
     utc_now,
 )
 from app.knowledge.parser import KnowledgeParseError, extract_text
-from app.llm.model_config_resolver import resolve_model_config_for_runtime
+from app.llm.model_config_resolver import (
+    ResolvedModelConfig,
+    resolve_model_config_for_runtime,
+)
 from app.knowledge.schema import (
     KnowledgeBucketRead,
     KnowledgeChunkRead,
@@ -1299,7 +1303,9 @@ class KnowledgeService:
         *,
         use_llm: bool = True,
     ) -> list[KnowledgeBucket]:
-        model_config = self._default_model_config(tenant_id)
+        # 只有真正要走语义分桶时才解析模型：在线编辑保存走 use_llm=False，
+        # 不解析就不会因为一个坏掉的默认模型而保存失败。
+        model_config = self._default_model_config(tenant_id) if use_llm else None
         structure_buckets = _structure_bucket_specs(section_nodes)
         llm_buckets = (
             self._bucket_with_llm(section_nodes, model_config)
@@ -1959,7 +1965,22 @@ class KnowledgeService:
         self.db.refresh(row)
         return {"status": "created", "skill_id": row.id}
 
-    def _default_model_config(self, tenant_id: str) -> ModelConfig | None:
+    def _default_model_config(
+        self, tenant_id: str, *, strict: bool = False
+    ) -> ResolvedModelConfig | None:
+        """取租户默认模型；取不到或配置不可用时返回 ``None``。
+
+        这里刻意不复用 API 层的「取模型」语义：知识入库与在线编辑里，模型只是
+        **增强项**（主题规划、SOP/工具建议），没有模型也能产出完整的文档、主题、
+        切片与引用。所以默认行为是「不可用就当没有」。
+
+        ``strict=True`` 保留给需要明确指出配置问题的调用方。历史上这里直接调用
+        ``resolve_model_config_for_runtime`` 且不捕获异常，导致一个「启用了但没做
+        验证」的默认模型会让整次入库失败，job.error 是原文
+        ``409: MODEL_CONFIG_VERIFICATION_REQUIRED`` —— 用户看到「模型」二字，
+        就会以为上传知识库必须先配模型。
+        """
+
         row = self.db.exec(
             select(ModelConfig).where(
                 ModelConfig.tenant_id == tenant_id,
@@ -1969,7 +1990,21 @@ class KnowledgeService:
         ).first()
         if row is None:
             return None
-        return resolve_model_config_for_runtime(self.db, tenant_id, row.id)
+        try:
+            return resolve_model_config_for_runtime(self.db, tenant_id, row.id)
+        except HTTPException as exc:
+            if strict:
+                raise
+            # 这条日志是排查「为什么这次入库没有走语义分桶」的唯一线索：
+            # 降级本身不报错，产物看起来也正常，只是主题变粗。
+            logger.warning(
+                "默认模型不可用，本次按无模型降级 tenant=%s model_config=%s model=%s: %s",
+                tenant_id,
+                row.id,
+                row.model,
+                getattr(exc, "detail", exc),
+            )
+            return None
 
     def ensure_default_knowledge_base(self, tenant_id: str) -> KnowledgeBase:
         existing = self.db.exec(

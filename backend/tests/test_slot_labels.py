@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.slot_display import (
+from app.core.sop.slots.display import (
     BUILTIN_SLOT_LABELS,
     join_slot_labels,
     slot_label,

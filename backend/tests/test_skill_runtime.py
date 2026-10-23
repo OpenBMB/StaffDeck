@@ -1,4 +1,4 @@
-from app.core.skill_runtime import SkillRuntime
+from app.core.engine.skill_runtime import SkillRuntime
 from app.db.models import ChatSession
 from app.session.session_schema import PendingTask, RouterDecision
 

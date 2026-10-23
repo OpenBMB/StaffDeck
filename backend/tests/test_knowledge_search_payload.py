@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from app.core.context_projection import compact_knowledge_context
+from app.core.base.context_projection import compact_knowledge_context
 from app.knowledge.citations import knowledge_citations_from_results
 from app.knowledge.search_payload import (
     KNOWLEDGE_PAYLOAD_HARD_MAX_CHARS,

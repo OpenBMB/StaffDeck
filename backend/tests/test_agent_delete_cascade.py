@@ -7,12 +7,10 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.agents import delete_agent
-from app.core.harness_session_cleanup import harness_session_workspace_path
+from app.core.engine.session.cleanup import harness_session_workspace_path
 from app.db.models import (
     AgentProfile,
     AgentResourceBinding,
-    ChannelBinding,
-    ChannelBindingAgent,
     ChatSession,
     HumanHandoffRequest,
     Message,
@@ -208,42 +206,3 @@ def test_delete_agent_keeps_already_loaded_rows_usable() -> None:
         assert task.title == "已删员工任务"
         assert db.exec(select(AgentResourceBinding)).all() == []
         assert db.exec(select(TeamMember)).all() == []
-
-
-def test_delete_agent_promotes_remaining_channel_mount() -> None:
-    """被删员工是渠道默认挂载时，渠道要落到剩余挂载上而不是留下悬空指针。"""
-    with _test_session() as db:
-        db.add(Tenant(id="tenant_demo", name="Demo"))
-        db.add(AgentProfile(id="agent_gone", tenant_id="tenant_demo", name="已删员工"))
-        db.add(AgentProfile(id="agent_keep", tenant_id="tenant_demo", name="保留员工"))
-        db.add(
-            ChannelBinding(
-                id="chan_1", tenant_id="tenant_demo", agent_id="agent_gone", status="active"
-            )
-        )
-        db.add(
-            ChannelBindingAgent(
-                tenant_id="tenant_demo",
-                binding_id="chan_1",
-                agent_id="agent_gone",
-                is_default=True,
-            )
-        )
-        db.add(
-            ChannelBindingAgent(
-                tenant_id="tenant_demo",
-                binding_id="chan_1",
-                agent_id="agent_keep",
-                sort_order=1,
-            )
-        )
-        db.commit()
-
-        delete_agent("agent_gone", tenant_id="tenant_demo", db=db, current_user=_admin_user())
-
-        mounts = db.exec(
-            select(ChannelBindingAgent).where(ChannelBindingAgent.binding_id == "chan_1")
-        ).all()
-        assert [mount.agent_id for mount in mounts] == ["agent_keep"]
-        assert mounts[0].is_default is True
-        assert db.get(ChannelBinding, "chan_1").agent_id == "agent_keep"

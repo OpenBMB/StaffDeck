@@ -76,23 +76,12 @@ class Settings(BaseSettings):
     general_skill_pip_index_url: str = ""
     general_skill_pip_timeout_seconds: int = 180
     general_skill_network_install: bool = True
-    channel_secret: str = ""
-    staffdeck_role: str = "all"
-    wechat_ilink_base_url: str = "https://ilinkai.weixin.qq.com"
-    channel_delivery_poll_seconds: float = 1.0
-    channel_delivery_max_attempts: int = 8
     public_api_enabled: bool = True
     public_api_key_pepper: str = ""
     public_api_idempotency_ttl_seconds: int = 60 * 60 * 24
     public_api_retention_days: int = 30
     public_api_webhook_timeout_seconds: float = 10.0
     public_api_webhook_max_attempts: int = 6
-    # 钉钉 emotion 接口的表情常量与所需权限尚未真机验证，验证通过前默认关闭：
-    # 否则常量失效或权限未开时，每条入站消息都会留下一条失败的 reaction 投递。
-    channel_dingtalk_reaction_enabled: bool = False
-    # 出站富文本渲染开关：开启时钉钉走 markdown 消息；
-    # 关闭时回退为纯 text 消息，用于快速回退。
-    channel_rich_render_enabled: bool = True
     # ---- LDAP / AD 域登录 ----
     # 开启后登录优先走域认证：先用服务账号检索用户 DN，再用该 DN + 用户口令 bind 校验，
     # 成功后把域账号信息（显示名/邮箱/部门）同步到本地 users 表（无则新建、有则更新）。

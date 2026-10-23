@@ -15,7 +15,7 @@ from app.api.chat import (
     list_slash_commands,
     list_chat_sessions,
 )
-from app.core.agent_loop import AgentLoop, AgentLoopPreconditionError
+from app.core.engine.facade import AgentLoop, AgentLoopPreconditionError
 from app.db.models import (
     AgentEvent,
     AgentProfile,
@@ -447,7 +447,7 @@ def test_session_title_summary_leaves_empty_when_no_intent_yet(monkeypatch) -> N
 def test_session_title_from_plan_prefers_sop_name() -> None:
     from types import SimpleNamespace
 
-    from app.core.harness_v2_engine import _session_title_from_plan
+    from app.core.engine.turn import _session_title_from_plan
     from app.session.session_schema import PlannedTaskFrame, TurnPlan
 
     plan = TurnPlan(
@@ -467,7 +467,7 @@ def test_session_title_from_plan_prefers_sop_name() -> None:
 
 
 def test_session_title_from_plan_falls_back_to_user_intent() -> None:
-    from app.core.harness_v2_engine import _session_title_from_plan
+    from app.core.engine.turn import _session_title_from_plan
     from app.session.session_schema import TurnPlan
 
     plan = TurnPlan(decision="answer_only", user_intent="查询项目位置 和 交通方式")
@@ -475,7 +475,7 @@ def test_session_title_from_plan_falls_back_to_user_intent() -> None:
 
 
 def test_session_title_from_plan_returns_empty_without_intent() -> None:
-    from app.core.harness_v2_engine import _session_title_from_plan
+    from app.core.engine.turn import _session_title_from_plan
     from app.session.session_schema import TurnPlan
 
     assert _session_title_from_plan(TurnPlan(), []) == ""

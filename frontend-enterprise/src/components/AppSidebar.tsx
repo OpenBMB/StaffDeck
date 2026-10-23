@@ -76,8 +76,6 @@ const WORKSPACE_NAV: NavItem[] = [
 const PLATFORM_NAV: NavItem[] = [
   // 决策助手 / AI CodeReviewer 已移入「Agent 广场」清单（agent-catalog.json），
   // 入口随广场走（CodeReviewer 为 adminOnly 条目，仅管理员视角可见），侧边栏不再单列
-  // 暂时隐藏渠道接入入口（页面与路由保留，需要时恢复下行即可）
-  // { route: EnterpriseRoute.Channels, label: '渠道接入', Icon: IconGlobe },
   { route: EnterpriseRoute.Models, label: '模型配置', Icon: IconModels },
   // 平台更新内容：渲染仓库根目录的 changelog.md，全体成员可见
   { route: EnterpriseRoute.PlatformUpdates, label: '平台更新内容', Icon: IconListBulleted },

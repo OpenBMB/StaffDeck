@@ -4,17 +4,13 @@ import { formatHandoffAssigneeValue, parseHandoffAssigneeValue } from './handoff
 
 describe('formatHandoffAssigneeValue', () => {
   it('returns empty for missing user', () => {
-    expect(formatHandoffAssigneeValue(null, null)).toBe('');
-    expect(formatHandoffAssigneeValue('', '')).toBe('');
+    expect(formatHandoffAssigneeValue(null)).toBe('');
+    expect(formatHandoffAssigneeValue('')).toBe('');
+    expect(formatHandoffAssigneeValue('   ')).toBe('');
   });
 
-  it('returns plain user id for web delivery', () => {
-    expect(formatHandoffAssigneeValue('user_1', null)).toBe('user_1');
-    expect(formatHandoffAssigneeValue('user_1', 'web')).toBe('user_1');
-  });
-
-  it('appends channel for channel delivery', () => {
-    expect(formatHandoffAssigneeValue('user_1', 'wecom')).toBe('user_1::wecom');
+  it('returns plain user id', () => {
+    expect(formatHandoffAssigneeValue('user_1')).toBe('user_1');
   });
 });
 
@@ -28,24 +24,16 @@ describe('parseHandoffAssigneeValue', () => {
     expect(parseHandoffAssigneeValue('user_1')).toEqual({ userId: 'user_1', channel: 'web' });
   });
 
-  it('parses composite value into user and channel', () => {
+  it('truncates legacy composite values left by the removed channel feature', () => {
     expect(parseHandoffAssigneeValue('user_1::wecom')).toEqual({
       userId: 'user_1',
-      channel: 'wecom',
+      channel: 'web',
     });
-  });
-
-  it('falls back to web when channel segment is malformed', () => {
-    expect(parseHandoffAssigneeValue('user_1::')).toEqual({ userId: 'user_1::', channel: 'web' });
-    expect(parseHandoffAssigneeValue('::wecom')).toEqual({ userId: '::wecom', channel: 'web' });
+    expect(parseHandoffAssigneeValue('user_1::')).toEqual({ userId: 'user_1', channel: 'web' });
   });
 
   it('round-trips with formatHandoffAssigneeValue', () => {
-    expect(parseHandoffAssigneeValue(formatHandoffAssigneeValue('user_1', 'wecom'))).toEqual({
-      userId: 'user_1',
-      channel: 'wecom',
-    });
-    expect(parseHandoffAssigneeValue(formatHandoffAssigneeValue('user_1', null))).toEqual({
+    expect(parseHandoffAssigneeValue(formatHandoffAssigneeValue('user_1'))).toEqual({
       userId: 'user_1',
       channel: 'web',
     });

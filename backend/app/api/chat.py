@@ -25,14 +25,13 @@ from app.agents.free_model import (
     consume_free_quota,
     free_model_turn_allowed,
 )
-from app.channels.service_outbox import stage_channel_delivery
 from app.chat_pubsub import RelaySubscriber, publish_relay_wake
 from app.core import AgentLoop
-from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
-from app.core.capability_manifest import CapabilityManifestBuilder
-from app.core.harness_session_cleanup import harness_task_workspace_path
-from app.core.harness_turn_store import HarnessTurnStore
-from app.core.slash_commands import SlashCommandRead, slash_command_catalog
+from app.core.base.cancellation import cancel_chat_turn, is_chat_turn_cancelled
+from app.core.capability.manifest import CapabilityManifestBuilder
+from app.core.engine.session.cleanup import harness_task_workspace_path
+from app.core.engine.session.turn_store import HarnessTurnStore
+from app.core.plan.slash import SlashCommandRead, slash_command_catalog
 from app.db import engine, get_session
 from app.db.models import (
     AgentEvent,
@@ -648,7 +647,6 @@ def _maybe_handle_scheduled_task_request(
         created_at=assistant_time,
     )
     db.add(assistant_message)
-    stage_channel_delivery(db, chat_session, assistant_message)
     db.add(
         AgentEvent(
             tenant_id=request.tenant_id,
@@ -1751,7 +1749,6 @@ def _ensure_cancelled_assistant_message(
         created_at=created_at,
     )
     db.add(assistant_message)
-    stage_channel_delivery(db, chat_session, assistant_message)
     db.add(
         AgentEvent(
             tenant_id=tenant_id,
@@ -1933,7 +1930,6 @@ def _ensure_interrupted_assistant_message(
         created_at=created_at,
     )
     db.add(assistant_message)
-    stage_channel_delivery(db, chat_session, assistant_message)
     db.add(
         AgentEvent(
             tenant_id=tenant_id,

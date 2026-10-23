@@ -1,4 +1,4 @@
-from app.core.conversation_projection import ConversationProjection
+from app.core.base.conversation_projection import ConversationProjection
 from app.db.models import ChatSession, Skill
 from app.session.session_schema import StepAgentResult
 

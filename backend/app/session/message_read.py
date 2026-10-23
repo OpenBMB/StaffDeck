@@ -6,7 +6,7 @@ from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from app.db.models import KnowledgeChunk, KnowledgeConcept, Message
-from app.core.ui_flags import knowledge_citations_hidden
+from app.core.base.ui_flags import knowledge_citations_hidden
 from app.knowledge.citations import (
     CITATION_EXCERPT_CHAR_LIMIT,
     compact_knowledge_citation_labels,

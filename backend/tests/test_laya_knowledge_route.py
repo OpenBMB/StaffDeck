@@ -15,8 +15,8 @@ from typing import Any, Callable
 
 import pytest
 
-from app.core.laya_client import LayaError
-from app.core.laya_router import (
+from app.core.knowledge_flow.laya_client import LayaError
+from app.core.knowledge_flow.routing import (
     LayaRouter,
     build_relevance_background,
     build_relevance_questions,
@@ -293,7 +293,7 @@ def test_select_documents_without_router_goes_straight_to_llm(monkeypatch: pytes
 
 
 def test_build_knowledge_laya_router_respects_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.core import harness_v2_engine as engine_module
+    from app.core.engine import turn as engine_module
 
     enabled = SimpleNamespace(
         laya_knowledge_route_enabled=True,

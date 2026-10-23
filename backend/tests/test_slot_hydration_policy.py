@@ -1,4 +1,4 @@
-from app.core.slot_hydration_policy import SlotHydrationPolicy
+from app.core.sop.slots.hydration import SlotHydrationPolicy
 from app.db.models import ChatSession, Skill
 from app.session.session_schema import (
     AwaitingInput,

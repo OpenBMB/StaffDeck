@@ -18,8 +18,8 @@ from app.api.chat import (
     list_chat_session_spans,
     message_read,
 )
-import app.core.cancellation as cancellation_module
-from app.core.cancellation import is_chat_turn_cancelled
+import app.core.base.cancellation as cancellation_module
+from app.core.base.cancellation import is_chat_turn_cancelled
 from app.db.models import (
     AgentEvent,
     ChatSession,

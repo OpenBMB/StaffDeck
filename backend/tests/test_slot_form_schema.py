@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.core.slot_form import build_slot_form
+from app.core.sop.slots.form import build_slot_form
 
 
 def _edge(*comparisons: tuple[str, str, object]) -> SimpleNamespace:

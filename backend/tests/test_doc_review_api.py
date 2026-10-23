@@ -29,7 +29,7 @@ from app.api.agent_apps import (
     parse_doc,
     review_doc,
 )
-from app.core.doc_review import DocBlock, sanitize_actions, sanitize_issues, store_document
+from app.core.artifacts.doc_review import DocBlock, sanitize_actions, sanitize_issues, store_document
 from app.db.models import ModelConfig, Tenant, User
 
 
@@ -409,7 +409,7 @@ def test_export_comments_are_idempotent_and_clearable() -> None:
 
 
 def test_store_document_evicts_oldest_beyond_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.core import doc_review
+    from app.core.artifacts import doc_review
 
     monkeypatch.setattr(doc_review, "_STORE_MAX", 3)
     doc_review._DOC_STORE.clear()

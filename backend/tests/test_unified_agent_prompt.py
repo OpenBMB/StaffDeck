@@ -1,9 +1,9 @@
 from types import SimpleNamespace
 
-from app.core.reflection_agent import ReflectionAgent
-from app.core.response_generator import ResponseGenerator
-from app.core.router import Router
-from app.core.step_agent import StepAgent
+from app.core.engine.deprecated.reflection_agent import ReflectionAgent
+from app.core.converse.response import ResponseGenerator
+from app.core.plan.router import Router
+from app.core.engine.deprecated.step_agent import StepAgent
 from app.db.models import ChatSession, GeneralSkill
 from app.general_skills.runner import GeneralSkillRunner, GeneralSkillSelector
 from app.llm import LLMClient

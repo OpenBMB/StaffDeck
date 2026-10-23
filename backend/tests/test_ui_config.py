@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from app.api import ui_config as ui_config_module
 from app.api.ui_config import UIConfigUpdateRequest, ui_config_read
 from app.api.ui_config import update_enterprise_ui_config
-from app.core.agent_loop import AgentLoop
+from app.core.engine.facade import AgentLoop
 from app.db.models import Tenant, UIConfig, User
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine

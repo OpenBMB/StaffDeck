@@ -4,7 +4,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.api.chat as chat_api
-from app.core.agent_loop import AgentLoop
+from app.core.engine.facade import AgentLoop
 from app.db.models import (
     AgentEvent,
     AgentProfile,

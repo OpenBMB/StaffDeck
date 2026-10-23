@@ -1,4 +1,4 @@
-from app.core.reflection_agent import ReflectionAgent
+from app.core.engine.deprecated.reflection_agent import ReflectionAgent
 from app.db.models import ChatSession, Skill
 from app.llm import LLMClient
 from app.session.session_schema import AwaitingInput, RouterDecision, StepAgentResult

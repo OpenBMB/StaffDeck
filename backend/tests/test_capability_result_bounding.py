@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.harness_agent import _bounded_capability_result
+from app.core.engine.step_loop import _bounded_capability_result
 
 
 def test_chunk_count_preserved_inline() -> None:

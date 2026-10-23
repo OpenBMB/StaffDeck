@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.slash_commands import (
+from app.core.plan.slash import (
     SlashCommandError,
     build_slash_turn_plan,
     force_capability_for_requirement,
@@ -10,7 +10,7 @@ from app.core.slash_commands import (
     resolve_capability,
     slash_command_catalog,
 )
-from app.core.task_request_compiler import (
+from app.core.base.request_compiler import (
     CapabilityCatalogEntry,
     CapabilityDescriptor,
     CapabilityManifest,

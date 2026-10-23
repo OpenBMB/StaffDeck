@@ -59,8 +59,6 @@ from app.db.models import (
     AgentSkillBranch,
     AgentSkillBranchVersion,
     AgentUsage,
-    ChannelBinding,
-    ChannelBindingAgent,
     ChatSession,
     GeneralSkill,
     HumanHandoffRequest,
@@ -511,32 +509,6 @@ def delete_agent(
     # 子表清理一律走批量语句：逐行 db.delete/db.update 在远程 PG 上每次都要一次往返，
     # 员工资源多的租户删一个员工会明显卡住（与会话/团队删除同一类问题）。
     bulk_delete_matching(db, AgentResourceBinding, agent_id=row.id)
-    # 渠道挂载同步清理:否则孤儿挂载行会让 /员工 列出已删除员工的裸 ID,
-    # 甚至可被 /切换 路由到。默认挂载被删时把首个剩余挂载提升为默认并同步
-    # binding.agent_id,保持存量绑定回退路径有效。会话指针无需处理:
-    # resolve_current_agent 发现指针不在挂载集会自动重置默认。
-    # 单列 select 经 SQLModel 的 exec 直接返回标量
-    affected_binding_ids = set(
-        db.exec(
-            select(ChannelBindingAgent.binding_id).where(ChannelBindingAgent.agent_id == row.id)
-        ).all()
-    )
-    bulk_delete_matching(db, ChannelBindingAgent, agent_id=row.id)
-    for binding_id in affected_binding_ids:
-        channel_binding = db.get(ChannelBinding, binding_id)
-        if not channel_binding or channel_binding.agent_id != row.id:
-            continue
-        remaining = db.exec(
-            select(ChannelBindingAgent)
-            .where(ChannelBindingAgent.binding_id == binding_id)
-            .order_by(ChannelBindingAgent.sort_order, ChannelBindingAgent.created_at)
-        ).first()
-        if remaining:
-            remaining.is_default = True
-            channel_binding.agent_id = remaining.agent_id
-            channel_binding.updated_at = utc_now()
-            db.add(remaining)
-            db.add(channel_binding)
     # 会话级联清理:员工删除后其会话若保留,新消息会由租户默认 persona 静默接管,
     # 与删除团队一致,直接清空其全部会话(消息/事件/反馈/Harness 记录与工作区)。
     sessions = db.exec(

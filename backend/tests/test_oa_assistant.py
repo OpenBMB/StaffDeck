@@ -16,7 +16,7 @@ from sqlmodel import SQLModel, create_engine
 from starlette.requests import Request
 
 from app.api import oa_assistant
-from app.core import invoice_amount
+from app.core.artifacts import invoice as invoice_amount
 
 
 def _upload(name: str, data: bytes) -> UploadFile:

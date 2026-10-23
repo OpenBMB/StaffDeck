@@ -15,13 +15,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.agent_loop import TurnStreamSink
-from app.core.harness_agent import (
+from app.core.engine.facade import TurnStreamSink
+from app.core.engine.step_loop import (
     _generate_harness_action_json,
     _iteration_reply_preview,
     _reply_preview_sink,
 )
-from app.core.task_request_compiler import TaskRequirement
+from app.core.base.request_compiler import TaskRequirement
 from app.llm.client import LLMClient, LLMError
 from app.llm.json_field_stream import JsonStringFieldStream
 

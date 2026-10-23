@@ -3,11 +3,11 @@ from __future__ import annotations
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.core.harness_turn_store import (
+from app.core.engine.session.turn_store import (
     HarnessTurnConflict,
     HarnessTurnStore,
 )
-from app.core.harness_v2_engine import _with_recoverable_first_session
+from app.core.engine.turn import _with_recoverable_first_session
 from app.db.models import ChatSession
 from app.session.session_schema import (
     ChatTurnRequest,

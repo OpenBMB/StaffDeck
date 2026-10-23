@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.knowledge_prefetch import (
+from app.core.knowledge_flow.prefetch import (
     QUERY_MAX_CHARS,
     plan_knowledge_prefill_actions,
 )
-from app.core.task_request_compiler import CapabilityDescriptor, CapabilityManifest
+from app.core.base.request_compiler import CapabilityDescriptor, CapabilityManifest
 
-import app.core.knowledge_prefetch as kf  # noqa: E402
+import app.core.knowledge_flow.prefetch as kf  # noqa: E402
 
 
 def _descriptor(
@@ -244,7 +244,7 @@ def test_trace_sink_failure_does_not_block_prefill() -> None:
 def test_harness_conversation_prefetch_executes_before_first_llm_call(
     monkeypatch,
 ) -> None:
-    from app.core import harness_agent as harness_agent_module
+    from app.core.engine import step_loop as harness_agent_module
     from app.db.models import ModelConfig
 
     llm_calls: list[dict[str, Any]] = []
@@ -313,9 +313,9 @@ def test_harness_conversation_with_skill_capability_skips_prefetch(
     monkeypatch,
 ) -> None:
     """有技能能力（非纯知识库）时不预填：LLM 首轮决策照旧。"""
-    from app.core import harness_agent as harness_agent_module
+    from app.core.engine import step_loop as harness_agent_module
     from app.db.models import ModelConfig
-    from app.core.task_request_compiler import CapabilityManifest
+    from app.core.base.request_compiler import CapabilityManifest
 
     llm_calls: list[dict[str, Any]] = []
 

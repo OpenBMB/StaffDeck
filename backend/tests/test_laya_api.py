@@ -126,7 +126,7 @@ def test_rejects_too_many_questions() -> None:
 
 
 def test_health_url_derives_from_predict_url() -> None:
-    from app.core.laya_client import health_url
+    from app.core.knowledge_flow.laya_client import health_url
 
     assert health_url("http://8.153.146.109:8080/predict") == "http://8.153.146.109:8080/health"
     assert health_url("https://laya.example.com/api/predict") == "https://laya.example.com/api/health"

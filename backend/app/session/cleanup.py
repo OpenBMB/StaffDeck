@@ -4,7 +4,7 @@ import logging
 
 from sqlmodel import Session
 
-from app.core.harness_session_cleanup import (
+from app.core.engine.session.cleanup import (
     HarnessSessionRecordCleanup,
     remove_harness_session_workspace,
     stage_harness_session_record_deletion,

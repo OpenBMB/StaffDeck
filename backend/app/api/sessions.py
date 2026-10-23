@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 
 from app.api.chat import _build_turn_traces, session_read
 from app.session.message_read import message_read
-from app.core.harness_session_cleanup import stage_harness_session_execution_reset
+from app.core.engine.session.cleanup import stage_harness_session_execution_reset
 from app.db import get_session
 from app.db.models import (
     AgentEvent,

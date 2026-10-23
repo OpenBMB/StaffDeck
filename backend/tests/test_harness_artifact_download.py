@@ -12,7 +12,7 @@ from app.api.chat import (
     download_harness_artifact,
     download_harness_task_artifacts_zip,
 )
-from app.core.harness_session_cleanup import harness_task_workspace_path
+from app.core.engine.session.cleanup import harness_task_workspace_path
 from app.db.models import (
     ChatSession,
     HarnessTaskFrameRecord,

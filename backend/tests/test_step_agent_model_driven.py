@@ -1,4 +1,4 @@
-from app.core.step_agent import StepAgent
+from app.core.engine.deprecated.step_agent import StepAgent
 from app.db.models import ChatSession, Skill, Tool
 from app.llm.client import LLMClient
 from app.session.session_schema import RouterDecision

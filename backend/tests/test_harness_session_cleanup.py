@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.chat import delete_chat_session
-from app.core.harness_session_cleanup import (
+from app.core.engine.session.cleanup import (
     harness_path_segment,
     harness_session_workspace_path,
     remove_harness_session_workspace,

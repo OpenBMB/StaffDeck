@@ -21,7 +21,7 @@ from app.api.sessions import (
     list_sessions,
     reset_session,
 )
-from app.core.task_frame_store import TaskFrameStore
+from app.core.engine.frames import TaskFrameStore
 from app.db.models import (
     AgentEvent,
     AgentProfile,

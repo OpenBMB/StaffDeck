@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from app.config import get_settings
-from app.core.turn_planner import TurnPlanner, _fast_path_plan
+from app.core.plan.planner import TurnPlanner, _fast_path_plan
 from app.db.models import ChatSession, Skill
 
 

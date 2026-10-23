@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.core.invoice_amount import parse_invoice_uploads  # noqa: E402
+from app.core.artifacts.invoice import parse_invoice_uploads  # noqa: E402
 
 
 def _load_config() -> dict:

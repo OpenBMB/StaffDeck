@@ -1,4 +1,4 @@
-from app.core.agent_loop import AgentLoop
+from app.core.engine.facade import AgentLoop
 
 __all__ = ["AgentLoop"]
 

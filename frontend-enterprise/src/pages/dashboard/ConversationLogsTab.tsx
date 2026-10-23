@@ -1112,8 +1112,8 @@ function formatDuration(durationMs: number): string {
   return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
+/** 会话来源徽标：渠道功能已移除，这里只剩站内来源（web / public_api / scheduled_task / team 等）。 */
 function ChannelBadge({ channel }: { channel?: string | null }) {
-  if (channel === 'wechat') return <StatusBadge tone="green">微信</StatusBadge>;
   if (channel) return <StatusBadge tone="blue">{channel}</StatusBadge>;
   return <StatusBadge tone="gray">网页</StatusBadge>;
 }

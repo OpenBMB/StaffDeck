@@ -6,11 +6,11 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.core.harness_session_lease import (
+from app.core.engine.session.lease import (
     HarnessSessionLeaseLost,
     HarnessSessionLeaseStore,
 )
-from app.core.harness_session_lock import HarnessSessionBusy
+from app.core.engine.session.lock import HarnessSessionBusy
 from app.db.models import (
     ChatSession,
     HarnessSessionLeaseRecord,
