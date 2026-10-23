@@ -1,8 +1,11 @@
 """数字员工分享链接。
 
 站内用户创建分享链接（锁定模型 + 有效期），访客凭 URL 免登录打开对话窗；
-访客身份落成一条真实的 `users` 行（`source="share"`，不会出现在用户管理列表里），
-因此会话隔离直接复用现有的 `sessions.user_id` 过滤，无需改动会话查询逻辑。
+访客身份落成一条真实的 `users` 行（`source="share"`），因此会话隔离直接复用
+现有的 `sessions.user_id` 过滤，无需改动会话查询逻辑。
+
+访客账号不是租户成员：`GET /api/auth/users` 默认按 `source == "web"` 过滤，
+访客不会混进用户管理列表与处理人选择器（常量见 app.security.permissions）。
 """
 
 from __future__ import annotations
@@ -26,7 +29,11 @@ from app.db.models import (
     utc_now,
 )
 from app.security.auth import create_share_access_token, get_current_user
-from app.security.permissions import agent_owned_by_user, is_admin_user
+from app.security.permissions import (
+    SHARE_GUEST_SOURCE,
+    agent_owned_by_user,
+    is_admin_user,
+)
 from app.security.tenant import ensure_tenant
 
 router = APIRouter(prefix="/api/agent-shares", tags=["agent-shares"])
@@ -40,9 +47,6 @@ SHARE_TTL_OPTIONS: dict[str, timedelta | None] = {
 }
 
 ShareTtl = Literal["30m", "2h", "forever"]
-
-# 访客账号的 source 标记：用户管理列表只查 source == "web"，因此访客不会混进去
-SHARE_GUEST_SOURCE = "share"
 
 
 class AgentShareCreateRequest(BaseModel):
