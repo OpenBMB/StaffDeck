@@ -11,6 +11,13 @@ ADMIN_ROLE = "admin"
 MEMBER_ROLE = "member"
 USER_ROLES = {ADMIN_ROLE, MEMBER_ROLE}
 
+# 账号来源标记（users.source）：
+#   web   = 网页端注册/管理员创建的租户真实成员（含域账号登录同步）
+#   share = 分享链接免登录访客，首次打开链接时懒建，不是租户成员
+USER_SOURCE_WEB = "web"
+SHARE_GUEST_SOURCE = "share"
+GUEST_USER_SOURCES = frozenset({SHARE_GUEST_SOURCE})
+
 
 def is_admin_user(current_user: User) -> bool:
     return current_user.role == ADMIN_ROLE

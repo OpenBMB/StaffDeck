@@ -3,7 +3,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { listAgentCatalog } from '@/lib/agentCatalog';
 import { NewsPanel, QuickAccessTiles } from './PlazaWidgets';
+
+//: 默认磁贴 = 清单里全部在线 Agent 应用；数量随清单变化，不能写死
+//: （新增一个 Agent 就让 5/6 这类断言全崩，改一次清单要改三处测试）。
+const CATALOG_APP_COUNT = listAgentCatalog(true).length;
 
 // 组件内通过 api client 拉新闻与数字员工候选——测试里 mock 掉，不真发请求。
 const apiGet = vi.fn();
@@ -81,14 +86,14 @@ describe('PlazaWidgets（「全部」tab 右列组件）', () => {
     // 编辑模式出现重置/取消/保存按钮和每个磁贴的删除按钮
     expect(screen.getByText('保存')).toBeTruthy();
     const delButtons = screen.getAllByLabelText(/移除/);
-    expect(delButtons.length).toBe(5);
+    expect(delButtons.length).toBe(CATALOG_APP_COUNT);
     fireEvent.click(delButtons[0]);
-    expect(screen.getAllByLabelText(/移除/)).toHaveLength(4);
+    expect(screen.getAllByLabelText(/移除/)).toHaveLength(CATALOG_APP_COUNT - 1);
 
     fireEvent.click(screen.getByText('保存'));
     expect(screen.queryByText('保存')).toBeNull();
     const stored = JSON.parse(window.localStorage.getItem('ultrarag_plaza_home_layout_v1') || 'null');
-    expect(stored.chips).toHaveLength(4);
+    expect(stored.chips).toHaveLength(CATALOG_APP_COUNT - 1);
     // 保存后回到只读：删除按钮消失
     expect(screen.queryAllByLabelText(/移除/)).toHaveLength(0);
   });
@@ -115,7 +120,7 @@ describe('PlazaWidgets（「全部」tab 右列组件）', () => {
 
     // 关键：浏览态没有「保存」按钮，添加即写 localStorage（此前只改 state，刷新即丢）
     const stored = JSON.parse(window.localStorage.getItem('ultrarag_plaza_home_layout_v1') || 'null');
-    expect(stored?.chips).toHaveLength(6);
+    expect(stored?.chips).toHaveLength(CATALOG_APP_COUNT + 1);
     expect(stored.chips.some((chip: { kind: string; agentId?: string }) =>
       chip.kind === 'employee' && chip.agentId === 'agent_sales')).toBe(true);
     expect(screen.getAllByText('销售助手').length).toBeGreaterThan(0);
@@ -139,6 +144,6 @@ describe('PlazaWidgets（「全部」tab 右列组件）', () => {
 
     fireEvent.click(screen.getByText('保存'));
     const stored = JSON.parse(window.localStorage.getItem('ultrarag_plaza_home_layout_v1') || 'null');
-    expect(stored?.chips).toHaveLength(6);
+    expect(stored?.chips).toHaveLength(CATALOG_APP_COUNT + 1);
   });
 });

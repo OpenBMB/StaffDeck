@@ -43,7 +43,8 @@ class User(SQLModel, table=True):
     # 部门保护标记:在产品里被手动改过(本人或管理员)后,域登录不再覆盖部门
     department_manual: bool = Field(default=False)
     role: str = Field(default="member", index=True)
-    # 账号来源:web=网页端创建;wechat 等=渠道懒建(用户管理列表默认隐藏)
+    # 账号来源:web=网页端创建;share=分享链接免登录访客;其余(如 wechat)=渠道懒建
+    # 访客与渠道懒建账号不是租户成员,用户管理列表默认隐藏
     source: str = Field(default="web", index=True)
     # 邮箱:本地注册可为空;域账号登录时由 AD 的 mail 属性同步
     email: Optional[str] = Field(default=None, index=True)

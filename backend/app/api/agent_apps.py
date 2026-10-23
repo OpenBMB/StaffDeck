@@ -13,6 +13,10 @@ Agent 广场里的 Agent（清单由前端 `src/data/agent-catalog.json` 管理�
   对话式修改（错别字/归纳总结/润色），导出时在原文档上做段落级文本替换（保留原格式）。
   核心逻辑在 `app.core.artifacts.doc_review`。
 
+- ``ocr`` —— OCR 助手。把 PDF / 图片转成 Markdown、纯文本或带行坐标与版面块的结构化
+  JSON，上游是 Indra OCR 服务（契约见仓库根目录 `indra.md`）。**不消耗模型额度**，
+  也不需要用户配置模型：识别完全在 OCR 服务里完成，这里只做代理与归一化。
+
 模型归属是本模块的硬约束：生成必须使用**当前用户自己**在「模型配置」里配置并启用的模型，
 缺省不回落租户/管理员的默认模型（与 `model_for_agent` 的宽松策略不同），否则同一个 Agent 会
 用别人的额度出内容。
@@ -43,6 +47,12 @@ from app.core.artifacts.doc_review import (
     sanitize_issues,
     store_document,
 )
+from app.core.artifacts.ocr import (
+    ALLOWED_FORMATS,
+    OcrError,
+    OcrOptions,
+    run_ocr,
+)
 from app.core.artifacts.slides import (
     SLIDES_OPERATION,
     SlidesDeck,
@@ -51,6 +61,7 @@ from app.core.artifacts.slides import (
     finalize_deck,
     sanitize_pages,
 )
+from app.config import get_settings
 from app.db import get_session
 from app.db.models import ModelConfig, User
 from app.llm import LLMClient, LLMError
@@ -432,3 +443,117 @@ def export_doc(request: DocExportRequest, db: Session = Depends(get_session), cu
             "X-Doc-Changed": str(changed),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# OCR 助手（capability: ``ocr``）
+# ---------------------------------------------------------------------------
+#
+# 与前面几个能力不同，这里**不解析模型**：识别在 Indra OCR 服务里完成，
+# 既不需要 model_config_id，也不消耗大模型额度。没有配置模型的成员同样可以用。
+
+
+@router.get("/ocr:status")
+def ocr_status(current_user: User = Depends(get_current_user)) -> dict:
+    """前端用来在上传前判断服务是否可用，避免「传完才发现没配置」。
+
+    只回配置状态，不回上游地址（内网地址不该出现在前端产物里）。
+    """
+
+    settings = get_settings()
+    return {
+        "configured": bool((settings.indra_ocr_base_url or "").strip()),
+        "formats": list(ALLOWED_FORMATS),
+        "max_files": settings.indra_ocr_max_files,
+        "max_file_mb": settings.indra_ocr_max_file_mb,
+    }
+
+
+def _ocr_http_error(exc: OcrError) -> HTTPException:
+    """把 OcrError 翻译成对用户有意义的状态码。
+
+    上游 4xx（密钥错、文件损坏、密码错）原样保留 400/502 语义，让用户知道
+    「是你这个文件的问题」还是「服务的问题」。
+    """
+
+    if exc.kind == "payload":
+        return HTTPException(status_code=400, detail=str(exc))
+    if exc.kind == "config":
+        return HTTPException(status_code=503, detail=str(exc))
+    if exc.kind == "timeout":
+        return HTTPException(status_code=504, detail=str(exc))
+    if exc.kind == "http" and exc.status and 400 <= exc.status < 500:
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=502, detail=str(exc))
+
+
+@router.post("/ocr:run")
+def ocr_run(
+    tenant_id: str = Form(...),
+    files: list[UploadFile] = File(...),
+    format: str = Form("json"),
+    mode: str = Form(""),
+    dpi: int | None = Form(None),
+    max_pages: int | None = Form(None),
+    password: str = Form(""),
+    math: bool | None = Form(None),
+    furniture: bool | None = Form(None),
+    image_ocr: bool | None = Form(None),
+    include_lines: bool | None = Form(None),
+    include_blocks: bool | None = Form(None),
+    include_timings: bool | None = Form(None),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """上传 PDF / 图片做 OCR，返回按页的 markdown、纯文本与（可选）行坐标/版面块。
+
+    参数名与 indra.md 的 `/v1/ocr` 完全一致；布尔项传 ``None`` 时不透传，
+    由上游用默认值（``include_lines`` / ``include_blocks`` 默认 true）。
+    """
+
+    ensure_tenant(db, tenant_id)
+
+    if dpi is not None and not 72 <= dpi <= 600:
+        raise HTTPException(status_code=400, detail="dpi 需在 72~600 之间")
+    if max_pages is not None and not 1 <= max_pages <= 2000:
+        raise HTTPException(status_code=400, detail="max_pages 需在 1~2000 之间")
+
+    # 先按 UploadFile.size 挡掉超大文件，再读进内存：10 个 50MB 全读进来是 500MB，
+    # 没必要为了给用户报一句「文件太大」先把内存占满。
+    settings = get_settings()
+    max_bytes = max(1, settings.indra_ocr_max_file_mb) * 1024 * 1024
+    if len(files) > settings.indra_ocr_max_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"单次最多识别 {settings.indra_ocr_max_files} 个文件，当前 {len(files)} 个",
+        )
+    for upload in files:
+        if upload.size and upload.size > max_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"文件「{upload.filename or 'upload'}」超过 {settings.indra_ocr_max_file_mb}MB 上限",
+            )
+
+    payload: list[tuple[str, bytes, str]] = []
+    for upload in files:
+        raw = upload.file.read()
+        payload.append((upload.filename or "upload", raw, upload.content_type or ""))
+
+    options = OcrOptions(
+        format=format,
+        mode=(mode or "").strip(),
+        dpi=dpi,
+        max_pages=max_pages,
+        password=(password or "").strip(),
+        math=math,
+        furniture=furniture,
+        image_ocr=image_ocr,
+        include_lines=include_lines,
+        include_blocks=include_blocks,
+        include_timings=include_timings,
+    )
+
+    try:
+        return run_ocr(payload, options)
+    except OcrError as exc:
+        raise _ocr_http_error(exc) from exc

@@ -368,3 +368,47 @@ def test_ensure_tenant_missing_raises() -> None:
     with Session(engine) as db:
         with pytest.raises(HTTPException):
             ensure_tenant(db, "tenant_demo")
+
+
+def test_user_list_hides_share_guests() -> None:
+    """分享访客（source=share）不是租户成员，不能出现在用户管理列表/处理人选择器里。"""
+    from app.api.auth import list_users
+
+    engine = _test_engine()
+    _seed(engine)
+    share = _create(engine)
+    with Session(engine) as db:
+        open_agent_share_session(share.token, AgentShareVisitorSessionRequest(), db)
+        db.add(
+            User(
+                id="user_admin",
+                tenant_id="tenant_demo",
+                username="admin",
+                role="admin",
+                password_hash="",
+            )
+        )
+        db.commit()
+
+    # 管理员：默认看不到访客
+    with Session(engine) as db:
+        admin = db.get(User, "user_admin")
+        names = [row.username for row in list_users("tenant_demo", current_user=admin, db=db)]
+    assert {"owner", "other", "admin"} <= set(names)
+    assert not any(name.startswith("share_guest_") for name in names)
+
+    # 管理员显式打开 include_guests 才看得到（供排查用）
+    with Session(engine) as db:
+        admin = db.get(User, "user_admin")
+        rows = list_users("tenant_demo", include_guests=True, current_user=admin, db=db)
+    guests = [row for row in rows if row.username.startswith("share_guest_")]
+    assert len(guests) == 1
+    assert guests[0].source == "share"
+
+    # 普通成员即使传 include_guests 也拿不到访客
+    with Session(engine) as db:
+        member = db.get(User, "user_owner")
+        rows = list_users(
+            "tenant_demo", include_guests=True, current_user=member, db=db
+        )
+    assert not any(row.username.startswith("share_guest_") for row in rows)

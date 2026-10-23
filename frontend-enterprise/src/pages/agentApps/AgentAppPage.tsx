@@ -9,6 +9,7 @@ import DecisionAssistantPage from '@/pages/decision/DecisionAssistantPage';
 
 import DocReviewWorkspace from './DocReviewWorkspace';
 import OaAssistantPage from './OaAssistantPage';
+import OcrWorkspace from './OcrWorkspace';
 import SlidesMakerWorkspace from './SlidesMakerWorkspace';
 
 /** adminOnly Agent 的深链回退地址（与返回按钮一致）。 */
@@ -44,6 +45,11 @@ export default function AgentAppPage({ currentUser, onLogout }: AgentAppPageProp
   // AI 文档审阅：上传 docx → 一键审阅 / 对话修改 → 导出保留原格式的 Word。
   if (entry && entry.capability === 'doc-review') {
     return <DocReviewWorkspace entry={entry} currentUser={currentUser} onLogout={onLogout} />;
+  }
+
+  // OCR 助手：PDF / 图片 → Markdown / 纯文本 / 带行坐标的结构化结果。不走模型。
+  if (entry && entry.capability === 'ocr') {
+    return <OcrWorkspace entry={entry} currentUser={currentUser} onLogout={onLogout} />;
   }
 
   // 决策助手：原独立页面整体搬进 Agent 广场，渲染外壳已与 PPT Studio 统一（页头 + 返回按钮 + 定高工作卡）。

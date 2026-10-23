@@ -24,7 +24,12 @@ from app.security.auth import (
     invalidate_user_cache,
     verify_password,
 )
-from app.security.permissions import MEMBER_ROLE, is_admin_user
+from app.security.permissions import (
+    GUEST_USER_SOURCES,
+    MEMBER_ROLE,
+    USER_SOURCE_WEB,
+    is_admin_user,
+)
 from app.security.tenant import ensure_tenant
 
 logger = logging.getLogger(__name__)
@@ -304,6 +309,10 @@ def delete_my_avatar(
 @router.get("/users", response_model=list[UserRead])
 def list_users(
     tenant_id: str = Query(...),
+    include_guests: bool = Query(
+        False,
+        description="仅管理员可用的调试开关：把分享访客（source=share）也列出来，默认隐藏",
+    ),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> list[UserRead]:
@@ -311,6 +320,12 @@ def list_users(
     statement = select(User).where(User.tenant_id == tenant_id)
     # 非管理员只需要为处理人选择器读取内部成员。不能依赖前端过滤，否则会
     # 把外部来源账号暴露给任意租户成员。
+    # 管理员看到全量成员，但分享链接懒建的访客（source=share）不是租户成员，默认隐藏。
+    # `is True` 而非真值判断：直接调用（单测/内部复用）时默认值是 FastAPI 的 Query 对象。
+    if not is_admin_user(current_user):
+        statement = statement.where(User.source == USER_SOURCE_WEB)
+    elif include_guests is not True:
+        statement = statement.where(User.source.notin_(GUEST_USER_SOURCES))
     if not is_admin_user(current_user):
         statement = statement.where(User.source == "web")
     rows = db.exec(statement.order_by(User.created_at.desc())).all()
