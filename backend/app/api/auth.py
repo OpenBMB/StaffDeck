@@ -326,6 +326,8 @@ def list_users(
         statement = statement.where(User.source == USER_SOURCE_WEB)
     elif include_guests is not True:
         statement = statement.where(User.source.notin_(GUEST_USER_SOURCES))
+    if not is_admin_user(current_user):
+        statement = statement.where(User.source == "web")
     rows = db.exec(statement.order_by(User.created_at.desc())).all()
     return [_user_read(row) for row in rows]
 
