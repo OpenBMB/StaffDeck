@@ -15,7 +15,6 @@ from app.agents.branching import (
 )
 from app.agents.free_model import resolve_turn_default_model
 from app.agents.usage import bump_agent_usage
-from app.channels.service_outbox import stage_channel_delivery
 from app.chat_pubsub import publish_relay_wake
 from app.core.converse.identity import AgentIdentityPrompt
 from app.core.base.cancellation import clear_chat_turn_cancelled
@@ -45,7 +44,6 @@ from app.core.engine.finalizer import TurnFinalizer
 from app.core.base.ui_flags import knowledge_citations_hidden
 from app.db.models import (
     AgentProfile,
-    ChannelBinding,
     ChatSession,
     HarnessTurnRecord,
     HumanHandoffRequest,
@@ -907,9 +905,8 @@ class AgentLoop:
     ) -> HumanHandoffRequest:
         # SOP 节点指定的处理人:从当前 step 的 assignee_user_id 字段读取
         # (handoff 类型节点或 allowed_actions 含 handoff_human 的节点可配置)。
-        # assignee_notify_channel 指定投递渠道:None=默认;"web"=仅网页端;绑定渠道=按渠道转接。
+        # 渠道功能已移除,通知统一走网页收件箱。
         step_assignee_user_id: str | None = None
-        step_notify_channel: str | None = None
         current_step = (
             self._current_skill_step(active_skill, chat_session.active_step_id)
             if active_skill
@@ -919,14 +916,7 @@ class AgentLoop:
             step_assignee_user_id = (
                 str(current_step.get("assignee_user_id") or "").strip() or None
             )
-            step_notify_channel = (
-                str(current_step.get("assignee_notify_channel") or "").strip() or None
-            )
-        # 当前渠道默认处理人:从会话所属 binding 的 config_json 读取。
-        binding_default_assignee_user_id, binding_default_notify_channel = (
-            self._binding_default_handoff_assignee(tenant_id, chat_session)
-        )
-        handoff = HumanHandoffService(self.db, self.events).create(
+        return HumanHandoffService(self.db, self.events).create(
             tenant_id,
             chat_session,
             step_result,
@@ -935,103 +925,6 @@ class AgentLoop:
             context_summary=self._human_handoff_context_summary,
             pending_question=self._human_handoff_pending_question,
             step_assignee_user_id=step_assignee_user_id,
-            binding_default_assignee_user_id=binding_default_assignee_user_id,
-            step_notify_channel=step_notify_channel,
-            binding_default_notify_channel=binding_default_notify_channel,
-        )
-        # 给 assignee 发渠道私聊通知。失败仅记日志,不影响 handoff 主流程
-        # (网页收件箱仍可兜底)。
-        self._maybe_notify_handoff_assignee(tenant_id, chat_session, handoff)
-        return handoff
-
-    def _binding_default_handoff_assignee(
-        self,
-        tenant_id: str,
-        chat_session: ChatSession,
-    ) -> tuple[str | None, str | None]:
-        """会话所属渠道绑定配置的默认人工处理人及其通知渠道。
-
-        从 ChatSession.channel_binding_id 反查 binding(而非 agent 挂载列表取首个),
-        读取 config_json.default_handoff_assignee_user_id 与
-        default_handoff_assignee_channel。无 binding 或未配置返回 (None, None)。
-        """
-        if not chat_session.channel_binding_id:
-            return None, None
-        binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
-        if not binding or binding.tenant_id != tenant_id:
-            return None, None
-        config = binding.config_json if isinstance(binding.config_json, dict) else {}
-        value = str(config.get("default_handoff_assignee_user_id") or "").strip()
-        if not value:
-            return None, None
-        channel = str(config.get("default_handoff_assignee_channel") or "").strip()
-        return value, (channel or None)
-
-    def _maybe_notify_handoff_assignee(
-        self,
-        tenant_id: str,
-        chat_session: ChatSession,
-        handoff: HumanHandoffRequest,
-    ) -> None:
-        """按通知渠道偏好解析投递 binding,给 assignee 登记渠道私聊通知。
-
-        绑定解析规则:
-        - 偏好为具体渠道时:优先会话所属 binding(渠道匹配且 active);
-          会话无 binding 或渠道不匹配时,在租户内找该渠道的任一 active 员工绑定。
-        - 偏好为 None(默认)时:用会话所属 binding(渠道支持私聊通知即可达)。
-        - 偏好为 "web" 时:仅网页收件箱,直接返回。
-
-        无可用 binding(含日志说明)或 assignee 在该 binding scope 无非群聊身份时,
-        由 notify_handoff_assignee 内部跳过,网页收件箱兜底。
-        """
-        from app.channels.service_outbox import (
-            HANDOFF_NOTIFY_CHANNELS,
-            notify_handoff_assignee,
-            resolve_handoff_notify_binding,
-        )
-
-        metadata = handoff.metadata_json if isinstance(handoff.metadata_json, dict) else {}
-        notify_channel = str(metadata.get("assignee_notify_channel") or "").strip()
-        if notify_channel == "web":
-            return
-        binding: ChannelBinding | None = None
-        if notify_channel:
-            # 指定渠道:优先会话所属 binding,渠道不匹配时回退租户内该渠道任一 binding。
-            if chat_session.channel_binding_id:
-                session_binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
-                if (
-                    session_binding
-                    and session_binding.tenant_id == tenant_id
-                    and session_binding.channel == notify_channel
-                    and session_binding.status == "active"
-                ):
-                    binding = session_binding
-            binding = binding or resolve_handoff_notify_binding(self.db, tenant_id, notify_channel)
-            if binding is None:
-                logger.warning(
-                    "handoff 通知跳过:租户无可用的 %s 绑定 handoff=%s", notify_channel, handoff.id
-                )
-                return
-        else:
-            # 默认投递:用会话所属 binding,渠道支持私聊通知即可达。
-            if not chat_session.channel_binding_id:
-                return
-            session_binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
-            if (
-                not session_binding
-                or session_binding.tenant_id != tenant_id
-                or session_binding.status != "active"
-            ):
-                return
-            if session_binding.channel not in HANDOFF_NOTIFY_CHANNELS:
-                return
-            binding = session_binding
-        notify_handoff_assignee(
-            self.db,
-            binding,
-            handoff,
-            handoff.pending_question or "",
-            handoff.context_summary or "",
         )
 
     def _apply_step_result(
@@ -1863,7 +1756,6 @@ class AgentLoop:
             reply,
             metadata=assistant_metadata,
         )
-        stage_channel_delivery(self.db, chat_session, assistant_message)
         event_payload: dict[str, Any] = {
             "message_id": assistant_message.id,
             "assistant_message_id": assistant_message.id,

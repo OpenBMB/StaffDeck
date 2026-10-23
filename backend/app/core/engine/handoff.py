@@ -33,9 +33,6 @@ class HumanHandoffService:
         context_summary: Callable[[ChatSession], str],
         pending_question: Callable[[dict[str, Any] | None, StepAgentResult], str],
         step_assignee_user_id: str | None = None,
-        binding_default_assignee_user_id: str | None = None,
-        step_notify_channel: str | None = None,
-        binding_default_notify_channel: str | None = None,
     ) -> HumanHandoffRequest:
         existing = self.db.exec(
             select(HumanHandoffRequest)
@@ -55,27 +52,16 @@ class HumanHandoffService:
 
         current_step = current_step_resolver()
         pending_question_text = pending_question(current_step, step_result)
-        # Assignee 优先级:SOP 节点指定 → 当前渠道默认处理人 → 数字员工负责人 → 租户管理员。
+        # Assignee 优先级:SOP 节点指定 → 数字员工负责人 → 租户管理员。
         # 不再从知识库 Contact 概念推断 assignee(知识内容变化会导致处理人不稳定,
         # 且缺少权限/审计入口)。
-        # 通知渠道随命中的配置走:None=默认投递;"web"=仅网页端;绑定渠道=按该渠道转接。
-        configured = next(
-            (
-                (user_id, notify_channel)
-                for user_id, notify_channel in (
-                    (step_assignee_user_id, step_notify_channel),
-                    (binding_default_assignee_user_id, binding_default_notify_channel),
-                )
-                if self._is_internal_assignee(tenant_id, user_id)
-            ),
-            None,
+        # 渠道功能已移除,通知一律走网页收件箱,因此 notify_channel 恒为 "web"。
+        configured_assignee = (
+            step_assignee_user_id
+            if self._is_internal_assignee(tenant_id, step_assignee_user_id)
+            else None
         )
-        if configured:
-            configured_assignee = configured[0]
-            assignee_notify_channel = str(configured[1] or "").strip() or None
-        else:
-            configured_assignee = None
-            assignee_notify_channel = None
+        assignee_notify_channel = "web" if configured_assignee else None
         assignee_user_id = configured_assignee or assignee_resolver(
             tenant_id, chat_session.agent_id, chat_session.user_id
         )

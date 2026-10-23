@@ -15,7 +15,6 @@ from app.api import (
     api_key_applications,
     app_updates,
     auth,
-    channels,
     chat,
     evolution,
     feedback,
@@ -43,7 +42,6 @@ from app.api import (
     ui_config,
 )
 from app.async_jobs import shutdown_async_jobs, start_async_jobs
-from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
 from app.core.engine.recovery import (
     recover_orphan_harness_runs,
@@ -135,7 +133,6 @@ def on_startup() -> None:
         recover_a2a_client_tasks()
         if settings.scheduler_backend != "rq":
             start_background_worker()
-        start_channel_services()
         start_timeout_sweeper()
         start_harness_recovery_sweeper()
         # Internal durable jobs (for example feedback analysis) use the same
@@ -155,7 +152,6 @@ def on_shutdown() -> None:
     try:
         stop_codex_a2a_tasks()
         stop_public_api_maintenance()
-        stop_channel_services()
         stop_background_worker()
         stop_timeout_sweeper()
         stop_harness_recovery_sweeper()
@@ -200,7 +196,6 @@ app.include_router(scheduled_tasks.chat_router)
 app.include_router(scheduled_tasks.chat_draft_router)
 app.include_router(scheduled_task_monitor.enterprise_router)
 app.include_router(ui_config.enterprise_router)
-app.include_router(channels.router)
 app.include_router(teams.router)
 app.include_router(teams.threads_router)
 app.include_router(tools.router)

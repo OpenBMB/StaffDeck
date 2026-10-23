@@ -494,41 +494,24 @@ const DEFAULT_DISTILL_MESSAGES: ChatItem[] = [
   },
 ];
 const DISTILL_REWRITE_MODEL_STORAGE_KEY = 'skill-distill-rewrite-model';
-const _CHANNEL_LABELS: Record<string, string> = { dingtalk: '钉钉', wecom: '企业微信', wechat: '微信', web: '网页端' };
 const UNASSIGNED_USER_VALUE = '__unassigned__';
-// 渠道转接通知运行时已支持企微私聊,处理人选项提供对应渠道标注
-// (后端同样拒绝其他渠道)。钉钉/微信适配器只能回会话内消息,不在此列。
-const HANDOFF_NOTIFY_CHANNELS = new Set(['wecom']);
 
 type HandoffAssigneeUser = {
   id: string;
   username: string;
   display_name?: string;
   source?: string;
-  channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }>;
 };
 
 export function handoffAssigneeUserOptions(tenantUsers: HandoffAssigneeUser[]): SelectOption[] {
-  // 内部成员一律可选(网页端投递);已绑定支持渠道身份的成员追加"姓名（渠道）"选项,
-  // 选中后运行时按该渠道转接。其他渠道身份不生成选项(通知未实现),
-  // 渠道懒建账号(渠道客户/群聊)也不进入处理人选项。
-  const options: SelectOption[] = [];
-  tenantUsers.filter((user) => !user.source || user.source === 'web').forEach((user) => {
-    const name = user.display_name || user.username || user.id;
-    options.push({ value: user.id, label: `${name}（${_CHANNEL_LABELS.web}）` });
-    const channels = new Set<string>();
-    (user.channel_identities || []).forEach((identity) => {
-      const channel = String(identity.channel || '').trim();
-      if (channel && HANDOFF_NOTIFY_CHANNELS.has(channel)) channels.add(channel);
-    });
-    channels.forEach((channel) => {
-      options.push({
-        value: `${user.id}::${channel}`,
-        label: `${name}（${_CHANNEL_LABELS[channel] || channel}）`,
-      });
-    });
-  });
-  return options;
+  // 渠道功能已移除：处理人只支持网页收件箱投递，因此每个内部成员只有一个选项。
+  // 渠道懒建账号（source 非 web）不进入处理人列表。
+  return tenantUsers
+    .filter((user) => !user.source || user.source === 'web')
+    .map((user) => ({
+      value: user.id,
+      label: `${user.display_name || user.username || user.id}（网页端）`,
+    }));
 }
 
 type DistillCacheSnapshot = {
@@ -660,7 +643,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   const [generalSkills, setGeneralSkills] = useState<GeneralSkillRead[]>([]);
   const [sopSkills, setSopSkills] = useState<SkillRead[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
-  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string; external_account_scope?: string }> }>>([]);
+  const [tenantUsers, setTenantUsers] = useState<Array<{ id: string; username: string; display_name?: string; source?: string }>>([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
   const [selectedRewriteModelId, setSelectedRewriteModelId] = useState(
     () => window.localStorage.getItem(`${DISTILL_REWRITE_MODEL_STORAGE_KEY}:${TENANT_ID}`) || '',
@@ -903,8 +886,8 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
 
   useEffect(() => {
     api
-      .get<Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>>(
-        `/api/auth/users?tenant_id=${TENANT_ID}&include_channel=true`,
+      .get<Array<{ id: string; username: string; display_name?: string; source?: string }>>(
+        `/api/auth/users?tenant_id=${TENANT_ID}`,
       )
       .then(setTenantUsers)
       .catch(() => setTenantUsers([]));
@@ -3257,7 +3240,7 @@ function SkillSource({
   sopSkills: SkillRead[];
   tools: ToolRead[];
   knowledgeBases: KnowledgeBaseRead[];
-  tenantUsers: Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>;
+  tenantUsers: Array<{ id: string; username: string; display_name?: string; source?: string }>;
   containerRef: RefObject<HTMLDivElement>;
   lockSkillId?: boolean;
   onToggle: (target: TargetSelection) => void;
@@ -3763,10 +3746,7 @@ function SkillSource({
                         label="处理人"
                         value={
                           step.assignee_user_id
-                            ? formatHandoffAssigneeValue(
-                              String(step.assignee_user_id),
-                              String(step.assignee_notify_channel || ''),
-                            )
+                            ? formatHandoffAssigneeValue(String(step.assignee_user_id))
                             : UNASSIGNED_USER_VALUE
                         }
                         options={tenantUserOptions}
@@ -3843,7 +3823,7 @@ function SkillFlow({
   sopSkills: SkillRead[];
   tools: ToolRead[];
   knowledgeBases: KnowledgeBaseRead[];
-  tenantUsers: Array<{ id: string; username: string; display_name?: string; source?: string; channel_identities?: Array<{ channel: string; display_name?: string; external_user_id?: string }> }>;
+  tenantUsers: Array<{ id: string; username: string; display_name?: string; source?: string }>;
   containerRef: RefObject<HTMLDivElement>;
   lockSkillId?: boolean;
   assistantPanelOpen: boolean;
@@ -5056,10 +5036,7 @@ function SkillFlowInspector({
                 label="处理人"
                 value={
                   node.assignee_user_id
-                    ? formatHandoffAssigneeValue(
-                      String(node.assignee_user_id),
-                      String(node.assignee_notify_channel || ''),
-                    )
+                    ? formatHandoffAssigneeValue(String(node.assignee_user_id))
                     : UNASSIGNED_USER_VALUE
                 }
                 options={tenantUserOptions}

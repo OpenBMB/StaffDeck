@@ -56,13 +56,6 @@ class UpdateProfileRequest(BaseModel):
     department: Optional[str] = Field(None, max_length=80)
 
 
-class UserChannelIdentity(BaseModel):
-    channel: str
-    display_name: Optional[str] = None
-    external_user_id: Optional[str] = None
-    external_account_scope: Optional[str] = None
-
-
 class UserRead(BaseModel):
     id: str
     tenant_id: str
@@ -80,8 +73,6 @@ class UserRead(BaseModel):
     avatar_url: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-    # 渠道身份信息(仅 include_channel=True 时返回)
-    channel_identities: Optional[list[UserChannelIdentity]] = None
 
 
 class AvatarRead(BaseModel):
@@ -313,54 +304,16 @@ def delete_my_avatar(
 @router.get("/users", response_model=list[UserRead])
 def list_users(
     tenant_id: str = Query(...),
-    include_channel: bool = Query(False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> list[UserRead]:
     ensure_current_user_tenant(tenant_id, current_user)
     statement = select(User).where(User.tenant_id == tenant_id)
-    # 非管理员只需要为处理人选择器读取内部成员。不能依赖前端过滤，否则
-    # include_channel=true 会把渠道客户及群聊虚拟账号暴露给任意租户成员。
-    if not is_admin_user(current_user) or not include_channel:
+    # 非管理员只需要为处理人选择器读取内部成员。不能依赖前端过滤，否则会
+    # 把外部来源账号暴露给任意租户成员。
+    if not is_admin_user(current_user):
         statement = statement.where(User.source == "web")
     rows = db.exec(statement.order_by(User.created_at.desc())).all()
-    if include_channel:
-        # 附带内部成员已绑定的渠道身份，供处理人选择器判断当前 binding 是否可达。
-        from app.db.models import ChannelIdentity
-
-        all_identities: dict[str, list[ChannelIdentity]] = {}
-        user_ids = [row.id for row in rows]
-        identities = (
-            db.exec(
-                select(ChannelIdentity).where(
-                    ChannelIdentity.tenant_id == tenant_id,
-                    ChannelIdentity.staffdeck_user_id.in_(user_ids),
-                    ~ChannelIdentity.external_user_id.startswith("group:"),
-                )
-            ).all()
-            if user_ids
-            else []
-        )
-        for ci in identities:
-            all_identities.setdefault(ci.staffdeck_user_id, []).append(ci)
-        result = []
-        for row in rows:
-            cis = all_identities.get(row.id)
-            identities = (
-                [
-                    UserChannelIdentity(
-                        channel=ci.channel,
-                        display_name=ci.display_name,
-                        external_user_id=ci.external_user_id,
-                        external_account_scope=ci.external_account_scope,
-                    )
-                    for ci in cis
-                ]
-                if cis
-                else None
-            )
-            result.append(_user_read(row, channel_identities=identities))
-        return result
     return [_user_read(row) for row in rows]
 
 
@@ -561,7 +514,6 @@ def delete_user(
 def _user_read(
     user: User,
     avatar_url: Optional[str] = None,
-    channel_identities: Optional[list[UserChannelIdentity]] = None,
 ) -> UserRead:
     return UserRead(
         id=user.id,
@@ -577,7 +529,6 @@ def _user_read(
         avatar_url=avatar_url,
         created_at=user.created_at.isoformat() if user.created_at else None,
         updated_at=user.updated_at.isoformat() if user.updated_at else None,
-        channel_identities=channel_identities,
     )
 
 

@@ -11,7 +11,6 @@ export enum EnterpriseRoute {
   ScheduledTasks = '/enterprise/scheduled-tasks',
   Memories = '/enterprise/memories',
   Feedback = '/enterprise/feedback',
-  Channels = '/enterprise/channels',
   Knowledge = '/enterprise/knowledge',
   GeneralSkills = '/enterprise/general-skills',
   Skills = '/enterprise/skills',

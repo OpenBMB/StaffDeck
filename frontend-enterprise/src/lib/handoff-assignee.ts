@@ -1,35 +1,20 @@
-const HANDOFF_ASSIGNEE_SEPARATOR = '::';
-
 /**
- * 处理人下拉框取值规则:
- * - 空串表示未配置/未指定;
- * - 纯 user_id 表示网页端投递;
- * - `${user_id}::${channel}` 表示按成员已绑定的渠道身份投递(如飞书)。
+ * 处理人下拉框取值规则：
+ * - 空串表示未配置/未指定；
+ * - 纯 user_id 表示网页端投递。
+ *
+ * 渠道功能已整体移除，本模块不再编码 `user_id::channel`。历史 SOP 里残留的
+ * 复合值在解析时按 `::` 截断取 user_id，`channel` 恒为 'web'，避免旧草稿在
+ * 编辑器里显示成不存在的处理人。
  */
-export function formatHandoffAssigneeValue(
-  userId?: string | null,
-  channel?: string | null,
-): string {
-  if (!userId) return '';
-  return channel && channel !== 'web'
-    ? `${userId}${HANDOFF_ASSIGNEE_SEPARATOR}${channel}`
-    : userId;
+export function formatHandoffAssigneeValue(userId?: string | null): string {
+  return userId ? userId.trim() : '';
 }
 
 export function parseHandoffAssigneeValue(value: string): {
   userId: string;
   channel: string | null;
 } {
-  const trimmed = value.trim();
-  if (!trimmed) return { userId: '', channel: null };
-  const separatorIndex = trimmed.indexOf(HANDOFF_ASSIGNEE_SEPARATOR);
-  if (separatorIndex < 0) {
-    return { userId: trimmed, channel: 'web' };
-  }
-  const userId = trimmed.slice(0, separatorIndex).trim();
-  const channel = trimmed.slice(separatorIndex + HANDOFF_ASSIGNEE_SEPARATOR.length).trim();
-  if (!userId || !channel) {
-    return { userId: trimmed, channel: 'web' };
-  }
-  return { userId, channel };
+  const userId = value.split('::')[0].trim();
+  return { userId, channel: userId ? 'web' : null };
 }
