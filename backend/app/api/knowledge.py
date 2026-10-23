@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -76,6 +77,8 @@ from app.security.permissions import (
     require_agent_scope_viewer,
 )
 from app.security.tenant import ensure_tenant
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/enterprise/knowledge",
@@ -719,7 +722,9 @@ def _get_default_model(db: Session, tenant_id: str) -> ModelConfig | None:
             ModelConfig.enabled == True,  # noqa: E712
         )
     ).first()
-    return _runtime_model(db, tenant_id, row) if row else None
+    if not row:
+        return None
+    return _resolve_or_degrade(db, tenant_id, row)
 
 
 def _get_request_model(
@@ -730,7 +735,41 @@ def _get_request_model(
     model_config = db.get(ModelConfig, model_config_id)
     if not model_config or model_config.tenant_id != tenant_id or not model_config.enabled:
         raise HTTPException(status_code=404, detail="Model config not found")
-    return _runtime_model(db, tenant_id, model_config)
+    if model_config.is_default:
+        # 前端下拉会默认选中「默认模型」，这种情况等价于「没选」，按默认路径降级。
+        return _resolve_or_degrade(db, tenant_id, model_config)
+    try:
+        return _runtime_model(db, tenant_id, model_config)
+    except HTTPException as exc:
+        # 用户显式挑了某个非默认模型，就不能悄悄忽略：给出可操作的中文提示，
+        # 而不是把 MODEL_CONFIG_* 这类内部错误码直接抛给前端。
+        raise HTTPException(
+            status_code=409,
+            detail="所选模型不可用（未完成验证或已停用），请先在「模型配置」里完成测试，或换一个模型。",
+        ) from exc
+
+
+def _resolve_or_degrade(
+    db: Session, tenant_id: str, row: ModelConfig
+) -> ModelConfig | None:
+    """解析默认模型；不可用时按「没有模型」降级。
+
+    默认模型是平台替用户选的，它坏掉（未验证 / 被停用）不该让检索整条不可用：
+    退回词法 + 结构化路由仍然能出结果。让检索 409 只会把「后台配置问题」
+    变成「用户功能不可用」。
+    """
+
+    try:
+        return _runtime_model(db, tenant_id, row)
+    except HTTPException as exc:
+        logger.warning(
+            "知识检索默认模型不可用，退回无模型路由 tenant=%s model_config=%s model=%s: %s",
+            tenant_id,
+            row.id,
+            row.model,
+            getattr(exc, "detail", exc),
+        )
+        return None
 
 
 def _runtime_model(db: Session, tenant_id: str, row: ModelConfig):
