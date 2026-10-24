@@ -19,6 +19,7 @@
 </div>
 
 ## News
+- **2026-10-22**: We present v1.0.0-preview for a modular architecture upgrade and CLI support.
 - **2026-09-01**: We present v0.5.0 for faster and more stable execution.
 - **2026-08-18**: We present v0.4.0 for multi-staff cooperation and faster runing.
 - **2026-08-06**: We present v0.3.0 for SOP editing and sandbox.
