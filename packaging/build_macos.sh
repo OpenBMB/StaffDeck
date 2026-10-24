@@ -60,7 +60,9 @@ verify_bundle_arch() {
 sign_code() {
   local target="$1"
   if [ -n "$MAC_SIGN_ID" ]; then
-    codesign --force --timestamp --options runtime --sign "$MAC_SIGN_ID" "$target"
+    codesign --force --timestamp --options runtime \
+      --entitlements "${REPO}/packaging/macos.entitlements" \
+      --sign "$MAC_SIGN_ID" "$target"
   else
     codesign --force --timestamp=none --sign - "$target" 2>/dev/null || true
   fi
