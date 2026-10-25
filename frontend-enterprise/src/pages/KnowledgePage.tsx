@@ -20,6 +20,7 @@ import {
 import type { HTMLAttributes, ReactNode } from 'react';
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Copy } from 'lucide-react';
 import { api, ApiError, TENANT_ID } from '../api/client';
 import { loadEmployeeDirectory } from '../api/employee-directory';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
@@ -1165,7 +1166,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
               </DropdownMenuItem>
               {!isOverallAgent && (
                 <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => handleCreateAction('plaza')}>
-                  <DownloadOutlined />
+                  <Copy />
                   从广场复制
                 </DropdownMenuItem>
               )}
