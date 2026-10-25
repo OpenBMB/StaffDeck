@@ -22,6 +22,7 @@ import {
   Switch,
 } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
+import { saveBlob } from '@/lib/download';
 
 import { api, TENANT_ID } from '../api/client';
 
@@ -148,6 +149,15 @@ function ChannelAttachmentView({
   const [loading, setLoading] = useState(false);
   const path = `/api/enterprise/channels/${bindingId}/conversations/${sessionId}/messages/${messageId}/attachments/${attachment.id}?tenant_id=${TENANT_ID}`;
 
+  async function downloadAttachment() {
+    try {
+      const blob = await api.blob(path);
+      await saveBlob(blob, attachment.filename);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '附件下载失败');
+    }
+  }
+
   useEffect(() => {
     if (attachment.kind !== 'image') return;
     let disposed = false;
@@ -177,17 +187,7 @@ function ChannelAttachmentView({
     <button
       type="button"
       className="text-left text-[12px] text-[#3b63c8] underline"
-      onClick={() => void api.blob(path).then((blob) => {
-        const objectUrl = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = objectUrl;
-        link.download = attachment.filename;
-        link.style.display = 'none';
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
-      })}
+      onClick={() => void downloadAttachment()}
     >
       {attachment.filename}
     </button>
