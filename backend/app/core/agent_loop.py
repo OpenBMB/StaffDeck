@@ -77,6 +77,8 @@ from staffdeck_harness.contracts.errors import EngineStoragePermissionDenied
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 STREAM_CHUNK_INTERVAL_SECONDS = 0.045
 MAX_TOOL_ACTIONS_PER_TURN = 32
 MAX_TOOL_ACTIONS_PER_TURN_LIMIT = 100
