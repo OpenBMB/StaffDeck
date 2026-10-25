@@ -1,7 +1,10 @@
 from datetime import datetime, timedelta
 
-from app.api.chat import _build_turn_traces
-from app.db.models import AgentEvent, Message
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
+
+from app.api.chat import _build_turn_traces, list_chat_session_trace
+from app.db.models import AgentEvent, ChatSession, Message, Tenant, User
 from app.observability.session_timings import enrich_turn_traces_with_timings
 
 
@@ -377,6 +380,96 @@ def test_enterprise_trace_does_not_time_instantaneous_skill_transition() -> None
     lines = {line["id"]: line for line in trace["lines"]}
     assert lines["decision_router"]["duration_ms"] == 2000
     assert "duration_ms" not in lines["skill_state_cert_guide_active_collect_info"]
+
+
+def test_chat_session_trace_endpoint_enriches_durable_timings() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    started_at = datetime(2026, 8, 25, 9, 0, 0)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        user = User(
+            id="user_demo",
+            tenant_id="tenant_demo",
+            username="demo",
+            password_hash="hashed",
+        )
+        db.add(user)
+        db.add(
+            ChatSession(
+                id="session_trace",
+                tenant_id="tenant_demo",
+                user_id=user.id,
+            )
+        )
+        db.add(
+            Message(
+                id="msg_trace",
+                tenant_id="tenant_demo",
+                session_id="session_trace",
+                role="user",
+                content="查询制度",
+                created_at=started_at,
+            )
+        )
+        db.add(
+            Message(
+                id="msg_trace_answer",
+                tenant_id="tenant_demo",
+                session_id="session_trace",
+                role="assistant",
+                content="查询完成",
+                created_at=started_at + timedelta(seconds=3),
+            )
+        )
+        db.add(
+            AgentEvent(
+                tenant_id="tenant_demo",
+                session_id="session_trace",
+                event_type="user_message_received",
+                payload_json={"message_id": "msg_trace", "message": "查询制度"},
+                created_at=started_at,
+            )
+        )
+        db.add(
+            AgentEvent(
+                tenant_id="tenant_demo",
+                session_id="session_trace",
+                event_type="router_decision_created",
+                payload_json={
+                    "user_message_id": "msg_trace",
+                    "decision": "answer_only",
+                },
+                created_at=started_at + timedelta(seconds=1),
+            )
+        )
+        db.add(
+            AgentEvent(
+                tenant_id="tenant_demo",
+                session_id="session_trace",
+                event_type="assistant_message_created",
+                payload_json={"user_message_id": "msg_trace", "message_id": "msg_trace_answer"},
+                created_at=started_at + timedelta(seconds=3),
+            )
+        )
+        db.commit()
+
+        traces = list_chat_session_trace(
+            "session_trace",
+            tenant_id="tenant_demo",
+            current_user=user,
+            db=db,
+        )
+
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace["duration_ms"] == 3000
+    lines = {line["id"]: line for line in trace["lines"]}
+    assert lines["decision_router"]["duration_ms"] == 1000
 
 
 def _event(
