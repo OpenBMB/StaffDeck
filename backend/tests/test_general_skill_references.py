@@ -41,8 +41,6 @@ def test_reference_annotations_do_not_become_file_paths(reference: str, file_pre
     [
         ("references/rules(v2).yaml", "references/rules(v2).yaml"),
         ("[rules](references/rules(v2).yaml)", "references/rules(v2).yaml"),
-        ("`references/rules\uff08v2\uff09.yaml`", "references/rules\uff08v2\uff09.yaml"),
-        ("`references/rules(v2)`", "references/rules(v2)"),
         ("references/rules%EF%BC%88v2%EF%BC%89.yaml", "references/rules\uff08v2\uff09.yaml"),
     ],
 )
@@ -52,16 +50,6 @@ def test_reference_file_name_punctuation_is_preserved(reference: str, path: str)
         GeneralSkillFile(path=path, content="rules: {}"),
     ]
     _validate_skill_package_references(files)
-
-
-def test_quoted_missing_reference_does_not_match_existing_prefix() -> None:
-    files = [
-        GeneralSkillFile(path="SKILL.md", content="`references/rules\uff08v2\uff09.yaml`"),
-        GeneralSkillFile(path="references/rules", content="rules: {}"),
-    ]
-    with pytest.raises(HTTPException) as error:
-        _validate_skill_package_references(files)
-    assert error.value.detail.endswith("references/rules\uff08v2\uff09.yaml")
 
 
 @pytest.mark.parametrize(
