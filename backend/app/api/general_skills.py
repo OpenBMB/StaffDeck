@@ -90,7 +90,11 @@ CLAWHUB_HOSTS = {"clawhub.ai", "www.clawhub.ai"}
 SKILLHUB_HOSTS = {"skillhub.ai", "www.skillhub.ai"}
 REMOTE_SKILLHUB_HOSTS = CLAWHUB_HOSTS | SKILLHUB_HOSTS
 CLAWHUB_DOWNLOAD_ENDPOINT = "https://wry-manatee-359.convex.site/api/v1/download"
-LOCAL_REFERENCE_PATTERN = re.compile(r"(?<![\w./-])(?:\./)?references/[^\s`'\"<>|]+")
+# Backticks delimit literal paths; full-width parentheses delimit prose annotations.
+LOCAL_REFERENCE_PATTERN = re.compile(
+    r"(?<![\w./-])(?:`(?P<quoted>(?:\./)?references/[^\s`]+)`"
+    r"|(?P<bare>(?:\./)?references/[^\s`'\"<>|（）]+))"
+)
 
 
 def _agent_id_or_none(agent_id: object | None) -> str | None:
@@ -1217,9 +1221,11 @@ def _validate_skill_package_references(files: list[GeneralSkillFile]) -> None:
     package_paths = {file.path.replace("\\", "/").lstrip("./") for file in files}
     referenced_paths: set[str] = set()
     for match in LOCAL_REFERENCE_PATTERN.finditer(skill_file.content):
-        raw_path = unquote(match.group(0)).replace("\\", "/")
+        quoted_path = match.group("quoted")
+        raw_path = unquote(quoted_path or match.group("bare")).replace("\\", "/")
         raw_path = raw_path.split("#", 1)[0].split("?", 1)[0]
-        raw_path = raw_path.rstrip(")]}.,;:!?，。；：！？")
+        if quoted_path is None:
+            raw_path = raw_path.rstrip(")]}.,;:!?，。；：！？")
         if any(marker in raw_path for marker in ("*", "{", "}")):
             continue
         normalized = raw_path.removeprefix("./").strip("/")
