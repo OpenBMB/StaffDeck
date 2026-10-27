@@ -43,23 +43,45 @@ def _request(
     )
 
 
-def test_javascript_assets_override_broken_windows_mime_mapping(tmp_path: Path) -> None:
-    original_media_type = mimetypes.guess_type("bundle.js")[0]
-    mimetypes.add_type("text/plain", ".js", strict=True)
+@pytest.mark.parametrize(
+    "prefix",
+    ["/assets", "/enterprise/assets", "/chat/assets", "/workspace/assets", "/admin/assets"],
+)
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_javascript_assets_override_broken_windows_mime_mapping(
+    monkeypatch,
+    tmp_path: Path,
+    prefix: str,
+    method: str,
+) -> None:
+    releases = tmp_path / "releases" / "assets"
+    business = tmp_path / "business" / "assets"
+    releases.mkdir(parents=True)
+    business.mkdir(parents=True)
+    payload = b"export const ready = true;"
+    # Only the fallback dist contains the asset referenced by an older page.
+    (business / "bundle.js").write_bytes(payload)
 
-    try:
-        asset_dir = tmp_path / "assets"
-        asset_dir.mkdir()
-        (asset_dir / "bundle.js").write_text("export const ready = true;", encoding="utf-8")
-        app = FastAPI()
-        app.mount("/assets", single_port_app.FrontendStaticFiles(directory=asset_dir))
+    # Initialize before patching so the Windows registry cannot replace the map.
+    mimetypes.guess_type("bundle.js")
+    monkeypatch.setitem(mimetypes.types_map, ".js", "text/plain")
 
-        response = TestClient(app).head("/assets/bundle.js")
+    # Exercise the registered handler, including its production MIME policy.
+    mount = next(
+        route for route in single_port_app.app.routes if getattr(route, "path", None) == prefix
+    )
+    monkeypatch.setattr(mount.app, "directory", releases)
+    monkeypatch.setattr(mount.app, "all_directories", [str(releases), str(business)])
+    monkeypatch.setattr(mount.app, "config_checked", False)
+    app = FastAPI()
+    app.router.routes.append(mount)
 
-        assert response.status_code == 200
-        assert response.headers["content-type"] == "text/javascript; charset=utf-8"
-    finally:
-        mimetypes.add_type(original_media_type or "text/javascript", ".js", strict=True)
+    response = TestClient(app).request(method, f"{prefix}/bundle.js")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/javascript; charset=utf-8"
+    assert response.headers["content-length"] == str(len(payload))
+    assert response.content == (payload if method == "GET" else b"")
 
 
 def test_valid_application_javascript_mapping_is_not_reported_as_correction(
