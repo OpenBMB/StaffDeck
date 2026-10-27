@@ -339,7 +339,7 @@ class FrontendStaticFiles(StaticFiles):
         return response
 
 
-class MultiDistStaticFiles(StaticFiles):
+class MultiDistStaticFiles(FrontendStaticFiles):
     """Serve one asset tree that may live in either dist (the releases build or the
     business one), so a page rendered from one build still loads its own hashed
     assets while the other build is being served.
