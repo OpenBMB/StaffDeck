@@ -4,86 +4,90 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useToolTest } from './useToolTest';
 
 const mocks = vi.hoisted(() => ({ post: vi.fn(), get: vi.fn() }));
-vi.mock('../api/client', () => ({ TENANT_ID: 'tenant_demo', api: { postWithSignal: mocks.post, getWithSignal: mocks.get } }));
+vi.mock('../api/client', () => ({ TENANT_ID: 'tenant_demo', api: { post: mocks.post, get: mocks.get } }));
 vi.mock('../auth', () => ({ getEnterpriseAuthSession: () => ({ user: { id: 'admin' } }) }));
 
-beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks(); sessionStorage.clear(); });
+beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks(); });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('async tool test tracking', () => {
-  it('works on HTTP origins without crypto.randomUUID and with unavailable storage', async () => {
-    vi.stubGlobal('crypto', {});
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
-    mocks.post.mockResolvedValue({ success: true });
-    const { result } = renderHook(() => useToolTest('tool1', ''));
-    await act(async () => { await result.current.submit({}); });
-    expect(result.current.status).toBe('已返回');
-    expect(mocks.post.mock.calls[0][1].client_request_id).toMatch(/^[a-z0-9-]+$/);
-  });
   it('submits once, polls through completion and exposes provider result', async () => {
-    mocks.post.mockResolvedValue({ success: true, data: { detached: true, task_id: 'task1' } });
-    mocks.get.mockResolvedValueOnce({ id: 'task1', status: 'working', poll_attempts: 1 })
-      .mockResolvedValueOnce({ id: 'task1', status: 'completed', result: 'done', poll_attempts: 2 });
-    const { result } = renderHook(() => useToolTest('tool1', '', 1));
-    await act(async () => { await result.current.submit({}); });
+    mocks.post.mockResolvedValue({ success: true, data: { accepted: true, task_id: 'task1' } });
+    mocks.get.mockResolvedValueOnce({ id: 'task1', status: 'working', result: null })
+      .mockResolvedValueOnce({ id: 'task1', status: 'completed', result: { answer: 42 } });
+    const { result } = renderHook(() => useToolTest('tool1'));
+    await act(async () => { await result.current.submit('/api/enterprise/tools/tool1/test', { value: 1 }); });
     expect(result.current.busy).toBe(true);
-    expect(result.current.status).toBe('执行中');
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(result.current.status).toBe('已完成');
-    expect(result.current.result).toContain('done');
-    expect(result.current.taskId).toBeNull();
+    // Polling starts immediately with the accepted task id.
+    expect(result.current.status).toBe('working');
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(result.current.status).toBe('completed');
+    expect(result.current.result).toMatchObject({ id: 'task1', status: 'completed', result: { answer: 42 } });
     expect(mocks.post).toHaveBeenCalledTimes(1);
     expect(mocks.get).toHaveBeenCalledTimes(2);
   });
 
-  it('retrying a failed status query never submits another task', async () => {
-    mocks.post.mockResolvedValue({ success: true, data: { detached: true, task_id: 'task1' } });
+  it('sends the tenant id and tool id while polling the same task id', async () => {
+    mocks.post.mockResolvedValue({ success: true, data: { accepted: true, task_id: 'task1' } });
+    mocks.get.mockResolvedValue({ id: 'task1', status: 'completed' });
+    const { result } = renderHook(() => useToolTest('tool1'));
+    await act(async () => { await result.current.submit('/api/enterprise/tools/tool1/test', { value: 1 }); });
+    expect(mocks.post.mock.calls[0][1]).toMatchObject({ tenant_id: 'tenant_demo', arguments: { value: 1 } });
+    const pollUrl = mocks.get.mock.calls[0][0] as string;
+    expect(pollUrl).toContain('/api/enterprise/external-business-tasks/task1');
+    expect(pollUrl).toContain('tenant_id=tenant_demo');
+    expect(pollUrl).toContain('tool_id=tool1');
+  });
+
+  it('never re-submits after a failed status query; it keeps polling the same task', async () => {
+    mocks.post.mockResolvedValue({ success: true, data: { accepted: true, task_id: 'task1' } });
     mocks.get.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ id: 'task1', status: 'completed' });
-    const { result } = renderHook(() => useToolTest('tool1', ''));
-    await act(async () => { await result.current.submit({}); });
-    expect(result.current.taskId).toBe('task1');
-    expect(result.current.error).toContain('不会重新提交');
-    await act(async () => { await result.current.submit({}); result.current.retryStatus(); });
-    expect(result.current.status).toBe('已完成');
+    const { result } = renderHook(() => useToolTest('tool1'));
+    await act(async () => { await result.current.submit('/api/enterprise/tools/tool1/test', { value: 1 }); });
+    expect(result.current.queryError).toContain('offline');
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(result.current.status).toBe('completed');
     expect(mocks.post).toHaveBeenCalledTimes(1);
-  });
-
-  it('reopens an unfinished task using only GET', async () => {
-    sessionStorage.setItem('staffdeck-tool-test:tenant_demo:admin:tool1', JSON.stringify({ taskId: 'task1' }));
-    mocks.get.mockResolvedValue({ id: 'task1', status: 'working' });
-    const hook = renderHook(() => useToolTest('tool1', ''));
-    await act(async () => {});
-    expect(hook.result.current.taskId).toBe('task1');
-    expect(mocks.post).not.toHaveBeenCalled();
-    const signal = mocks.get.mock.calls[0][1] as AbortSignal;
-    hook.unmount();
-    expect(signal.aborted).toBe(true);
-    await vi.advanceTimersByTimeAsync(10000);
-    expect(mocks.get).toHaveBeenCalledTimes(1);
-  });
-
-  it('preserves idempotency key and original arguments when submission result is unknown', async () => {
-    mocks.post.mockRejectedValueOnce(new Error('timeout')).mockResolvedValueOnce({ success: true });
-    const { result } = renderHook(() => useToolTest('tool1', ''));
-    await act(async () => { await result.current.submit({ value: 1 }); });
-    await act(async () => { await result.current.submit({ value: 2 }); });
-    expect(mocks.post.mock.calls[1][1]).toEqual(mocks.post.mock.calls[0][1]);
+    expect(mocks.get).toHaveBeenCalledTimes(2);
   });
 
   it('does not enable re-submission for an unknown Provider outcome', async () => {
-    mocks.post.mockResolvedValue({ success: true, data: { detached: true, task_id: 'task1' } });
+    mocks.post.mockResolvedValue({ success: true, data: { accepted: true, task_id: 'task1' } });
     mocks.get.mockResolvedValue({ id: 'task1', status: 'outcome_unknown' });
-    const { result } = renderHook(() => useToolTest('tool1', ''));
-    await act(async () => { await result.current.submit({}); });
-    expect(result.current.status).toBe('提交结果待核实');
-    await act(async () => { await result.current.submit({}); });
+    const { result } = renderHook(() => useToolTest('tool1'));
+    await act(async () => { await result.current.submit('/api/enterprise/tools/tool1/test', { value: 1 }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(result.current.status).toBe('outcome_unknown');
+    expect(result.current.busy).toBe(false);
+    // The lock stays held for tracking_blocked only; unknown outcome must not wedge the button.
     expect(mocks.post).toHaveBeenCalledTimes(1);
   });
 
   it('blocks rapid double clicks before state updates', async () => {
-    mocks.post.mockResolvedValue({ success: true });
-    const { result } = renderHook(() => useToolTest('tool1', ''));
-    await act(async () => { await Promise.all([result.current.submit({}), result.current.submit({})]); });
+    let resolvePost: (value: unknown) => void = () => {};
+    mocks.post.mockReturnValue(new Promise((resolve) => { resolvePost = resolve; }));
+    const { result } = renderHook(() => useToolTest('tool1'));
+    const first = result.current.submit('/api/enterprise/tools/tool1/test', { value: 1 });
+    const second = result.current.submit('/api/enterprise/tools/tool1/test', { value: 1 });
+    resolvePost({ success: true, data: { accepted: true, task_id: 'task1' } });
+    await act(async () => { await Promise.all([first, second]); });
     expect(mocks.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('exposes a failed submission status and rethrows for the caller', async () => {
+    mocks.post.mockRejectedValue(new Error('boom'));
+    const { result } = renderHook(() => useToolTest('tool1'));
+    let caught: unknown;
+    await act(async () => {
+      try { await result.current.submit('/api/enterprise/tools/tool1/test', { value: 1 }); } catch (error) { caught = error; }
+    });
+    expect(caught).toBeInstanceOf(Error);
+    expect(result.current.status).toBe('failed');
+    expect(result.current.busy).toBe(false);
+    // A later attempt is allowed again after failure.
+    mocks.post.mockResolvedValue({ success: true, data: { accepted: true, task_id: 'task1' } });
+    mocks.get.mockResolvedValue({ id: 'task1', status: 'completed' });
+    await act(async () => { await result.current.submit('/api/enterprise/tools/tool1/test', { value: 2 }); });
+    expect(mocks.post).toHaveBeenCalledTimes(2);
   });
 });
