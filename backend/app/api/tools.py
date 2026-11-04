@@ -29,6 +29,7 @@ from app.db.models import (
     AgentProfile,
     AgentResourceBinding,
     MCPServer,
+    MCPOAuthCredential,
     Tool,
     User,
     utc_now,
@@ -51,6 +52,8 @@ from app.tools.mcp_client import (
     execute_mcp_tool,
     read_mcp_resource,
 )
+from app.tools.mcp_oauth import OAuthError, authorized_config
+from app.tools.mcp_oauth_store import OAuthOwnershipError
 from app.tools.tool_schema import (
     MCPAppResourceRead,
     MCPAppToolCallRequest,
@@ -78,8 +81,16 @@ from app.tools.tool_schema import (
 )
 
 router = APIRouter(prefix="/api/enterprise/tools", tags=["enterprise:tools"])
+
 mcp_router = APIRouter(prefix="/api/enterprise/mcp-servers", tags=["enterprise:mcp-servers"])
 MCP_APP_RESOURCE_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _authorized_config(*args, **kwargs):
+    try:
+        return authorized_config(*args, **kwargs)
+    except (OAuthError, OAuthOwnershipError) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 class A2ATaskEventRead(BaseModel):
@@ -964,7 +975,8 @@ def get_mcp_app_resource(
     _ensure_tool_visible(db, tenant_id, tool, agent_id)
     try:
         result = read_mcp_resource(
-            _server_client_config(server),
+            _authorized_config(db, tenant_id, current_user.id, server.id,
+                              _server_client_config(server)),
             uri,
             timeout_seconds=get_settings().tool_timeout_seconds,
         )
@@ -1020,6 +1032,7 @@ def call_mcp_app_tool(
         active_skill_id=request.active_skill_id,
         agent_id=request.agent_id,
         session_id=request.session_id,
+        user_id=current_user.id,
     )
     if result.mcp_app is not None:
         # Nested App views are not rendered inside another App. Keep the tool
@@ -1101,6 +1114,11 @@ def delete_mcp_server(
         tools = db.exec(select(Tool).where(Tool.mcp_server_id == server_id)).all()
         for tool in tools:
             db.delete(tool)
+    for credential in db.exec(select(MCPOAuthCredential).where(
+        MCPOAuthCredential.tenant_id == tenant_id,
+        MCPOAuthCredential.server_id == server_id,
+    )).all():
+        db.delete(credential)
     db.delete(row)
     db.commit()
     return {"status": "deleted"}
@@ -1140,6 +1158,9 @@ def discover_mcp_tools(
     response = _discover_response(
         connection,
         apps_mode=request.apps_mode if request.connection is not None else row.apps_mode,
+        client_config=(_authorized_config(
+            db, request.tenant_id, current_user.id, row.id, _server_client_config(row),
+        ) if request.connection is None else None),
     )
     if response.success:
         row.discovered_tools_json = [tool.model_dump() for tool in response.tools]
@@ -1185,7 +1206,12 @@ def sync_mcp_tools(
     row = _get_mcp_server(db, request.tenant_id, server_id)
     ensure_open_gallery_admin(request.tenant_id, current_user)
     connection = _server_connection(row)
-    discovery = _discover_response(connection, apps_mode=row.apps_mode)
+    discovery = _discover_response(
+        connection, apps_mode=row.apps_mode,
+        client_config=_authorized_config(
+            db, request.tenant_id, current_user.id, row.id, _server_client_config(row),
+        ),
+    )
     if not discovery.success:
         return MCPSyncResponse(success=False, error=discovery.error)
 
@@ -1292,8 +1318,9 @@ def _discover_response(
     connection: MCPServerConnection,
     *,
     apps_mode: str = "disabled",
+    client_config: dict | None = None,
 ) -> MCPDiscoverResponse:
-    config = _connection_to_client_config(connection)
+    config = client_config if client_config is not None else _connection_to_client_config(connection)
     config["apps_mode"] = apps_mode
     try:
         discovery = discover_mcp_server(

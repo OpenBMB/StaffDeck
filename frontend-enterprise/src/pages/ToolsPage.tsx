@@ -1,3 +1,5 @@
+import { QccConnectorCard } from '../components/QccConnectorCard';
+import { McpOAuthControl } from '../components/McpOAuthControl';
 import { ApiOutlined, CheckOutlined, ExperimentOutlined, ToolOutlined } from '../icons';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
@@ -627,6 +629,13 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       ),
     },
     {
+      key: 'oauth',
+      title: '个人 OAuth 授权',
+      width: 220,
+      render: (row) => ['streamable_http', 'sse'].includes(row.connection.transport)
+        ? <McpOAuthControl serverId={row.id} /> : null,
+    },
+    {
       key: 'tool_count',
       title: '工具数',
       width: 110,
@@ -754,6 +763,8 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
           <StatCard label="分桶" value={stats.buckets} className="basis-[220px]" />
         </div>
 
+        <QccConnectorCard canInstall={isEnterpriseAdmin(currentUser) && isOverallAgent}
+          onCatalogChanged={() => { void load(); }} />
         {visibleServers.length > 0 && (
           <div className="flex flex-col gap-[18px]">
             <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">
@@ -1754,6 +1765,9 @@ function McpServerEditorPage({ mode, currentUser, onLogout }: { mode: 'new' | 'e
         </UIButton>
       </div>
       {!isEdit && <ToolTypeSwitcher active="mcp" />}
+      {server && isRemote && <SectionCard title="个人 OAuth 授权">
+        <McpOAuthControl serverId={server.id} />
+      </SectionCard>}
       <div className="grid grid-cols-1 items-start gap-[20px] xl:grid-cols-2">
         <SectionCard title="连接配置" loading={loading && isEdit && !server}>
           <div className="flex flex-col gap-[16px]">
