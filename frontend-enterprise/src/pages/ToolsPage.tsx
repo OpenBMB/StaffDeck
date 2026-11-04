@@ -1,3 +1,4 @@
+import { QccConnectorCard } from '../components/QccConnectorCard';
 import { McpOAuthControl } from '../components/McpOAuthControl';
 import { ApiOutlined, CheckOutlined, ExperimentOutlined, ToolOutlined } from '../icons';
 import type { ReactNode } from 'react';
@@ -762,6 +763,8 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
           <StatCard label="分桶" value={stats.buckets} className="basis-[220px]" />
         </div>
 
+        <QccConnectorCard canInstall={isEnterpriseAdmin(currentUser) && isOverallAgent}
+          onCatalogChanged={() => { void load(); }} />
         {visibleServers.length > 0 && (
           <div className="flex flex-col gap-[18px]">
             <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c]">

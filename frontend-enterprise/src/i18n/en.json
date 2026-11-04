@@ -3976,5 +3976,18 @@
   "复制失败，请右键复制上方授权链接。": "Copy failed. Right-click the authorization link above to copy it.",
   "复制授权链接": "Copy authorization link",
   "解除 / 取消授权": "Disconnect / cancel authorization",
-  "个人 OAuth 授权": "Personal OAuth authorization"
+  "个人 OAuth 授权": "Personal OAuth authorization",
+  "无法读取企查查连接状态，请检查权限或已有同名配置。": "Unable to read QCC connection status. Check permissions or a conflicting configuration.",
+  "无法创建企查查连接，请检查权限或已有同名配置。": "Unable to create QCC connection. Check permissions or a conflicting configuration.",
+  "工具目录已更新，共 {1} 项；模型按需搜索和加载。": "Tool catalog updated: {1} tools. The model searches and loads definitions on demand.",
+  "工具发现失败，请确认已授权及账号统一入口权限后重试。": "Discovery failed. Check OAuth authorization and unified entry access, then retry.",
+  "企查查 MCP": "QCC MCP",
+  "企查查 MCP · OAuth": "QCC MCP · OAuth",
+  "一个统一入口，发现账号可用的企业及历史数据工具。通过能力搜索按需加载，无需粘贴 API Key。": "One unified entry discovers company and historical data tools available to your account. Load tools on demand with capability search; no API Key pasting.",
+  "工具数量由账号权限和服务端准入决定。授权不会自动开放额外数据权限。": "Tool availability depends on account permissions and provider admission. Authorization does not grant additional data access.",
+  "添加企查查连接器": "Add QCC connector",
+  "请管理员添加企查查连接器，然后使用自己的账号授权。": "Ask an administrator to add the QCC connector, then authorize your own account.",
+  "发现并更新工具目录": "Discover and update tool catalog",
+  "管理员更新目录后，为数字员工绑定所需工具；对话中通过能力搜索加载具体工具。": "After updating the catalog, bind the required tools to your employee. Conversations load specific tools through capability search.",
+  "连接器已停用，请管理员在 MCP 服务器设置中启用。": "Connector disabled. Ask an administrator to enable it in MCP server settings."
 }

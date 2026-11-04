@@ -174,6 +174,8 @@ app.include_router(wechat_kf.router)
 app.include_router(teams.router, dependencies=[Depends(module_policy("team", use_endpoints=("tl_chat_endpoint", "create_team_task_endpoint")))])
 app.include_router(teams.threads_router)
 app.include_router(tools.router, dependencies=[Depends(module_policy("tool", use_endpoints=("test_tool", "probe_tool")))])
+from app.api import qcc_connector
+app.include_router(qcc_connector.router)
 app.include_router(mcp_oauth.callback_router)
 app.include_router(mcp_oauth.router)
 app.include_router(tools.mcp_router, dependencies=[Depends(module_policy("mcp_server"))])
