@@ -20,6 +20,8 @@ from app.tools.a2a_client import A2AClient, A2AClientError
 from app.tools.external_tasks import callback_token_hash, new_callback_token
 from app.tools.http_request import prepare_get_request
 from app.tools.mcp_client import MCPClientError, execute_mcp_tool, execute_mcp_tool_result
+from app.tools.mcp_oauth import OAuthError, authorized_config
+from app.tools.mcp_oauth_store import OAuthOwnershipError
 from app.tools.tool_schema import MCPAppDescriptor, ToolCall, ToolError, ToolResult
 
 SECRET_PATTERN = re.compile(r"\$\{secret\.([A-Z0-9_]+)\}")
@@ -81,6 +83,7 @@ class ToolExecutor:
                 session_id=session_id,
                 active_skill_id=active_skill_id,
                 timeout_seconds_override=timeout_seconds_override,
+                user_id=user_id,
             )
         if (tool.tool_type or "http") == "a2a":
             return self._execute_a2a_tool(
@@ -377,9 +380,18 @@ class ToolExecutor:
         session_id: str | None = None,
         active_skill_id: str | None = None,
         timeout_seconds_override: float | None = None,
+        user_id: str | None = None,
     ) -> ToolResult:
         try:
             config, tool_name = self._resolve_mcp_config(tool)
+            if not user_id and session_id:
+                chat_session = self.db.get(ChatSession, session_id)
+                if chat_session and chat_session.tenant_id == tool.tenant_id:
+                    user_id = chat_session.user_id
+            if config.get("transport") in {"streamable_http", "sse"}:
+                config = authorized_config(
+                    self.db, tool.tenant_id, user_id, str(tool.mcp_server_id), config,
+                )
             policy = self._execution_policy(
                 tool,
                 timeout_seconds_override=timeout_seconds_override,
@@ -435,7 +447,7 @@ class ToolExecutor:
                     envelope.get("meta") if isinstance(envelope.get("meta"), dict) else {}
                 ),
             )
-        except MCPClientError as exc:
+        except (MCPClientError, OAuthError, OAuthOwnershipError) as exc:
             return self._error(tool.name, "MCP_ERROR", str(exc))
         except Exception as exc:
             return self._error(tool.name, "MCP_EXECUTION_ERROR", str(exc))

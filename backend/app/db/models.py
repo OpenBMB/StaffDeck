@@ -1690,3 +1690,20 @@ class TeamTaskBid(SQLModel, table=True):
     score: Optional[float] = None
     score_rationale: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class MCPOAuthCredential(SQLModel, table=True):
+    """Private OAuth state; never included in MCP server/template responses."""
+
+    __tablename__ = "mcp_oauth_credentials"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", "server_id", name="uq_mcp_oauth_owner"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("mcpoauth"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    server_id: str = Field(index=True)
+    resource_url: str
+    encrypted_payload: str
+    updated_at: datetime = Field(default_factory=utc_now)

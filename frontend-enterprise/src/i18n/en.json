@@ -3962,5 +3962,19 @@
   "同名预设已存在，请使用其他名称": "A preset with this name already exists. Choose a different name.",
   "装配正在应用，请完成后再保存预设": "The assembly is being applied. Save the preset after it finishes.",
   "尚无运行中的装配可供保存": "There is no running assembly to save yet.",
-  "预设名称不能为空且不超过 80 字，说明不超过 500 字": "Enter a name of up to 80 characters and a description of up to 500 characters."
+  "预设名称不能为空且不超过 80 字，说明不超过 500 字": "Enter a name of up to 80 characters and a description of up to 500 characters.",
+  "无法准备授权，请检查服务端 OAuth 配置后重试。": "Unable to prepare authorization. Check the server OAuth configuration and retry.",
+  "本地凭据已移除；远端撤销未确认，请到服务方撤销授权。": "Local credentials removed. Remote revocation is unconfirmed; revoke access at the provider.",
+  "已解绑并撤销授权。": "Disconnected and authorization revoked.",
+  "解绑失败，请重试。": "Disconnect failed. Please retry.",
+  "OAuth 尚未授权": "OAuth authorization required",
+  "OAuth 已授权": "OAuth authorized",
+  "准备 OAuth 授权": "Prepare OAuth authorization",
+  "打开登录授权页": "Open authorization in system browser",
+  "请用系统浏览器授权。若桌面窗口未打开，请复制链接到系统浏览器；完成后返回此页。": "Use your system browser to authorize. If no window opens, copy the link into your browser and return here after authorization.",
+  "授权链接已复制。": "Authorization link copied.",
+  "复制失败，请右键复制上方授权链接。": "Copy failed. Right-click the authorization link above to copy it.",
+  "复制授权链接": "Copy authorization link",
+  "解除 / 取消授权": "Disconnect / cancel authorization",
+  "个人 OAuth 授权": "Personal OAuth authorization"
 }

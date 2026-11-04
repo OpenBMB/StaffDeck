@@ -21,6 +21,7 @@ from app.api import (
     memories,
     mock,
     model_configs,
+    mcp_oauth,
     persona,
     scheduled_tasks,
     sessions,
@@ -173,6 +174,8 @@ app.include_router(wechat_kf.router)
 app.include_router(teams.router, dependencies=[Depends(module_policy("team", use_endpoints=("tl_chat_endpoint", "create_team_task_endpoint")))])
 app.include_router(teams.threads_router)
 app.include_router(tools.router, dependencies=[Depends(module_policy("tool", use_endpoints=("test_tool", "probe_tool")))])
+app.include_router(mcp_oauth.callback_router)
+app.include_router(mcp_oauth.router)
 app.include_router(tools.mcp_router, dependencies=[Depends(module_policy("mcp_server"))])
 app.include_router(sessions.router)
 app.include_router(traces.router)
