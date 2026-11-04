@@ -19,7 +19,10 @@ def test_authorization_state_refresh_and_persistent_recovery(tmp_path):
     def provider(request):
         requests.append(request)
         path = request.url.path
-        if 'oauth-protected-resource' in path:
+        if path == '/mcp':
+            return httpx.Response(401, headers={'WWW-Authenticate':
+                'Bearer resource_metadata="https://resource.example/mounted/metadata"'})
+        if path == '/mounted/metadata':
             body = {'resource': RESOURCE, 'authorization_servers': ['https://auth.example'],
                     'scopes_supported': ['mcp:tools']}
         elif 'oauth-authorization-server' in path:

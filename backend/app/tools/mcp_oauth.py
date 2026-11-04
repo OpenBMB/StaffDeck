@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 import secrets
 import threading
 import time
@@ -16,7 +17,12 @@ import httpx
 from sqlmodel import Session
 
 from app.db.models import MCPServer
-from app.tools.mcp_oauth_store import delete_credentials, load_credentials, save_credentials
+from app.tools.mcp_oauth_store import (
+    OAuthOwnershipError,
+    delete_credentials,
+    load_credentials,
+    save_credentials,
+)
 
 _LOCK = threading.RLock()
 
@@ -51,14 +57,29 @@ def _json(client: httpx.Client, method: str, url: str, **kwargs) -> dict:
 
 def prepare(db: Session, tenant: str, user: str, server: str, resource: str,
             redirect: str, client: httpx.Client) -> str:
-    load_credentials(db, tenant, user, server)
+    with _LOCK:
+        try:
+            load_credentials(db, tenant, user, server)
+        except OAuthOwnershipError:
+            # An explicit new authorization may replace stale endpoint credentials.
+            # delete_credentials independently verifies the tenant/user/server owner.
+            delete_credentials(db, tenant, user, server)
     secure_url(resource)
     secure_url(redirect, callback=True)
     p = urlsplit(resource)
     origin = f'{p.scheme}://{p.netloc}'
     discovery_url = origin + '/.well-known/oauth-protected-resource'
+    # Prefer the resource's actual challenge: deployments may publish metadata
+    # below a mounted application prefix, not at the origin root.
     try:
-        prm = _json(client, 'GET', discovery_url + p.path)
+        with client.stream('GET', resource, headers={'Accept': 'application/json, text/event-stream'}) as probe:
+            challenge = probe.headers.get('www-authenticate', '')
+    except httpx.HTTPError as exc:
+        raise OAuthError('MCP resource discovery failed') from exc
+    advertised = re.search(r'\bresource_metadata="([^"]+)"', challenge, re.IGNORECASE)
+    metadata_url = secure_url(advertised.group(1)) if advertised else discovery_url + p.path
+    try:
+        prm = _json(client, 'GET', metadata_url)
     except OAuthError as exc:
         cause = exc.__cause__
         if not isinstance(cause, httpx.HTTPStatusError) or cause.response.status_code != 404:
@@ -190,7 +211,11 @@ def disconnect(db: Session, tenant: str, user: str, server: str,
                client: httpx.Client) -> bool:
     """Always remove local credentials, even when remote revocation is unavailable."""
     with _LOCK:
-        data = load_credentials(db, tenant, user, server) or {}
+        try:
+            data = load_credentials(db, tenant, user, server) or {}
+        except OAuthOwnershipError:
+            delete_credentials(db, tenant, user, server)
+            return False
         confirmed = False
         endpoint = data.get('revocation_endpoint')
         tokens = data.get('tokens', {})
