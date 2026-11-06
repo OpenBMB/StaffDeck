@@ -4,17 +4,24 @@ ORM 优先:能用 SQLAlchemy ORM/标准 SQL 表达的一律走通用实现,无�
 少数方言点收口到本模块的 DatabaseDialect 提供者。新增数据库 = 新增一个小
 适配器并 register_dialect 注册,业务代码零改动:
 
-- postgresql(含高斯):全能力,即 PostgresDialect(psycopg3 驱动,URL
-  postgresql+psycopg://);高斯直接复用该适配器。
-- mysql:不预装驱动(按需装 pymysql);不支持部分唯一索引——
-  models.py 的 uq_model_configs_tenant_default 只在 sqlite/postgresql 方言
-  创建,其它后端由 init_db 的启动校验兜底;advisory lock 可用 GET_LOCK(key, 0)
-  实现,未实现前文件锁会响亮拒绝(见 BaseDialect.acquire_advisory_lock)。
-- dm(达梦):dmPython 驱动(dm+dmPython://),Oracle 系语法;同样不支持
-  部分唯一索引;无原生锁实现前同样响亮拒绝。
+- postgresql:全能力,即 PostgresDialect(psycopg3 驱动,URL
+  postgresql+psycopg://)。
+- opengauss(高斯):复用 PostgresDialect 全能力;SQLAlchemy 侧由
+  app/db/opengauss.py 注册自定义方言 opengauss+psycopg://,处理服务端版本串
+  ("(openGauss 5.0.0 ...)")解析与 client_encoding=utf8(openGauss 默认
+  SQL_ASCII 初始化库)。
+- mysql(含 MariaDB):pymysql 驱动(mysql+pymysql://),不预装(按需装);
+  不支持部分唯一索引——models.py 的 uq_model_configs_tenant_default 只在
+  sqlite/postgresql 方言创建,其它后端由 init_db 的启动校验兜底;advisory
+  lock 用 MySQL 命名锁(GET_LOCK/RELEASE_LOCK/IS_USED_LOCK,专属连接常驻)。
+- dm(达梦):需外部 SQLAlchemy 达梦方言插件 + dmPython 驱动
+  (dm+dmPython://),本仓库未预装、未真机验证;Oracle 系语法,同样不支持
+  部分唯一索引;无已验证原生锁 → 文件锁对非 SQLite 文件库响亮拒绝。
 
 未注册的后端名回退 GenericDialect:ORM 通用实现开箱可用;适配器只补充各自
-特性(原生 advisory lock、部分索引、日期函数等)。
+特性(原生 advisory lock、部分索引、日期函数等)。可选驱动(PG/MySQL/达梦)
+缺失时由 ensure_driver_available() 在启动处给出带安装指引的 RuntimeError
+(见 _OPTIONAL_DRIVERS)。
 
 日分桶口径注意:SQLite 为服务器本地自然日(func.date(col,'localtime'));
 Postgres 按 app_timezone(缺省=服务器本地固定偏移);Generic 为
@@ -300,6 +307,173 @@ class PostgresDialect(BaseDialect):
             return False
 
 
+class MySQLDialect(BaseDialect):
+    """MySQL/MariaDB:pymysql 驱动(mysql+pymysql://),不支持部分唯一索引。
+
+    advisory lock 用 MySQL 命名锁:命名锁属于**连接**,持锁期间由本方言常驻一条
+    专属 `engine.connect()` Connection(AUTOCOMMIT——GET_LOCK 本身非事务性,但常驻
+    连接不该挂着一条隐式事务;Connection 不归池,commit/rollback 不脱钩,
+    `CONNECTION_ID()` 全程稳定)。绝不能用 Session.commit() 代替:commit 会把连接
+    归还池中,锁静默释放或后续 check 取到别的连接。
+    """
+
+    # MySQL 无部分唯一索引(WHERE 子句)能力:models.py 的默认模型部分索引不创建,
+    # 由 init_db 的启动校验兜底
+    supports_partial_index = False
+    session_scoped_advisory_lock = True
+    # MySQL 命名锁名上限(SQL 标准规定为 64 个字符,超长服务端会报错)
+    MAX_LOCK_NAME_LENGTH = 64
+
+    def __init__(self) -> None:
+        super().__init__("mysql")
+        # key -> (pid, Connection);fork 防护同 BaseDialect 文件锁
+        self._mysql_lock_conns: dict[str, tuple[int, Any]] = {}
+
+    def engine_kwargs(self, url: str) -> dict[str, Any]:
+        return {
+            # 陈旧连接(MySQL 重启/wait_timeout 掐断后)首用前先 ping,失效即重连
+            "pool_pre_ping": True,
+            # 主动回收长闲连接,避开服务端 wait_timeout(默认 8h)掐断
+            "pool_recycle": 1800,
+            # 后台线程随 binding 数增长,默认 5+10 不够
+            "pool_size": 10,
+            "max_overflow": 20,
+            # 建连接即固定 utf8mb4,避免库/表默认字符集不一致导致的乱码
+            "connect_args": {"charset": "utf8mb4"},
+        }
+
+    def day_bucket(self, column) -> Any:
+        # 数据库服务器时区自然日;SQLite 为服务器本地自然日(date(col,'localtime')),
+        # 云上 MySQL 实例常为 UTC——跨库迁移后按日统计会整体平移,属预期差异
+        return cast(column, Date)
+
+    def _engine_of(self, session):
+        bind = session.get_bind()
+        return getattr(bind, "engine", bind)
+
+    def _validate_lock_name(self, key: str) -> None:
+        if len(key) > self.MAX_LOCK_NAME_LENGTH:
+            raise ValueError(
+                f"MySQL 命名锁名最长 {self.MAX_LOCK_NAME_LENGTH} 个字符,"
+                f"当前 {len(key)} 个:{key!r};请缩短 advisory lock key"
+            )
+
+    def acquire_advisory_lock(self, session, key: str) -> bool:
+        """以专属 Connection 执行 GET_LOCK(key, 0);重入成功,fork 继承不作数。
+
+        GET_LOCK 返回 1=成功,0=超时(已被占用),NULL=错误:只有 1 才算持锁。
+        """
+        self._validate_lock_name(key)
+        held = self._mysql_lock_conns.get(key)
+        if held is not None:
+            held_pid, held_conn = held
+            if held_pid == os.getpid():
+                return True
+            # fork 子进程:继承的连接只丢弃引用,不在共享 socket 上做任何操作
+            # (关闭会向父进程的连接发退出包,可能把父进程的锁一起放掉)
+            self._mysql_lock_conns.pop(key, None)
+        conn = self._engine_of(session).connect().execution_options(
+            isolation_level="AUTOCOMMIT"
+        )
+        try:
+            locked = conn.execute(text("SELECT GET_LOCK(:key, 0)"), {"key": key}).scalar()
+        except Exception:
+            conn.close()
+            raise
+        if locked != 1:
+            conn.close()
+            return False
+        self._mysql_lock_conns[key] = (os.getpid(), conn)
+        return True
+
+    def release_advisory_lock(self, session, key: str) -> None:
+        held = self._mysql_lock_conns.pop(key, None)
+        if held is None:
+            return
+        held_pid, conn = held
+        if held_pid != os.getpid():
+            # fork 子进程:仅丢弃引用,不解父进程的锁
+            return
+        try:
+            conn.execute(text("SELECT RELEASE_LOCK(:key)"), {"key": key})
+        finally:
+            conn.close()
+
+    def check_advisory_lock(self, session, key: str) -> bool:
+        """校验本进程常驻的那条连接仍持有该命名锁。
+
+        IS_USED_LOCK(key) 返回持锁连接的 CONNECTION_ID()(无人持有时为 NULL),
+        在**同一条专属 Connection** 上取 CONNECTION_ID() 比对即可;连接被服务端
+        掐断后锁已静默释放,查询会抛错——同样判 False。
+        """
+        held = self._mysql_lock_conns.get(key)
+        if held is None:
+            return False
+        held_pid, conn = held
+        if held_pid != os.getpid():
+            return False
+        try:
+            same_connection = conn.execute(
+                text("SELECT IS_USED_LOCK(:key) = CONNECTION_ID()"),
+                {"key": key},
+            ).scalar()
+            return bool(same_connection)
+        except Exception:
+            logger.exception("MySQL advisory lock 存活校验失败 key=%s", key)
+            return False
+
+
+class DMDialect(BaseDialect):
+    """达梦(DM8):需外部 SQLAlchemy 达梦方言插件 + dmPython 驱动,未真机验证。
+
+    本仓库不预装达梦方言插件/驱动,也不做真机验证;注册该适配器是把「可插拔」
+    落到代码能力位,部署方需自行安装兼容版本插件(dm+dmPython:// URL):
+
+    - 不支持部分唯一索引(无 WHERE 子句):models.py 的部分唯一索引不创建,
+      由 init_db 的启动校验兜底"每租户至多一条默认模型";
+    - 连接池/驱动参数由部署方方言插件与驱动决定,engine_kwargs 返回 {} 不内置
+      未经验证的项目参数;
+    - 无已验证原生 advisory lock:session_scoped_advisory_lock=False,复用
+      BaseDialect 文件锁——对非 SQLite 文件库响亮拒绝(不会把库名当路径在 CWD
+      生成各进程互不可见的锁文件),保留单实例安全语义;该后端需部署方保证单实例
+      或后续补原生锁实现;
+    - 日分桶 cast(col, Date):按数据库服务器时区取自然日(Oracle 系语法支持)。
+    """
+
+    supports_partial_index = False
+    session_scoped_advisory_lock = False
+
+    def __init__(self) -> None:
+        super().__init__("dm")
+
+    def engine_kwargs(self, url: str) -> dict[str, Any]:
+        # 达梦驱动/方言插件为外部安装物,连接池与字符集参数由部署方负责
+        return {}
+
+    def day_bucket(self, column) -> Any:
+        return cast(column, Date)
+
+
+class OpenGaussDialect(PostgresDialect):
+    """openGauss(高斯):复用 PostgreSQL 方言全能力,补两处协议兼容。
+
+    SQLAlchemy 侧用 ``opengauss+psycopg://`` 自定义方言(app/db/opengauss.py):
+    - 服务端 version 串为 ``(openGauss 5.0.0 build ) ...``,无法按 PG 正则解析;
+      自定义方言回退到 openGauss 5.x 对应的 PostgreSQL 9.2 兼容级别;
+    - openGauss 初始化库默认 SQL_ASCII,client_encoding 未显式指定时驱动可能返回
+      bytes;这里统一注入 ``client_encoding=utf8``(纯 ASCII 数据同样安全)。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.name = "opengauss"
+
+    def engine_kwargs(self, url: str) -> dict[str, Any]:
+        kwargs = dict(super().engine_kwargs(url))
+        kwargs["connect_args"] = {"client_encoding": "utf8"}
+        return kwargs
+
+
 class GenericDialect(BaseDialect):
     """未注册后端的回退:ORM 通用实现;文件锁仅对 SQLite 文件库有效。
 
@@ -308,6 +482,29 @@ class GenericDialect(BaseDialect):
     后端不会创建 models.py 的部分唯一索引,由 init_db 启动校验兜底;
     未实现原生 advisory lock 时 BaseDialect 会响亮拒绝而非静默错锁。
     """
+
+
+# 可选驱动注册表:backend -> (import 名, 安装指引)。缺失时在启动处给出明确
+# 指引而不是连接期栈 trace(桌面端默认 SQLite,不背 PG/MySQL/达梦 驱动)。
+_OPTIONAL_DRIVERS: dict[str, tuple[str, str]] = {
+    "postgresql": ("psycopg", 'pip install "skill-agent-loop-backend[postgres]"'),
+    "mysql": ("pymysql", 'pip install "skill-agent-loop-backend[mysql]"'),
+    "opengauss": ("psycopg", 'pip install "skill-agent-loop-backend[postgres]"'),
+    "dm": ("dmPython", 'pip install "skill-agent-loop-backend[dm]"'),
+}
+
+
+def ensure_driver_available(url: Any) -> None:
+    """检查可选数据库驱动;缺失时抛出带安装指引的 RuntimeError。"""
+    backend = url.get_backend_name() if hasattr(url, "get_backend_name") else str(url)
+    spec = _OPTIONAL_DRIVERS.get(backend)
+    if spec is None:
+        return
+    module_name, hint = spec
+    try:
+        __import__(module_name)
+    except ImportError as exc:
+        raise RuntimeError(f"数据库后端 {backend} 需要可选驱动:{hint}") from exc
 
 
 _DIALECTS: dict[str, DatabaseDialect] = {}
@@ -328,3 +525,10 @@ def get_dialect(backend_name: str) -> DatabaseDialect:
 
 register_dialect("sqlite", SQLiteDialect())
 register_dialect("postgresql", PostgresDialect())
+register_dialect("opengauss", OpenGaussDialect())
+register_dialect("mysql", MySQLDialect())
+register_dialect("dm", DMDialect())
+
+# 注册 SQLAlchemy 侧 ``opengauss+psycopg://`` 方言(版本串/编码兼容)。
+# psycopg 未安装时该模块内不注册 SQLAlchemy 方言,SQLite 默认安装无额外依赖。
+from app.db import opengauss as _opengauss  # noqa: E402,F401

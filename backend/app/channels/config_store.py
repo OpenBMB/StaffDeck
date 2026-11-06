@@ -64,15 +64,18 @@ def patch_binding_config(db, binding_id, *, tenant_id=None, set_values=None, rem
     for key in (binding_values or {}):
         if key not in {"connected", "status"}:
             raise ValueError(f"unsupported binding runtime field: {key}")
-    dialect = db.get_bind(mapper=ChannelBinding).dialect.name
+    bind = db.get_bind(mapper=ChannelBinding)
+    # 按 URL backend 判定(SQLAlchemy 方言名):openGauss 复用 PG 方言,但其
+    # jsonb_set 接受 varchar[] 与否/路径语义与上游不同,走下面的通用 ORM 回退。
+    backend = bind.url.get_backend_name()
     column = ChannelBinding.config_json
-    if dialect == "postgresql":
+    if backend == "postgresql":
         expression = cast(func.coalesce(column, literal({}, type_=JSON)), JSONB)
         for key, value in (set_values or {}).items():
             expression = func.jsonb_set(expression, array([key], type_=Text), literal(value, type_=JSONB), True)
         for key in remove_keys:
             expression = expression.op("-")(literal(key, type_=Text))
-    elif dialect == "sqlite":
+    elif backend == "sqlite":
         expression = func.coalesce(column, "{}")
         for key, value in (set_values or {}).items():
             expression = func.json_set(expression, "$." + json.dumps(key), func.json(json.dumps(value, ensure_ascii=False)))
@@ -82,7 +85,7 @@ def patch_binding_config(db, binding_id, *, tenant_id=None, set_values=None, rem
         return _patch_binding_config_generic(
             db,
             binding_id,
-            dialect,
+            bind.dialect.name,
             tenant_id=tenant_id,
             set_values=set_values,
             remove_keys=remove_keys,

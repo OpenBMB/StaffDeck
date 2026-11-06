@@ -1,37 +1,49 @@
 name: openGauss dialect smoke
 
+# 手动触发:在真实 openGauss 容器上验证数据库方言层
+# (create_all + 方言 DDL 索引 + Alembic 基线 + JSONB 路径回退 + advisory lock + 渠道锁)。
+# 说明:本工作流只验证数据库层,不启动完整应用(应用启动还依赖 Harness v3 运行时构建产物)。
 on:
   workflow_dispatch:
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Start openGauss
         run: |
+          set -euo pipefail
           GAUSS_PASSWORD="Gs$(openssl rand -hex 9)_aB1"
           echo "GAUSS_PASSWORD=$GAUSS_PASSWORD" >> "$GITHUB_ENV"
-          docker run -d --name opengauss \
+          docker run -d --name opengauss --privileged=true \
             -e GS_PASSWORD="$GAUSS_PASSWORD" \
             -p 5432:5432 \
-            enmotech/opengauss:5.0.0
-          for i in $(seq 1 120); do
-            if docker exec opengauss su - omm -c "gsql -d postgres -c 'select 1'" >/dev/null 2>&1; then
+            opengauss/opengauss:5.0.0
+          for i in $(seq 1 180); do
+            if docker exec -u opengauss opengauss sh -c \
+              'export GAUSSHOME=/usr/local/opengauss; export LD_LIBRARY_PATH=$GAUSSHOME/lib; $GAUSSHOME/bin/gsql -d postgres -c "select 1"' >/dev/null 2>&1; then
               echo "openGauss ready after ${i}s"
               break
             fi
-            sleep 2
-            if [ "$i" -eq 120 ]; then
+            sleep 1
+            if [ "$i" -eq 180 ]; then
               echo "openGauss failed to become ready"
               docker logs opengauss
               exit 1
             fi
           done
-          docker exec opengauss su - omm -c "gsql -d postgres -c 'select version()'"
+          # openGauss 默认 0.0.0.0/0 使用 sha256 认证,psycopg3 不支持该 SASL 机制;
+          # CI 冒烟改为 trust(仅容器内网测试用),真实部署请配置 md5/证书等。
+          docker exec -u root opengauss sh -c \
+            "sed -i 's|host all all 0.0.0.0/0 sha256|host all all 0.0.0.0/0 trust|' /var/lib/opengauss/data/pg_hba.conf"
+          docker exec -u opengauss opengauss sh -c \
+            'export GAUSSHOME=/usr/local/opengauss; export LD_LIBRARY_PATH=$GAUSSHOME/lib; $GAUSSHOME/bin/gsql -d postgres -c "select pg_reload_conf()"' >/dev/null
+          docker exec -u opengauss opengauss sh -c \
+            'export GAUSSHOME=/usr/local/opengauss; export LD_LIBRARY_PATH=$GAUSSHOME/lib; $GAUSSHOME/bin/gsql -d postgres -c "select version()"' | head -3
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -40,74 +52,122 @@ jobs:
 
       - name: Install backend deps
         run: |
+          set -euo pipefail
           python -m venv .venv
-          .venv/bin/pip install -q -e "backend[dev,postgres]" 2>/dev/null || (cd backend && ../.venv/bin/pip install -q -e ".[dev,postgres]" && ../.venv/bin/pip install -q pytest pytest-asyncio ruff httpx)
+          .venv/bin/pip install -q -e "backend[dev,postgres]"
 
-      - name: create_all + dialect smoke on openGauss
+      - name: Dialect smoke on openGauss
         env:
-          DATABASE_URL: postgresql+psycopg://postgres:${{ env.GAUSS_PASSWORD }}@127.0.0.1:5432/postgres
+          DATABASE_URL: opengauss+psycopg://gaussdb:unused@127.0.0.1:5432/postgres
+          APP_SECRET: openGauss-smoke
           STAFFDECK_ROLE: all
         working-directory: backend
         run: |
-          set -e
+          set -euo pipefail
           ../.venv/bin/python - <<'PY'
-          from app.db.database import init_db
-          init_db()
-          print("create_all on openGauss: OK")
-          from sqlalchemy import inspect
-          from app.db import engine
-          idx = {i["name"] for t in ("sessions", "model_configs") for i in inspect(engine).get_indexes(t)}
-          assert "uq_sessions_agent_channel_extconv" in idx, "missing session index"
-          assert "uq_model_configs_tenant_default" in idx, "missing default-model partial index"
-          print("indexes: OK")
-          from app.db.dialect import get_dialect
-          from sqlmodel import Session
-          d = get_dialect(engine.url.get_backend_name())
-          print("dialect:", d.name)
-          with Session(engine) as lock_session:
-              assert d.acquire_advisory_lock(lock_session, "staffdeck-connector")
-              assert d.check_advisory_lock(lock_session, "staffdeck-connector")
-              print("advisory lock acquire+check: OK")
-              d.release_advisory_lock(lock_session, "staffdeck-connector")
-              print("advisory lock release: OK")
-          with Session(engine) as db:
-              from app.db.models import User
-              db.exec(__import__("sqlmodel").select(User)).all()
-          print("basic query: OK")
-          PY
+          from sqlalchemy import func, inspect
+          from sqlmodel import Session, select
 
-      - name: Boot app and API smoke on openGauss
-        env:
-          DATABASE_URL: postgresql+psycopg://postgres:${{ env.GAUSS_PASSWORD }}@127.0.0.1:5432/postgres
-          STAFFDECK_ROLE: all
-          ULTRARAG_PORT: 5199
-        working-directory: backend
-        run: |
-          set -e
-          ../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 5199 &
-          APP_PID=$!
-          for i in $(seq 1 60); do
-            if curl -sf http://127.0.0.1:5199/api/health >/dev/null 2>&1; then echo "healthy after ${i}s"; break; fi
-            sleep 1
-            if [ "$i" -eq 60 ]; then echo "app failed to start"; kill $APP_PID; exit 1; fi
-          done
-          curl -sf http://127.0.0.1:5199/api/health
-          TOKEN=$(curl -sf -X POST http://127.0.0.1:5199/api/auth/login \
-            -H 'Content-Type: application/json' \
-            -d '{"tenant_id":"tenant_demo","username":"admin","password":"admin"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
-          echo "login: OK"
-          AGENTS=$(curl -sf "http://127.0.0.1:5199/api/chat/agents?tenant_id=tenant_demo" -H "Authorization: Bearer $TOKEN")
-          echo "agents: $(echo "$AGENTS" | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))')"
-          BID=$(curl -sf -X POST http://127.0.0.1:5199/api/enterprise/channels \
-            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-            -d '{"tenant_id":"tenant_demo","agent_id":"agent_30b8f623c6fe445b","channel":"wecom"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
-          echo "binding: $BID"
-          curl -sf -X POST "http://127.0.0.1:5199/api/enterprise/channels/$BID/wecom/credentials" \
-            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-            -d '{"tenant_id":"tenant_demo","bot_id":"smoke_bot","secret":"smoke_secret","corp_id":"smoke_corp"}' -o /dev/null
-          echo "credentials(JSON config patch): OK"
-          curl -sf "http://127.0.0.1:5199/api/enterprise/channels/$BID/deliveries/days?tenant_id=tenant_demo" \
-            -H "Authorization: Bearer $TOKEN" | python3 -c 'import sys,json;print("day-bucket endpoint:", json.load(sys.stdin)["total_days"], "days")'
-          curl -sf "http://127.0.0.1:5199/api/enterprise/knowledge-bases?tenant_id=tenant_demo" \
-            -H "Authorization: Bearer $TOKEN" | python3 -c 'import sys,json;print("knowledge-bases:", len(json.load(sys.stdin)))'
-          kill $APP_PID || true
+          from app.db.database import engine, init_db
+          from app.db.dialect import get_dialect
+
+          assert engine.url.get_backend_name() == "opengauss"
+          init_db()  # 全新空库:create_all + Alembic 基线 stamp
+          insp = inspect(engine)
+          tables = insp.get_table_names()
+          assert "alembic_version" in tables, "missing alembic_version"
+          assert len(tables) >= 76, f"unexpected table count: {len(tables)}"
+          index_names = {
+              index["name"]
+              for table in ("sessions", "model_configs")
+              for index in insp.get_indexes(table)
+          }
+          assert "uq_sessions_agent_channel_extconv" in index_names, "missing sessions index"
+          assert "uq_model_configs_tenant_default" in index_names, "missing default-model partial index"
+          print("create_all + dialect DDL indexes on openGauss: OK")
+
+          init_db()  # 已有 alembic_version:upgrade head 幂等
+          print("second init_db (alembic upgrade path): OK")
+
+          from app.api.knowledge import _safe_document_bucket_rows
+          from app.channels.config_store import patch_binding_config
+          from app.channels.delivery_days import delivery_day_bucket
+          from app.db.models import (
+              AgentProfile,
+              ChannelBinding,
+              ChannelDelivery,
+              ChatSession,
+              KnowledgeBucket,
+              KnowledgeChunk,
+              Tenant,
+              User,
+              utc_now,
+          )
+
+          dialect = get_dialect(engine.url.get_backend_name())
+          assert dialect.supports_partial_index is True
+
+          with Session(engine) as db:
+              db.add(Tenant(id="tenant_smoke", name="Smoke", created_at=utc_now(), updated_at=utc_now()))
+              db.add(User(id="user_smoke", tenant_id="tenant_smoke", username="smoke",
+                          password_hash="x", role="admin"))
+              db.add(AgentProfile(id="agent_smoke", tenant_id="tenant_smoke", name="Smoke Agent"))
+              db.add(ChatSession(id="sess_smoke", tenant_id="tenant_smoke",
+                                 user_id="user_smoke", agent_id="agent_smoke"))
+              db.add(ChannelBinding(id="bind_smoke", tenant_id="tenant_smoke", agent_id="agent_smoke",
+                                    channel="wecom", status="active",
+                                    created_at=utc_now(), updated_at=utc_now()))
+              db.commit()
+
+              # openGauss 的 jsonb_set 与上游 PG 参数语义不同 -> 走通用 ORM 回退
+              assert patch_binding_config(db, "bind_smoke", tenant_id="tenant_smoke",
+                                          set_values={"auto_route": False, "n": 1})
+              db.commit()
+              db.refresh(db.get(ChannelBinding, "bind_smoke"))
+              assert db.get(ChannelBinding, "bind_smoke").config_json["n"] == 1
+              assert patch_binding_config(db, "bind_smoke", remove_keys=("auto_route",),
+                                          require_active=True)
+              db.commit()
+              print("config patch (generic ORM fallback): OK")
+
+              db.add(ChannelDelivery(id="del_smoke", tenant_id="tenant_smoke",
+                                     binding_id="bind_smoke", session_id="sess_smoke",
+                                     kind="reply", status="sent", idempotency_key="idem_smoke",
+                                     created_at=utc_now(), updated_at=utc_now()))
+              db.add(KnowledgeBucket(id="bucket_smoke", tenant_id="tenant_smoke",
+                                     knowledge_base_id="kb_smoke", document_id="doc_smoke",
+                                     bucket_key="b", title="中文标题", summary="S",
+                                     token_estimate=1, metadata_json={"a": 1},
+                                     created_at=utc_now(), updated_at=utc_now()))
+              db.add(KnowledgeChunk(id="chunk_smoke", tenant_id="tenant_smoke",
+                                    knowledge_base_id="kb_smoke", document_id="doc_smoke",
+                                    bucket_id="bucket_smoke", chunk_index=0,
+                                    content="hello 世界", metadata_json={"x": [1, 2]},
+                                    created_at=utc_now(), updated_at=utc_now()))
+              db.commit()
+              day_expr = delivery_day_bucket(db)
+              row = db.exec(select(day_expr, func.count()).group_by(day_expr)).first()
+              assert row is not None
+              buckets = _safe_document_bucket_rows(db, "tenant_smoke", "doc_smoke")
+              assert buckets and buckets[0]["title"] == "中文标题"
+              print("delivery_day_bucket + knowledge ORM (UTF-8): OK")
+
+          with Session(engine) as lock_session:
+              assert dialect.acquire_advisory_lock(lock_session, "smoke-connector")
+              assert dialect.check_advisory_lock(lock_session, "smoke-connector")
+              dialect.release_advisory_lock(lock_session, "smoke-connector")
+              assert not dialect.check_advisory_lock(lock_session, "smoke-connector")
+          print("advisory lock acquire/check/release: OK")
+
+          from app.channels import (
+              _acquire_connector_process_lock,
+              _connector_lock_healthy,
+              _release_connector_process_lock,
+          )
+
+          assert _acquire_connector_process_lock() is True
+          assert _connector_lock_healthy() is True
+          _release_connector_process_lock()
+          print("channel connector single-instance lock: OK")
+          print("OPENGAUSS DIALECT SMOKE ALL OK")
+          PY

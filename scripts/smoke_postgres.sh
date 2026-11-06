@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Postgres/高斯冒烟:DATABASE_URL=postgresql+psycopg://... 下验证
 # create_all、/api/health 与日分桶/知识库/渠道配置三处方言路径。
-# 用法:DATABASE_URL='postgresql+psycopg://user:pass@host:5432/dbname' scripts/smoke_postgres.sh
+# 用法:
+#   DATABASE_URL='postgresql+psycopg://user:pass@host:5432/dbname' scripts/smoke_postgres.sh
+#   DATABASE_URL='opengauss+psycopg://user:pass@host:5432/postgres' scripts/smoke_postgres.sh
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,8 +14,8 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   echo "请先设置 DATABASE_URL=postgresql+psycopg://user:pass@host:5432/dbname" >&2
   exit 1
 fi
-if [[ "$DATABASE_URL" != postgresql* ]]; then
-  echo "DATABASE_URL 必须是 postgresql(+psycopg) 方言: $DATABASE_URL" >&2
+if [[ "$DATABASE_URL" != postgresql* && "$DATABASE_URL" != opengauss* ]]; then
+  echo "DATABASE_URL 必须是 postgresql+psycopg 或 opengauss+psycopg 方言: $DATABASE_URL" >&2
   exit 1
 fi
 

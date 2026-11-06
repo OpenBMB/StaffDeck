@@ -37,10 +37,13 @@ def test_registry_returns_expected_dialects() -> None:
     assert get_dialect("sqlite").supports_partial_index is True
     assert get_dialect("postgresql").name == "postgresql"
     assert get_dialect("postgresql").supports_partial_index is True
+    # MySQL/达梦已注册专属适配器(能力位与锁语义见 test_db_adapters.py)
+    assert get_dialect("mysql").name == "mysql"
+    assert get_dialect("dm").name == "dm"
     # 未注册后端回退 GenericDialect(名按 backend 名,能力保守)
-    fallback = get_dialect("mysql")
+    fallback = get_dialect("mssql")
     assert isinstance(fallback, GenericDialect)
-    assert fallback.name == "mysql"
+    assert fallback.name == "mssql"
     assert fallback.supports_partial_index is False
 
 

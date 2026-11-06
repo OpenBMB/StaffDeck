@@ -16,6 +16,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
 )
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlmodel import Field, SQLModel
 
 
@@ -48,6 +49,10 @@ class PortableJSON(TypeDecorator):
         if value is not None and dialect.name in ("oracle", "dm"):
             return json.loads(value)
         return value
+
+
+# 头像等内联二进制数据:MySQL TEXT 只有 64KB,用 MEDIUMTEXT 容纳 <=2MB 图片 base64
+HugeText = Text().with_variant(MEDIUMTEXT(), "mysql")
 
 
 class Tenant(SQLModel, table=True):
@@ -95,7 +100,7 @@ class UserAvatar(SQLModel, table=True):
     __tablename__ = "user_avatars"
 
     user_id: str = Field(primary_key=True)
-    data_url: str = Field(sa_column=Column(Text))
+    data_url: str = Field(sa_column=Column(HugeText))
     updated_at: datetime = Field(default_factory=utc_now)
 
 
@@ -154,10 +159,10 @@ class APIIdempotencyRecord(SQLModel, table=True):
 
     id: str = Field(default_factory=lambda: new_id("apiidem"), primary_key=True)
     tenant_id: str = Field(index=True)
-    credential_id: str = Field(index=True)
-    method: str
-    path: str
-    idempotency_key: str = Field(index=True)
+    credential_id: str = Field(max_length=64, index=True)
+    method: str = Field(max_length=16)
+    path: str = Field(max_length=400)
+    idempotency_key: str = Field(max_length=200, index=True)
     request_hash: str
     status_code: int = 200
     response_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
@@ -274,15 +279,15 @@ class ExternalBusinessTask(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: new_id("exttask"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    user_id: str = Field(index=True)
+    tenant_id: str = Field(max_length=64, index=True)
+    user_id: str = Field(max_length=64, index=True)
     agent_id: Optional[str] = Field(default=None, index=True)
     session_id: Optional[str] = Field(default=None, index=True)
     task_frame_id: Optional[str] = Field(default=None, index=True)
     resume_step_id: Optional[str] = None
     invocation_id: Optional[str] = Field(default=None, index=True)
-    tool_id: str = Field(index=True)
-    external_task_id: Optional[str] = Field(default=None, index=True)
+    tool_id: str = Field(max_length=64, index=True)
+    external_task_id: Optional[str] = Field(max_length=192, default=None, index=True)
     idempotency_key: Optional[str] = Field(default=None, unique=True, index=True)
     status: str = Field(default="submitting", index=True)
     request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
@@ -477,11 +482,11 @@ class AgentSkillBranchVersion(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: new_id("agentbranchver"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    agent_id: str = Field(index=True)
-    skill_id: str = Field(index=True)
+    tenant_id: str = Field(max_length=64, index=True)
+    agent_id: str = Field(max_length=64, index=True)
+    skill_id: str = Field(max_length=64, index=True)
     source_skill_id: str = Field(index=True)
-    version: str = Field(index=True)
+    version: str = Field(max_length=32, index=True)
     base_version: str = "1.0.0"
     content_json: dict[str, Any] = Field(sa_column=Column(PortableJSON, nullable=False))
     status: str = Field(default="active", index=True)
@@ -835,10 +840,10 @@ class AgentResourceBinding(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: new_id("agentres"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    agent_id: str = Field(index=True)
-    resource_type: str = Field(index=True)
-    resource_id: str = Field(index=True)
+    tenant_id: str = Field(max_length=64, index=True)
+    agent_id: str = Field(max_length=64, index=True)
+    resource_type: str = Field(max_length=64, index=True)
+    resource_id: str = Field(max_length=192, index=True)
     status: str = Field(default="active", index=True)
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
@@ -945,7 +950,7 @@ class ChatSession(SQLModel, table=True):
     id: str = Field(primary_key=True)
     tenant_id: str = Field(index=True)
     user_id: Optional[str] = Field(default=None, index=True)
-    agent_id: Optional[str] = Field(default=None, index=True)
+    agent_id: Optional[str] = Field(max_length=64, default=None, index=True)
     title: Optional[str] = Field(default=None, sa_column=Column(Text))
     active_skill_id: Optional[str] = None
     active_step_id: Optional[str] = None
@@ -959,11 +964,11 @@ class ChatSession(SQLModel, table=True):
     summary: Optional[str] = Field(default=None, sa_column=Column(Text))
     last_agent_question: Optional[str] = Field(default=None, sa_column=Column(Text))
     status: str = "active"
-    channel: Optional[str] = None
-    external_conv_id: Optional[str] = None
+    channel: Optional[str] = Field(default=None, max_length=32)
+    external_conv_id: Optional[str] = Field(default=None, max_length=192)
     channel_target_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(PortableJSON))
     # 渠道会话直挂绑定:出站 staging 优先按它直查,不再靠 (agent_id, channel) 反查
-    channel_binding_id: Optional[str] = None
+    channel_binding_id: Optional[str] = Field(default=None, max_length=64)
     # 渠道外部账号稳定键:绑定删除后仍保留,仅允许同一外部 Bot 精确认领历史会话
     channel_account_key: Optional[str] = Field(default=None, index=True)
     # 团队会话挂接:非空表示该会话属于某团队(TL 对话/任务执行等)
@@ -1125,11 +1130,11 @@ class ChannelIdentity(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: new_id("chident"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    channel: str = Field(index=True)
+    tenant_id: str = Field(max_length=64, index=True)
+    channel: str = Field(max_length=32, index=True)
     # 渠道账号作用域:wechat 置空(全局 wxid);wecom 取 corp_id/bot_id/binding.id,隔离跨企业身份
-    external_account_scope: str = Field(default="", index=True)
-    external_user_id: str
+    external_account_scope: str = Field(max_length=64, default="", index=True)
+    external_user_id: str = Field(max_length=192)
     staffdeck_user_id: str = Field(index=True)
     display_name: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -1162,7 +1167,10 @@ class ChannelInboundEvent(SQLModel, table=True):
     # 每条事件不可变的回复目标；异步处理不得读取会话上的可变 target
     target_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(PortableJSON, nullable=False, server_default="{}"),
+        # server_default 不用于 JSON 列:MySQL 不允许 JSON 字面量默认值(1101);
+        # SQLite 存量库由 _migrate_sqlite_skill_schema 的 ALTER ... DEFAULT '{}' 兜底,
+        # 新库由 default_factory 保证 ORM 写入,故不在 DDL 层声明默认值。
+        sa_column=Column(PortableJSON, nullable=False),
     )
     # 收到确认标记的句柄；最终回复送达后据此异步撤回。飞书存远端 reaction_id；
     # 钉钉 emotion 接口不返回 ID，存本地哨兵值表示"已挂上待撤回"。
@@ -1746,13 +1754,13 @@ class TeamTaskBid(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: new_id("bid"), primary_key=True)
-    task_id: str = Field(index=True)
+    task_id: str = Field(max_length=64, index=True)
     team_id: str = Field(index=True)
     tenant_id: str = Field(index=True)
-    agent_id: str = Field(index=True)
+    agent_id: str = Field(max_length=64, index=True)
     round: int = 1
     # kind: statement(方案陈述) / rebuttal(反驳)
-    kind: str = Field(default="statement", index=True)
+    kind: str = Field(max_length=32, default="statement", index=True)
     content: str = Field(sa_column=Column(Text))
     # TL 裁决后回写的分数与理由,未裁决前为 None
     score: Optional[float] = None
