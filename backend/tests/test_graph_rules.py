@@ -109,6 +109,7 @@ def test_graph_runtime_legacy_node_defaults_and_dangling_edges() -> None:
         "metadata": {},
         "sub_sop_id": None,
         "assignee_user_id": None,
+        "assignee_notify_channel": None,
     }
 
 
@@ -254,6 +255,27 @@ def test_skill_graph_node_preserves_assignee_user_id() -> None:
     node_empty = SkillGraphNode(node_id="collect", name="收集")
     assert node_empty.assignee_user_id is None
     assert node_empty.model_dump()["assignee_user_id"] is None
+
+
+def test_skill_graph_node_preserves_assignee_notify_channel() -> None:
+    """SkillGraphNode schema should preserve assignee_notify_channel through round-trip."""
+    node = SkillGraphNode(
+        node_id="handoff_node",
+        type="handoff",
+        name="转人工",
+        assignee_user_id="user_abc",
+        assignee_notify_channel="feishu",
+    )
+    dumped = node.model_dump()
+    assert dumped["assignee_notify_channel"] == "feishu"
+
+    node_empty = SkillGraphNode(node_id="collect", name="收集")
+    assert node_empty.assignee_notify_channel is None
+    assert node_empty.model_dump()["assignee_notify_channel"] is None
+
+    assert GraphRules.node_as_step(
+        {"node_id": "handoff", "assignee_user_id": "user_abc", "assignee_notify_channel": "feishu"}
+    )["assignee_notify_channel"] == "feishu"
 
 
 def test_skill_card_round_trip_with_assignee_user_id() -> None:

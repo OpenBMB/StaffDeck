@@ -103,8 +103,10 @@ def create_api_client(
         description=request.description,
         scopes_json=sorted(set(request.scopes)),
         created_by_user_id=principal.actor_user.id,
-        metadata_json=request.metadata,
+        metadata_json={key: value for key, value in request.metadata.items() if key != "_runtime_binding"},
     )
+    from app.public_api.runtime import stamp_client
+    stamp_client(db, row)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -132,7 +134,11 @@ def update_api_client(
     if "status" in values:
         row.status = values["status"]
     if "metadata" in values:
-        row.metadata_json = values["metadata"] or {}
+        from app.public_api.runtime import REALM_KEY
+        binding = (row.metadata_json or {}).get(REALM_KEY)
+        row.metadata_json = {key: value for key, value in (values["metadata"] or {}).items() if key != REALM_KEY}
+        if binding:
+            row.metadata_json = {**row.metadata_json, REALM_KEY: binding}
     row.updated_at = utc_now()
     db.add(row)
     db.commit()
@@ -178,12 +184,17 @@ def create_api_credential(
     if not all(_scope_allowed(client_scopes, scope) for scope in scopes):
         raise PublicAPIError(400, "SCOPE_ESCALATION", "Credential scopes exceed client scopes.")
     if request.agent_id:
-        agent = db.get(AgentProfile, request.agent_id)
-        if not agent or agent.tenant_id != principal.tenant_id:
-            raise PublicAPIError(404, "AGENT_NOT_FOUND", "Agent not found.")
+        from app.public_api.sessions import ensure_public_agent
+        ensure_public_agent(db, principal, request.agent_id)
         if not scopes.issubset(AGENT_KEY_ALLOWED_SCOPES):
             raise PublicAPIError(400, "AGENT_SCOPE_INVALID", "Agent key contains management scopes.")
     token, prefix, digest = generate_api_key()
+    from app.public_api.runtime import stamp_client, check_client
+    if (client.metadata_json or {}).get("_runtime_binding"):
+        check_client(db, client)
+    else:
+        stamp_client(db, client)
+        db.add(client)
     row = APICredential(
         tenant_id=principal.tenant_id,
         client_id=client.id,

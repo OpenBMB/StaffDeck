@@ -1,0 +1,455 @@
+"""Harness v3 engine adapter for every autonomous execution entry.
+
+HarnessV3Engine reuses the engine-neutral TurnCoordinator. Business
+planning/reply contracts live in runtime.model_phases; the Bridge supplies the Harness v3 engine
+phase transport, activation tokens and worker leasing. Capabilities, memory,
+SOP supervision and handoff are host-side modules outside the Harness v3 core loop.
+Validated images are provided by the same model gateway, not a second execution loop.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+from pathlib import Path
+from typing import Any
+
+from sqlmodel import Session
+
+
+from app.core.turn_coordinator import TurnCoordinator
+from app.db.models import ChatSession, HarnessTaskFrameRecord, Skill
+from app.session.session_schema import ChatTurnRequest
+from staffdeck_harness.bridge.task_agent import HarnessV3Runtime, HarnessV3TaskAgent, HarnessV3TurnContext
+from staffdeck_harness.bridge.worker import HarnessV3WorkerConfig
+from staffdeck_harness.composition.compiler import CompositionCompiler, CompositionSnapshot
+from staffdeck_harness.composition.sources import resolve_staff, source_context
+from staffdeck_harness.contracts.errors import EngineUnavailable
+from staffdeck_harness.contracts.security import SecurityContext
+from staffdeck_harness.security.profile import Guard, get_profile
+from staffdeck_harness.runtime.trace_names import composition_trace_names
+
+logger = logging.getLogger(__name__)
+
+_runtime_lock = threading.Lock()
+_runtime: HarnessV3Runtime | None = None
+
+
+def _settings_value(settings: Any, name: str, default: Any = None) -> Any:
+    if settings is not None and hasattr(settings, name):
+        return getattr(settings, name)
+    return os.environ.get(name.upper(), default)
+
+
+def get_runtime(settings: Any) -> HarnessV3Runtime:
+    global _runtime
+    with _runtime_lock:
+        if _runtime is None:
+            root = Path(str(_settings_value(settings, "harness_v3_root", "") or "")).expanduser()
+            if not str(root):
+                raise EngineUnavailable("harness_v3_root is not configured")
+            home = Path(str(_settings_value(settings, "harness_v3_home", "") or "") or (root / ".staffdeck-harness-home")).expanduser()
+            cfg = HarnessV3WorkerConfig(
+                harness_v3_root=root,
+                harness_v3_home=home,
+                node_bin=str(_settings_value(settings, "harness_v3_node_bin", "node") or "node"),
+                permission_mode=str(_settings_value(settings, "harness_v3_permission_mode", "danger-full-access") or "danger-full-access"),
+                initialize_timeout_seconds=float(_settings_value(settings, "harness_v3_initialize_timeout_seconds", 90.0) or 90.0),
+                request_timeout_seconds=float(_settings_value(settings, "harness_v3_request_timeout_seconds", 600.0) or 600.0),
+            )
+            cfg.validate()
+            rt = HarnessV3Runtime(worker_config=cfg)
+            rt.start()
+            _runtime = rt
+        return _runtime
+
+
+def reset_runtime() -> None:
+    global _runtime
+    with _runtime_lock:
+        if _runtime is not None:
+            _runtime.stop()
+        _runtime = None
+
+
+def get_settings_safe() -> Any:
+    try:
+        from app.config import get_settings
+
+        return get_settings()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _has_image_attachments(request: Any) -> bool:
+    for att in getattr(request, "attachments", None) or ():
+        kind = getattr(att, "kind", None) if not isinstance(att, dict) else att.get("kind")
+        data_url = getattr(att, "data_url", None) if not isinstance(att, dict) else att.get("data_url")
+        if kind == "image" and data_url:
+            return True
+    return False
+
+
+class HarnessV3Engine(TurnCoordinator):
+    """Shared turn scheduling with every model stage on Harness v3 and SOP control in its module.
+
+    ``TurnCoordinator`` owns claims, leases and TaskFrame scheduling. ``SopHost`` resolves
+    the registered SOP runtime for lifecycle decisions; neither the Bridge nor the old
+    AgentLoop owns that state machine. Model decisions run on a pooled engine process:
+
+    - ``self.planner``                 → ``EngineTurnPlanner`` (same prompt/contract/normalize as v2)
+    - ``self.task_agent`` (per frame)  → ``HarnessV3TaskAgent`` sharing the turn's process
+    - ``self.response_generator``     → ``EngineResponseGenerator`` (when multiple frames need
+                                         synthesis; a lone frame's result is final)
+
+    The process is checked out on the first model stage and returned in ``run()``'s ``finally``;
+    the activation token behind it is rebound per phase (see ``bridge/phases``).
+    """
+
+    def __init__(self, owner: Any, *, runtime: HarnessV3Runtime, profile: Any = None, compiler: CompositionCompiler | None = None) -> None:
+        super().__init__(owner)
+        self.runtime = runtime
+        self.profile = profile or get_profile(getattr(runtime, "settings", None) or get_settings_safe())
+        # HarnessV2Engine already owns ``self.compiler`` (TaskRequestCompiler).
+        self.composition_compiler = compiler or CompositionCompiler()
+        self.snapshot: CompositionSnapshot | None = None
+        self.security_context: SecurityContext | None = None
+        self.guard: Guard | None = None
+        self._request: ChatTurnRequest | None = None
+        self._memory_context: list[dict[str, Any]] = []
+        self._pooled: Any = None
+        self._reply_policy = self.response_generator
+        self.response_generator = _LazyResponseGenerator(self)
+        # Lazily-bound phase planner: it needs the pooled process, which needs the model config,
+        # which the v2 turn resolves after ``run()`` starts. ``_LazyPlanner`` defers to ``_plan``.
+        self.planner = _LazyPlanner(self)  # type: ignore[assignment]
+
+    # -- turn-level capture ------------------------------------------------------------
+
+    def run(self, request: ChatTurnRequest):
+        self._request = request
+        if hasattr(self.events, "execution_engine"):
+            self.events.execution_engine = "harness_v3"
+        try:
+            return super().run(request)
+        finally:
+            if self._pooled is not None:
+                self.runtime.release_process(self._pooled)
+                self._pooled = None
+
+    def _prepare_modules(self, request: ChatTurnRequest, session: ChatSession) -> None:
+        self._ensure_turn_context(request, session)
+        super()._prepare_modules(request, session)
+
+    # -- the engine process for this turn -----------------------------------------------
+
+    def _turn_process(self, request: ChatTurnRequest, session: ChatSession, model_config: Any) -> Any:
+        """Check out (once per turn) the pooled process every phase of this turn runs on."""
+
+        if self._pooled is not None:
+            if self._pooled.alive:
+                return self._pooled
+            self.runtime.release_process(self._pooled)
+            self._pooled = None
+        self._ensure_turn_context(request, session)
+        from staffdeck_harness.bridge.task_agent import _model_thinking
+        from staffdeck_harness.bridge.worker import HarnessV3WorkerConfig
+        from staffdeck_harness.capabilities.facade import harness_task_workspace_path
+
+        model = str(getattr(model_config, "model", "") or "")
+        thinking, effort = _model_thinking(model_config)
+        wc = self.runtime.worker_config
+        cfg = HarnessV3WorkerConfig(
+            harness_v3_root=wc.harness_v3_root, harness_v3_home=wc.harness_v3_home / request.tenant_id, node_bin=wc.node_bin,
+            model=model, model_base_url=self.runtime.model_base_url, thinking=thinking, reasoning_effort=effort,
+            permission_mode=wc.permission_mode, initialize_timeout_seconds=wc.initialize_timeout_seconds, request_timeout_seconds=wc.request_timeout_seconds,
+        )
+        cwd = harness_task_workspace_path(tenant_id=request.tenant_id, session_id=session.id, task_frame_id=f"turn-{self.user_message_id or session.id}", db=self.db)
+        cwd.mkdir(parents=True, exist_ok=True)
+        import time as _time
+
+        t0 = _time.monotonic()
+        self._pooled = self.runtime.acquire_process(cfg, request.tenant_id, cwd=cwd)
+        pooled = self._pooled
+        self.events.record(request.tenant_id, session.id, "harness_v3_process_started", {
+            "model": model, "model_config_id": getattr(model_config, "id", None), "base_url": str(getattr(model_config, "base_url", "") or ""),
+            "via": "staffdeck-model-gateway", "thinking": thinking or "provider_default", "reasoning_effort": effort or "provider_default",
+            "workspace": str(cwd), "boot_ms": int((_time.monotonic() - t0) * 1000), "pooled": pooled.uses > 1, "process_uses": pooled.uses, "execution_engine": "harness_v3",
+        })
+        return self._pooled
+
+    def _phase_runner(self, request: ChatTurnRequest, session: ChatSession, model_config: Any) -> Any:
+        from staffdeck_harness.bridge.phases import EnginePhaseRunner
+        from app.core.harness_attachments import validated_task_image_payloads
+
+        pooled = self._turn_process(request, session, model_config)
+        # Release the caller's writer before waiting on a model. Gateway callbacks run on
+        # worker threads and must not share its SQLAlchemy Session or uncommitted trace rows.
+        tenant_id, session_id = request.tenant_id, session.id
+        turn_id, client_turn_id = self.user_message_id, request.client_turn_id
+        from staffdeck_harness.runtime.services import execution_identity, runtime_services
+        services = runtime_services(self.db)
+        identity = execution_identity(request, session)
+        self.db.commit()
+
+        def trace(event: str, payload: dict[str, Any]) -> None:
+            from app.observability.event_log import EventLog
+            with services.session(identity, purpose="trace") as trace_db:
+                events = EventLog(trace_db)
+                events.execution_engine = "harness_v3"
+                if turn_id:
+                    events.bind_turn(turn_id, client_turn_id)
+                events.record(tenant_id, session_id, event, payload)
+                trace_db.commit()
+
+        return EnginePhaseRunner(self.runtime, pooled, tenant_id=request.tenant_id, session_id=session.id, trace=trace, cancelled=lambda: self._is_cancelled(request, session), image_payloads=validated_task_image_payloads(request.attachments or []))
+
+    def _plan(self, message: str, session: ChatSession, available_skills: list[Any], model_config: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run planning on the registered engine; unavailable engines fail explicitly."""
+
+        request = self._request
+        assert request is not None
+        runner = self._phase_runner(request, session, model_config)
+        from staffdeck_harness.runtime.model_phases import EngineTurnPlanner
+
+        engine_session = f"sd-{session.id}-{self.user_message_id or 'turn'}"
+        return EngineTurnPlanner(runner, engine_session=engine_session).plan(message, session, available_skills, model_config, *args, **kwargs)
+
+    def runtime_settings(self) -> Any:
+        return getattr(self.runtime, "settings", None) or get_settings_safe()
+
+    def _ensure_turn_context(self, request: ChatTurnRequest, session: ChatSession) -> None:
+        if self.snapshot is not None:
+            return
+        staff, self.security_context = resolve_staff(
+            self.registry, self.db, source_context(request, session_id=session.id, staff_id=session.agent_id),
+            self.profile,
+        )
+        self.staff_composition = staff
+        self.snapshot = self.composition_compiler.compile(staff, generation=self.registry.generation, strict=False,
+            metadata={"turn_id": self.user_message_id, "engine": "harness_v3"})
+        if getattr(request, "_read_only", False):
+            from dataclasses import replace
+            self.snapshot = replace(self.snapshot, session_policy={**self.snapshot.session_policy, "read_only": True},
+                                    grants=tuple(g for g in self.snapshot.grants if g.operation == "general_skill.consume/v1"))
+        self.guard = Guard("staffdeck.runtime", self.profile)
+        from staffdeck_harness.capabilities.manifest import SnapshotManifestBuilder
+        from staffdeck_harness.composition.sources import resolve_source
+        from staffdeck_harness.contracts.manifest import SlotName
+        self.manifests = SnapshotManifestBuilder(self)
+        source = resolve_source(self.registry, SlotName.STAFF_SOURCE, self.db)
+        self.services.get_request_model = lambda req, aid=None: source.model(
+            source_context(req, session_id=session.id, staff_id=aid), req.model_config_id)
+        self.services.get_persona_prompt = lambda *args: self.snapshot.persona
+        self.services.get_agent_loop_max_actions = lambda *args: self.snapshot.session_policy["max_actions"]
+        if hasattr(self.events, "execution_engine"):
+            self.events.execution_engine = "harness_v3"
+        self.events.record(
+            request.tenant_id,
+            session.id,
+            "composition_snapshot_compiled",
+            {
+                "snapshot_id": self.snapshot.snapshot_id,
+                "staff_id": self.snapshot.staff_id,
+                "grants": len(self.snapshot.grants),
+                "sops": [s.skill_id for s in self.snapshot.sops],
+                "security_profile": self.profile.name,
+                "execution_engine": "harness_v3",
+                "trace_names": composition_trace_names(staff),
+                "bindings": [vars(binding.durable_ref()) for binding in self.snapshot.bindings],
+            },
+        )
+
+    # -- the seam -----------------------------------------------------------------------
+
+    def _activate_frame(self, session, row, skills):
+        from staffdeck_harness.composition.pins import pin_sop
+        base = getattr(self, "_turn_snapshot", None) or self.snapshot
+        self._turn_snapshot = base
+        skill = next((s for s in skills if s.skill_id == row.skill_id), None)
+        self.snapshot, pinned = pin_sop(base, self.staff_composition, session, row, skill)
+        values = [pinned if s.skill_id == row.skill_id else s for s in skills] if pinned else skills
+        return super()._activate_frame(session, row, values)
+
+    def _run_frame(  # type: ignore[override]
+        self,
+        request: ChatTurnRequest,
+        session: ChatSession,
+        row: HarnessTaskFrameRecord,
+        frame: Any,
+        active_skill: Skill | None,
+        model_config: Any,
+        memory_context: list[dict[str, object]],
+        prior_frame_results: list[dict[str, Any]],
+        max_actions: int,
+    ):
+        self._ensure_turn_context(request, session)
+        assert self.snapshot is not None and self.security_context is not None and self.guard is not None
+        if self.registry is not None:
+            from staffdeck_harness.memory import ProviderMemoryFacade, resolve_memory_provider, memory_config
+            from app.memory.service import memory_read
+
+            provider = resolve_memory_provider(registry=self.registry, snapshot=self.snapshot, sop_id=active_skill.skill_id if active_skill else None)
+            self.memory = ProviderMemoryFacade(self.db, provider, profile=self.profile, config=memory_config(self.registry, self.snapshot, active_skill.skill_id if active_skill else None), registry=self.registry,
+                source_context=source_context(request, session_id=session.id, staff_id=session.agent_id))
+            memory_context = [memory_read(m) for m in self.memory.context_memories(request.tenant_id, request.user_id, agent_id=session.agent_id)] if request.user_id else []
+            if callable(self._legacy_capture):
+                self.capture_memory = self.memory.bind_capture(self.events, self._legacy_capture)
+        turn = HarnessV3TurnContext(
+            db=self.db,
+            snapshot=self.snapshot,
+            security_context=self.security_context,
+            guard=self.guard,
+            tenant_id=request.tenant_id,
+            agent_id=session.agent_id or self.snapshot.staff_id,
+            user_id=request.user_id or "",
+            session_id=session.id,
+            turn_id=self.user_message_id or request.client_turn_id or session.id,
+            channel=request.channel,
+            run_id="",
+            task_frame_id=row.task_id,
+            memory_context=[dict(m) for m in memory_context],
+            session_slots=dict(session.slots_json or {}),
+            generation=self.snapshot.generation,
+            module_registry=self.registry,
+            attachments_text="",
+            client_turn_id=request.client_turn_id,
+            run_id_provider=lambda: self.active_run_id or "",
+            run_attempt_provider=lambda: self.active_frame_attempt_no or 1,
+            live_stream=getattr(self, "_allow_frame_stream", True) and not self.supervision_required(active_skill),
+            stream_sink=getattr(self.services, "stream_sink", None),
+        )
+        pooled = self._turn_process(request, session, model_config)
+        self.task_agent = HarnessV3TaskAgent(self.runtime, turn, pooled=pooled)  # type: ignore[assignment]
+        return super()._run_frame(request, session, row, frame, active_skill, model_config, memory_context, prior_frame_results, max_actions)
+
+
+class _LazyResponseGenerator:
+    """Use the same reply policies but always execute model synthesis on the v3 phase port.
+
+    This also covers resumed/forced tasks which do not need a new planning phase.
+    """
+    def __init__(self, engine):
+        self.engine = engine
+
+    def __getattr__(self, name):
+        return getattr(self.engine._reply_policy, name)
+
+    def _bound(self, args):
+        from staffdeck_harness.runtime.model_phases import EngineResponseGenerator
+
+        e = self.engine
+        return EngineResponseGenerator(e._reply_policy, e._phase_runner(e._request, args[1], args[6]),
+                                       engine_session=f"sd-{args[1].id}-{e.user_message_id or 'turn'}")
+
+    def generate(self, *args, **kwargs):
+        return self._bound(args).generate(*args, **kwargs)
+
+    def generate_stream(self, *args, **kwargs):
+        yield from self._bound(args).generate_stream(*args, **kwargs)
+
+    def generate_with_stream(self, *args, **kwargs):
+        return self._bound(args).generate_with_stream(*args, **kwargs)
+
+
+class _LazyPlanner:
+    """``HarnessV2Engine.run`` calls ``self.planner.plan(...)``; route it to the engine-backed planner."""
+
+    def __init__(self, engine: HarnessV3Engine) -> None:
+        self._engine = engine
+
+    def plan(self, *args: Any, **kwargs: Any) -> Any:
+        return self._engine._plan(*args, **kwargs)
+
+
+class EngineHost:
+    """Startup-level engine selection. Not a per-Staff plugin."""
+
+    def __init__(self, settings: Any):
+        self.settings = settings
+
+    @property
+    def harness_v3_enabled(self) -> bool:
+        return True
+
+    def allowlist(self) -> set[str]:
+        raw = str(_settings_value(self.settings, "harness_v3_staff_allowlist", "") or "")
+        return {x.strip() for x in raw.split(",") if x.strip()}
+
+    def selects_harness_v3(self, request: ChatTurnRequest, agent_id: str | None, *, db: Session | None = None) -> bool:
+        """Text and image turns use the same v3 runtime, irrespective of stale legacy flags."""
+
+        return True
+
+    def _staff_wants_harness_v3(self, agent_id: str | None, *, db: Session | None = None) -> bool:
+        return True
+
+    def engine_fallback_reason(self, request: ChatTurnRequest, agent_id: str | None, *, db: Session | None = None) -> str | None:
+        """Why a turn that *would* select Harness v3 is routed to v2 anyway (None when it is not)."""
+
+        return None
+
+    def open(self, loop: Any, request: ChatTurnRequest, agent_id: str | None) -> TurnCoordinator:
+        from staffdeck_harness.modules.registry import peek_registry
+        from staffdeck_harness.contracts.manifest import SlotName
+
+        registry = peek_registry()
+        db = getattr(loop, "db", None)
+        if db is not None and hasattr(request, "_control_subject"):
+            request._control_subject = getattr(db, "info", {}).get("staffdeck_control_subject")
+        if registry is not None and db is not None:
+            from staffdeck_harness.composition.sources import authorize_staff
+            authorize_staff(registry, db, source_context(request, staff_id=agent_id), get_profile(self.settings))
+        selected = registry.provider(SlotName.RUNTIME_ENGINE) if registry else None
+        if selected and selected.manifest.module_id == "engine.harness_v2":
+            raise EngineUnavailable("HARNESS_V2_RETIRED: select the Harness v3 runtime")
+        if selected and selected.manifest.module_id != "engine.harness_v3":
+            return selected.provider.open(loop, request, agent_id)
+        from staffdeck_harness.modules.registry import get_registry
+
+        # Resolve the registered v3 provider; there is no implicit in-process fallback.
+        installed = get_registry(self.settings).get("engine.harness_v3")
+        if installed is not None and callable(getattr(installed.provider, "open", None)):
+            return installed.provider.open(loop, request, agent_id)
+        raise EngineUnavailable("Harness v3 engine module is not installed")
+
+
+# --------------------------------------------------------------------------- fallback visibility
+
+_fallback_lock = threading.Lock()
+_fallback_count = 0
+_last_fallback: dict[str, Any] | None = None
+
+
+def _note_fallback(loop: Any, request: Any, reason: str, *, detail: str) -> None:
+    """Record that a turn which wanted Harness v3 ran on Harness v2, and why."""
+
+    global _fallback_count, _last_fallback
+    from datetime import datetime, timezone
+
+    entry = {"reason": reason, "detail": str(detail)[:500], "at": datetime.now(timezone.utc).isoformat(), "session_id": getattr(request, "session_id", None), "agent_id": getattr(request, "agent_id", None)}
+    with _fallback_lock:
+        _fallback_count += 1
+        _last_fallback = entry
+    events = getattr(loop, "events", None)
+    if events is not None and hasattr(events, "execution_engine"):
+        events.execution_engine = None  # the turn really runs on v2; do not label it v3
+    record = getattr(events, "record", None)
+    tenant_id, session_id = getattr(request, "tenant_id", None), getattr(request, "session_id", None)
+    if callable(record) and tenant_id and session_id:
+        try:
+            record(tenant_id, session_id, "harness_v3_fallback", {"reason": reason, "detail": entry["detail"], "execution_engine": "harness_v2"})
+        except Exception:  # pragma: no cover - visibility must never break a turn
+            logger.exception("could not record harness_v3_fallback event")
+
+
+def fallback_state() -> dict[str, Any]:
+    with _fallback_lock:
+        return {"fallback_count": _fallback_count, "last_fallback": dict(_last_fallback) if _last_fallback else None}
+
+
+def reset_fallback_state() -> None:
+    global _fallback_count, _last_fallback
+    with _fallback_lock:
+        _fallback_count, _last_fallback = 0, None

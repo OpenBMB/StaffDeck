@@ -1,0 +1,23 @@
+- banner:
+  - navigation "Session hierarchy":
+    - button "Reference order target" [disabled]
+  - button "Session log":
+    - text: Session log
+    - img
+  - tablist:
+    - tab "Chat" [selected]
+    - tab "Trajectory"
+- text: Research notes what changed? Referenced session · Research notes {{clock}}
+- button "Copy":
+  - img
+- button "Session recall Research notes":
+  - img
+  - text: Session recall Research notes
+- textbox "Message or run a task... / commands, @ files or sessions"
+- button "Commands":
+  - img
+- 'button "Access mode, current: Workspace Write"': Workspace Write
+- button "Select model, current DeepSeek-V4-Flash":
+  - text: DeepSeek-V4-Flash
+  - img
+- button "Send message" [disabled]

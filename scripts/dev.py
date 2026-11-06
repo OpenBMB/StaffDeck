@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
 import os
 import shutil
 import signal
@@ -227,6 +228,64 @@ def _ensure_frontend_dependencies() -> None:
     )
 
 
+def _installed_distribution_version(name: str) -> str | None:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return version(name)
+    except PackageNotFoundError:
+        return None
+
+
+def _backend_dependencies_complete() -> bool:
+    """Check current pyproject runtime requirements against the active venv."""
+    try:
+        import tomllib
+
+        from packaging.requirements import Requirement
+
+        document = tomllib.loads(
+            (ROOT_DIR / "backend" / "pyproject.toml").read_text(encoding="utf-8")
+        )
+        requirements = document.get("project", {}).get("dependencies", [])
+    except (ImportError, OSError, ValueError):
+        return False
+    if not isinstance(requirements, list):
+        return False
+    for raw in requirements:
+        try:
+            requirement = Requirement(str(raw))
+        except ValueError:
+            return False
+        if requirement.marker and not requirement.marker.evaluate():
+            continue
+        installed = _installed_distribution_version(requirement.name)
+        if installed is None or (
+            requirement.specifier and not requirement.specifier.contains(installed)
+        ):
+            return False
+    return True
+
+
+def _ensure_backend_dependencies() -> None:
+    """Refresh the editable backend install after a pull changes dependencies."""
+    if _backend_dependencies_complete():
+        return
+    print("Backend dependencies changed or are incomplete; refreshing the active environment...")
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-e",
+            str(ROOT_DIR / "backend"),
+        ],
+        cwd=ROOT_DIR,
+        check=True,
+    )
+
+
 def _ensure_sandbox_runtime() -> None:
     runtime = ROOT_DIR / "packaging" / "sandbox_runtime"
     cli = runtime / "node_modules" / "@anthropic-ai" / "sandbox-runtime" / "dist" / "cli.js"
@@ -250,13 +309,76 @@ def _ensure_sandbox_runtime() -> None:
     )
 
 
+def _ensure_oss_runtime() -> bool:
+    """Repair an unprepared bundled OSS checkout before stopping any running service."""
+    if not (ROOT_DIR / "distribution" / "manifest.json").is_file():
+        return False
+    engine = ROOT_DIR / "harness-engine"
+    configured = os.environ.get("HARNESS_V3_ROOT", "").strip()
+    if configured:
+        external = Path(configured).expanduser()
+        if not external.is_absolute():
+            # The supervisor launches the backend from backend/, matching the runtime.
+            external = ROOT_DIR / "backend" / external
+        if external.resolve() != engine.resolve():
+            return False
+
+    # The existing sandbox preparation already supplies a reviewed Node version.
+    # Select it for this launch and its children without changing the user's PATH.
+    node = ROOT_DIR / "packaging" / "sandbox_runtime" / "bin" / (
+        "node.exe" if sys.platform == "win32" else "node"
+    )
+    if node.is_file():
+        directory = str(node.parent)
+        paths = [value for value in os.environ.get("PATH", "").split(os.pathsep)
+                 if value != directory]
+        os.environ["PATH"] = os.pathsep.join([directory, *paths])
+        os.environ.setdefault("HARNESS_V3_NODE_BIN", str(node))
+
+    entry = engine / "apps" / "cli" / "lib" / "bin.js"
+
+    def ready() -> bool:
+        return (entry.is_file() and (engine / "node_modules").is_dir()
+                and importlib.util.find_spec("deepseek_harness") is not None)
+
+    if ready():
+        return False
+    print("Harness v3 runtime or SDK is incomplete; preparing the OSS checkout...", flush=True)
+    subprocess.run(
+        [sys.executable, str(ROOT_DIR / "prepare.py"), "--without-backend", "--no-cli-link"],
+        cwd=ROOT_DIR,
+        check=True,
+    )
+    # Reuse the active environment instead of recreating its running virtualenv.
+    subprocess.run(
+        [sys.executable, str(ROOT_DIR / "packaging" / "distribution" / "install_dependencies.py")],
+        cwd=ROOT_DIR,
+        check=True,
+    )
+    importlib.invalidate_caches()
+    if not ready():
+        raise RuntimeError(
+            "OSS preparation did not produce a complete Harness v3 runtime and Python SDK; "
+            "check the preparation output above."
+        )
+    return True
+
+
 def _url_ready(url: str) -> bool:
+    response = None
     try:
-        with urllib.request.urlopen(url, timeout=2) as response:
-            response.read()
-            return response.status < 500
+        response = urllib.request.urlopen(url, timeout=2)
+        return response.status < 500
     except (OSError, urllib.error.URLError):
         return False
+    finally:
+        if response is not None:
+            try:
+                close = getattr(response, "close", None)
+                if close:
+                    close()
+            except OSError:
+                pass
 
 
 def _wait_for_url(label: str, url: str, log_file: Path) -> None:
@@ -311,10 +433,15 @@ def _start_detached(supervisor) -> int:
 def command_up(detach_flag: bool) -> int:
     detach = detach_flag or _env_flag("DETACH")
     os.environ.setdefault("AUTO_RESTART", "1" if detach else "0")
-    supervisor = _load_supervisor()
-    _ensure_frontend_dependencies()
-    supervisor.validate_prerequisites()
+    _ensure_backend_dependencies()
     _ensure_sandbox_runtime()
+    prepared = _ensure_oss_runtime()
+    supervisor = _load_supervisor()
+    if not prepared:
+        _ensure_frontend_dependencies()
+    supervisor.validate_prerequisites()
+    if supervisor.SINGLE_PORT and not prepared:
+        _build_frontend()
     stop_services(verbose=False)
     force_ports = _env_flag("FORCE_PORTS")
     if supervisor.SINGLE_PORT and not force_ports:
@@ -326,33 +453,35 @@ def command_up(detach_flag: bool) -> int:
             supervisor = importlib.reload(supervisor)
     for host, port in _service_ports(supervisor):
         _ensure_port_available(host, port, force_ports)
-    if supervisor.SINGLE_PORT:
-        _build_frontend()
-
     if not detach:
         print("StaffDeck development services are starting. Press Ctrl-C to stop.")
         return supervisor.main()
 
     pid = _start_detached(supervisor)
-    services = supervisor.build_services()
-    for service in services:
-        if service.health_url:
-            _wait_for_url(service.name, service.health_url, service.log_file)
-    if supervisor.SINGLE_PORT:
-        base = f"http://{supervisor.url_host(supervisor.APP_HOST)}:{supervisor.APP_PORT}"
-        _wait_for_url("chat", base + "/chat/", LOG_DIR / "app.log")
-        _wait_for_url("enterprise", base + "/enterprise/dashboard", LOG_DIR / "app.log")
-        print(f"Started StaffDeck supervisor ({pid})")
-        print(f"  app        {base}/chat/")
-        print(f"  enterprise {base}/enterprise/dashboard")
-        print(f"  api docs   {base}/docs")
-    else:
-        backend = f"http://{supervisor.url_host(supervisor.BACKEND_HOST)}:{supervisor.BACKEND_PORT}"
-        frontend = f"http://{supervisor.url_host(supervisor.ENTERPRISE_HOST)}:{supervisor.ENTERPRISE_PORT}"
-        print(f"Started StaffDeck supervisor ({pid})")
-        print(f"  backend    {backend}/docs")
-        print(f"  enterprise {frontend}/enterprise/dashboard")
-        print(f"  chat       {frontend}/chat/")
+    try:
+        services = supervisor.build_services()
+        for service in services:
+            if service.health_url:
+                _wait_for_url(service.name, service.health_url, service.log_file)
+        if supervisor.SINGLE_PORT:
+            base = f"http://{supervisor.url_host(supervisor.APP_HOST)}:{supervisor.APP_PORT}"
+            _wait_for_url("chat", base + "/chat/", LOG_DIR / "app.log")
+            _wait_for_url("enterprise", base + "/enterprise/dashboard", LOG_DIR / "app.log")
+            print(f"Started StaffDeck supervisor ({pid})")
+            print(f"  app        {base}/chat/")
+            print(f"  enterprise {base}/enterprise/dashboard")
+            print(f"  api docs   {base}/docs")
+        else:
+            backend = f"http://{supervisor.url_host(supervisor.BACKEND_HOST)}:{supervisor.BACKEND_PORT}"
+            frontend = f"http://{supervisor.url_host(supervisor.ENTERPRISE_HOST)}:{supervisor.ENTERPRISE_PORT}"
+            print(f"Started StaffDeck supervisor ({pid})")
+            print(f"  backend    {backend}/docs")
+            print(f"  enterprise {frontend}/enterprise/dashboard")
+            print(f"  chat       {frontend}/chat/")
+    except Exception:
+        # Do not leave a detached supervisor behind when readiness fails.
+        stop_services(verbose=False)
+        raise
     print(f"Logs: {LOG_DIR}")
     return 0
 

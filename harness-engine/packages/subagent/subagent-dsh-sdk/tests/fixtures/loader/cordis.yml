@@ -1,0 +1,65 @@
+# Test-only composition: the SDK subagent backend on the real Loader/app path.
+# The scripted model selects a child route; the child — a COMPLETE second
+# harness runtime speaking stdio JSON-RPC — echoes the effective route and cwd,
+# so dynamic routing and parent-session cwd inheritance are asserted keylessly.
+# `cwd` is deliberately omitted — the inheritance branch under test. The child
+# profile patch and isolated Harness home are machine-absolute, supplied by
+# the driving e2e.
+- id: mock-llm
+  name: './mock-delegating-llm.ts'
+
+- id: subagent
+  name: '@deepseek-ai/dsh-subagent'
+
+# providerName is omitted: the composition exercises the shipped default
+# (`dsh-sdk`) through the real Loader.
+- id: subagent-dsh-sdk
+  name: '@deepseek-ai/dsh-subagent-dsh-sdk'
+  config:
+    profile: sdk
+    patches: !!js JSON.parse(process.env.DSH_TEST_CHILD_PATCHES ?? '[]')
+    dshHome: !!js process.env.DSH_TEST_CHILD_HOME
+    provider: mock
+    model: mock-routed
+    env:
+      DSH_TELEMETRY_DISABLED: '1'
+      DSH_TEST_CHILD_FAILURE: !!js String(process.env.DSH_TEST_CHILD_FAILURE ?? '')
+
+- id: subagent-model-selection-settings
+  name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
+  config:
+    enabled: true
+    allowedModels:
+      - provider: mock
+        model: mock-routed
+
+- id: tool-subagent
+  name: './scoped-tool-subagent.ts'
+  config:
+    provider: dsh-sdk
+    toolName: subagent
+    agentOptions:
+      maxTokens: 777
+    # The SDK backend advertises no depthLimit: the child harness owns its own
+    # recursion budget, so the local numeric default cannot apply here.
+    maxDepth: 'provider-managed'
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    agents:
+      - id: main
+        provider: mock
+        model: mock-delegate
+        cwd: !!js process.cwd()
+    persona: 'Test SDK subagent cwd inheritance.'
+    workspaceContext: false
+
+- id: persistence
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: './.sessions'
+    compression: 'none'
+
+- id: checkpoint-policy
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'

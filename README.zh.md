@@ -22,8 +22,11 @@
 
 
 ## 更新日志
-
-  - **2026-07-15**：StaffDeck正式开源！欢迎大家使用反馈与Star支持。
+- **2026-10-22**: 我们推出v1.0.0-preview，进行了模块化升级与CLI终端支持。
+- **2026-08-18**: 我们推出v0.4.0，引入多员工智能协作与更快的调用链路。
+- **2026-08-06**: 我们推出v0.3.0，提供了更方便的SOP编辑与运行时沙箱。
+- **2026-08-03**: 我们推出v0.2.0，提供更好的harness系统和IM渠道支持。
+- **2026-07-15**：StaffDeck正式开源！欢迎大家使用反馈与Star支持。
 
 # 💡 关于StaffDeck
 
@@ -70,7 +73,7 @@ URL。配置按用户保存，并在下次启动时生效。
 
 ```text
 阅读 https://raw.githubusercontent.com/OpenBMB/StaffDeck/main/README.zh.md。
-克隆 OpenBMB/StaffDeck 私有仓库，准备 Python 3.11 或更高版本和 Node.js 20，创建
+克隆 OpenBMB/StaffDeck 私有仓库，准备 Python 3.11 或更高版本和 Node.js 22.19+，创建
 backend/.venv，安装前后端依赖，将 backend/.env.example 复制为
 backend/.env；缺少 OpenAI 兼容模型地址或 API Key 时向我询问，并严格使用当前
 系统对应的文档命令。macOS/Linux/WSL 运行 scripts/dev_up.sh --detach，Windows
@@ -104,6 +107,26 @@ PowerShell 运行 .\scripts\dev_up.ps1 --detach；验证 /api/health 和
   - [引用](#引用)
   - [许可证](#许可证)
   - [致谢](#致谢)
+
+## 开源版安装、升级与 CLI
+
+本仓库发布可独立运行的 OSS 产品及 Harness v3 运行时。
+完整说明见 [安装与升级](INSTALL.md)、[CLI 使用](CLI.md) 和 [Release 构建](packaging/RELEASE.md)。
+需要 Python 3.11+、Node.js **22.x ≥22.19，或 ≥24**。
+
+```sh
+python3 prepare.py
+staffdeck serve
+# 另开终端：
+staffdeck login       # 全新安装：admin / admin
+staffdeck agent list
+staffdeck chat
+staffdeck chat --agent 财务
+```
+
+首次初始化携带 IT、人事、行政、财务、法务五位 `@admin` 员工及其关联资源。
+升级保留原账号、数据库、附件及加密密钥，不重置密码或覆盖员工内容。
+对话前需配置模型，发行包不携带模型凭据。
 
 ## 快速开始
 
@@ -276,7 +299,7 @@ StaffDeck 的全部状态存放在一个 SQL 数据库中，默认使用本地 S
 
 - **仅支持全新库**:`create_all` 负责初始化新库，暂无存量 schema 的迁移通路（Alembic 迁移为后续任务），启动时会输出提醒告警；
 - **单写者启动**：首次启动/升级只跑一个应用 worker——多 worker 并发 `create_all` + 演示数据播种会撞键（SQLite 靠写锁串行化无此问题）,PG 部署请先用单 worker 完成初始化；
-- `APP_TIMEZONE` 只对 PostgreSQL 日分桶生效；SQLite 的日分桶恒为服务器本地时区；
+- `APP_TIMEZONE` 只对 PostgreSQL 日分桶生效；SQLite 的日分桶恒为服务器本地时区（该配置在 SQLite 下会输出告警并被忽略）；
 - 每个数据库只允许运行一个 connector 进程——单实例守护使用会话级 PostgreSQL advisory lock（常驻于一条专属 AUTOCOMMIT 连接），并带定期存活校验（锁失效时渠道服务主动降级停止）。
 
 ## 项目结构

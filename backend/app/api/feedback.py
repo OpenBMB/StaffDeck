@@ -6,10 +6,10 @@ from sqlmodel import Session, select
 from app.api.chat import session_read
 from app.session.message_read import message_read
 from app.db import get_session
-from app.db.models import APIJob, AgentProfile, ChatSession, Message, MessageFeedback, User, utc_now
+from app.db.models import APIJob, ChatSession, Message, MessageFeedback, User, utc_now
 from app.feedback import FEEDBACK_BUCKET_LABELS, enqueue_feedback_analysis, feedback_analysis_read, feedback_summary
 from app.security.auth import get_current_user
-from app.security.permissions import agent_owned_by_user, is_admin_user
+from app.security.permissions import is_admin_user
 from app.security.tenant import ensure_tenant
 
 router = APIRouter(prefix="/api/enterprise/feedback", tags=["enterprise:feedback"])
@@ -265,13 +265,8 @@ def _get_owned_chat_session(db: Session, tenant_id: str, current_user: User, ses
         raise HTTPException(status_code=404, detail="Session not found")
     if row.user_id == current_user.id or is_admin_user(current_user):
         return row
-    agent = db.get(AgentProfile, row.agent_id) if row.agent_id else None
-    if (
-        agent
-        and agent.tenant_id == tenant_id
-        and not agent.is_overall
-        and agent_owned_by_user(agent, current_user)
-    ):
+    from staffdeck_harness.runtime.staff_directory import can_manage_staff
+    if row.agent_id and can_manage_staff(db, tenant_id, row.agent_id, current_user):
         return row
     raise HTTPException(status_code=404, detail="Session not found")
 
@@ -282,14 +277,10 @@ def _can_view_all_agent_feedback(
     agent_id: str | None,
     current_user: User,
 ) -> bool:
-    if is_admin_user(current_user):
-        return bool(agent_id)
     if not agent_id:
         return False
-    agent = db.get(AgentProfile, agent_id)
-    if not agent or agent.tenant_id != tenant_id or agent.is_overall:
-        return False
-    return agent_owned_by_user(agent, current_user)
+    from staffdeck_harness.runtime.staff_directory import can_manage_staff
+    return can_manage_staff(db, tenant_id, agent_id, current_user)
 
 
 def _ensure_request_tenant(tenant_id: str, current_user: User) -> None:

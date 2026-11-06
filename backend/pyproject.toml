@@ -13,6 +13,8 @@ dependencies = [
   "greenlet>=3.0.3",
   "lark-channel-sdk==1.2.0",
   "httpx>=0.27.0",
+  # Harness v3 pluggable runtime: capability MCP server + model gateway (Streamable HTTP)
+  "mcp>=1.9.0",
   "openai>=1.40.0",
   "packaging>=24.0",
   "beautifulsoup4>=4.12.3",
@@ -23,11 +25,12 @@ dependencies = [
   "python-docx>=1.1.2",
   "python-dotenv>=1.0.1",
   "requests>=2.32.0",
-  "sqlmodel>=0.0.21",
+  "sqlmodel>=0.0.21,<0.0.39",
   "tzdata>=2025.2",
   "uvicorn[standard]>=0.30.0",
   "wecom-aibot-python-sdk>=1.0.2",
-  "dingtalk-stream>=0.24.3,<0.25.0"
+  "dingtalk-stream>=0.24.3,<0.25.0",
+  "defusedxml>=0.7.1"
 ]
 
 [project.optional-dependencies]
@@ -48,19 +51,32 @@ packaging = [
   "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'"
 ]
 
+[project.scripts]
+staffdeck = "staffdeck_harness.cli:main"
+staffdeck-cli = "staffdeck_harness.cli:main"
+staffdeck-api = "staffdeck_harness.cli:api_main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["desktop_launcher", "feishu_connector_worker", "single_port_app"]
+py-modules = ["desktop_launcher", "cli_launcher", "feishu_connector_worker", "single_port_app"]
 
+# ``app``/``mock_servers`` live at the backend root; the Harness v3 pluggable
+# runtime is a separate top-level package under ``src/`` (kept out of ``app``
+# on purpose so the legacy tree stays untouched). Both are part of the wheel.
 [tool.setuptools.packages.find]
-include = ["app*", "mock_servers*"]
+where = [".", "src"]
+include = ["app*", "mock_servers*", "staffdeck_harness*", "staffdeck*"]
+
+[tool.setuptools.package-data]
+staffdeck = ["py.typed", "skills/staffdeck-cli/SKILL.md"]
+app = ["db/seed_fixtures/*.json"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "tests_harness"]

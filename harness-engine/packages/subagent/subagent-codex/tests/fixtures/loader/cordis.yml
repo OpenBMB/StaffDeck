@@ -1,0 +1,65 @@
+# Test-only composition of the Bundle-supplied default and two named Codex instances.
+# The owning e2e applies the package's real patch and never invokes the model or Codex.
+- id: fixture
+  name: './fixture.ts'
+
+- id: subagent
+  name: '@deepseek-ai/dsh-subagent'
+
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: subagent-codex-primary
+  name: '@deepseek-ai/dsh-subagent-codex'
+  config:
+    providerName: codex-primary
+    model: codex-primary-model
+
+- id: subagent-codex-secondary
+  name: '@deepseek-ai/dsh-subagent-codex'
+  config:
+    providerName: codex-secondary
+    model: codex-secondary-model
+
+- id: tool-subagent-codex
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: codex
+    toolName: subagent_codex
+    backgroundMode: one-shot
+    maxDepth: 'provider-managed'
+
+- id: tool-subagent-codex-primary
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: codex-primary
+    toolName: subagent_codex_primary
+    backgroundMode: one-shot
+    maxDepth: 'provider-managed'
+
+- id: tool-subagent-codex-secondary
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: codex-secondary
+    toolName: subagent_codex_secondary
+    backgroundMode: one-shot
+    maxDepth: 'provider-managed'
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    agents:
+      - id: main
+        provider: mock
+        model: mock-delegate
+        cwd: !!js process.cwd()
+    persona: 'This composition test must not start a model turn.'
+    workspaceContext: false
+
+- id: persistence
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: './.sessions'
+
+- id: checkpoint-policy
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'

@@ -25,7 +25,7 @@ from lark_channel.ws.pb.pbbp2_pb2 import Frame
 
 from app.channels.feishu_process import ConnectorState, FeishuProcessSupervisor
 from app.db.dialect import get_dialect
-from feishu_connector_worker import binding_lock_key
+from feishu_connector_worker import BindingProcessLock, binding_lock_key
 
 SDK_RUNTIME = "feishu_connector_worker:run_sdk_contract_runtime"
 IDLE_RUNTIME = "feishu_connector_worker:run_idle_contract_runtime"
@@ -786,6 +786,20 @@ def test_binding_lock_rejects_second_connector(tmp_path: Path, monkeypatch) -> N
     finally:
         assert first.stop(timeout=3.0)
         assert second.stop(timeout=3.0)
+
+
+def test_binding_lock_treats_inaccessible_lock_as_busy(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "connector.lock"
+    lock = BindingProcessLock(path)
+    original_open = Path.open
+
+    def inaccessible_open(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("simulated inaccessible lock")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", inaccessible_open)
+    assert lock.acquire() is False
 
 
 def test_same_binding_in_different_databases_does_not_false_conflict(

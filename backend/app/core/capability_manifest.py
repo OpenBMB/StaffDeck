@@ -17,6 +17,7 @@ from app.capabilities.local_general_skill import package_from_row
 from app.core.task_request_compiler import (
     CapabilityDescriptor,
     CapabilityManifest,
+    current_step_authorization_skill_ids,
     current_step_capability_refs,
 )
 from app.db.models import (
@@ -28,13 +29,21 @@ from app.db.models import (
     Tool,
     UIConfig,
 )
-from app.harness import build_file_tool_registry, register_command_tools
+from app.harness import (
+    build_file_tool_registry,
+    register_command_tools,
+    register_skill_script_tools,
+)
 from app.harness.sandbox import available_backend
 
 RESERVED_HARNESS_CAPABILITY_NAMES = {
+    "lark_cli",
     "capability_search",
     "capability_describe",
+    "list_published_deliverables",
+    "read_published_deliverable",
     "exec_command",
+    "run_skill_script",
     "knowledge_search",
 }
 
@@ -57,17 +66,22 @@ class CapabilityManifestBuilder:
         if agent_id and get_agent(self.db, tenant_id, agent_id) is None:
             raise CapabilityAuthorizationError("当前员工不存在、已归档或不属于该租户。")
         refs = current_step_capability_refs(skill, step_id)
+        authorization_skill_ids = current_step_authorization_skill_ids(skill, step_id)
         available: list[CapabilityDescriptor] = []
         unavailable: list[CapabilityDescriptor] = []
 
         available.extend(_internal_capability_descriptors())
+        lark = _lark_cli_descriptor(self.db, tenant_id, agent_id)
+        if lark is not None:
+            available.append(lark)
         ui_config = self.db.get(UIConfig, tenant_id)
         sandbox_enabled = bool(getattr(ui_config, "sandbox_enabled", False))
 
         builtin_registry = build_file_tool_registry()
         register_command_tools(builtin_registry)
+        register_skill_script_tools(builtin_registry)
         for spec in builtin_registry.specs():
-            is_command = spec.name == "exec_command"
+            is_command = spec.name in {"exec_command", "run_skill_script"}
             available.append(
                 CapabilityDescriptor(
                     capability_id=(
@@ -179,8 +193,8 @@ class CapabilityManifestBuilder:
             explicitly_allowed = any(tool_by_ref.get(ref) is row for ref in refs["tool_ids"])
             if scope == "sop_specific" and not explicitly_allowed:
                 continue
-            if row.allowed_skills_json and (
-                skill is None or skill.skill_id not in row.allowed_skills_json
+            if row.allowed_skills_json and not authorization_skill_ids.intersection(
+                str(value).strip() for value in row.allowed_skills_json if str(value).strip()
             ):
                 if explicitly_allowed:
                     unavailable.append(
@@ -345,8 +359,82 @@ class CapabilityManifestBuilder:
         return unavailable
 
 
+def _lark_cli_descriptor(
+    db: Session, tenant_id: str, agent_id: str | None
+) -> CapabilityDescriptor | None:
+    """settings 未开启时返回 None（清单完全不出现，保持既有行为）。
+
+    开启即视为可用：应用凭据除 settings / 渠道绑定外，还可在对话内通过
+    ``config init`` 现场建立（含 ``--new`` 创建新应用），无法在编译清单时
+    预判缺失，缺凭据的具体指引由 service 层以可恢复错误给出。
+    """
+
+    from app.config import get_settings
+    from app.lark_cli.service import LARK_CLI_DESCRIPTION, LARK_CLI_INPUT_SCHEMA
+
+    del db, tenant_id, agent_id  # 凭据可对话内建立后不再需要预检数据库。
+    settings = get_settings()
+    if not settings.lark_cli_enabled:
+        return None
+    return CapabilityDescriptor(
+        capability_id="builtin.lark_cli",
+        name="lark_cli",
+        kind="internal",
+        description=LARK_CLI_DESCRIPTION,
+        input_schema=dict(LARK_CLI_INPUT_SCHEMA),
+        metadata={"provider": "builtin.lark_cli", "side_effect": "write"},
+        available=True,
+    )
+
+
+
 def _internal_capability_descriptors() -> list[CapabilityDescriptor]:
     return [
+        CapabilityDescriptor(
+            capability_id="builtin.deliverables.list",
+            name="list_published_deliverables",
+            kind="internal",
+            description=(
+                "List recent files published by earlier TaskFrames in this same conversation. "
+                "Use this before continuing work from a document delivered in a previous turn."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "default": 20,
+                    },
+                },
+                "additionalProperties": False,
+            },
+            metadata={"provider": "harness", "side_effect": "read"},
+        ),
+        CapabilityDescriptor(
+            capability_id="builtin.deliverables.read",
+            name="read_published_deliverable",
+            kind="internal",
+            description=(
+                "Read UTF-8 content from one file returned by list_published_deliverables. "
+                "Pass its task_frame_id and path exactly; use the continuation token when truncated."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_frame_id": {"type": "string", "minLength": 1},
+                    "path": {"type": "string", "minLength": 1},
+                    "offset": {"type": "integer", "minimum": 0, "default": 0},
+                    "max_bytes": {"type": "integer", "minimum": 1},
+                    "continuation_token": {"type": "string", "minLength": 1},
+                },
+                "required": ["task_frame_id", "path"],
+                "additionalProperties": False,
+            },
+            metadata={"provider": "harness", "side_effect": "read"},
+        ),
         CapabilityDescriptor(
             capability_id="builtin.discovery.search",
             name="capability_search",

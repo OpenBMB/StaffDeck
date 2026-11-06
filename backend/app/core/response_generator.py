@@ -65,6 +65,25 @@ def tool_failure_reply(tool_result: ToolResult) -> str:
 
 
 class ResponseGenerator:
+    def direct_reply(self, step_result, tool_result, task_results, router_decision):
+        if self._can_use_step_reply_directly(step_result, tool_result, task_results):
+            return (step_result.reply or "").strip()
+        if tool_result and not tool_result.success and not task_results:
+            return tool_failure_reply(tool_result)
+        if router_decision.decision == "clarify" and step_result.reply:
+            return step_result.reply
+        return None
+
+    def prepare_payload(self, message, session, skill, router_decision, step_result,
+                        tool_result, memory_context, conversation_context, task_results, persona_prompt):
+        raw = self._payload(message, session, skill, router_decision, step_result, tool_result,
+                            memory_context, conversation_context, task_results)
+        return self._stage_payload(raw, persona_prompt)
+
+    def normalize_reply(self, text, session, router_decision, step_result, tool_result, skill):
+        reply = text.strip() or (step_result.reply or "") or self._minimal_fallback(router_decision)
+        return self._visible_reply_or_fallback(reply, session, router_decision, step_result, tool_result, skill)
+
     def generate(
         self,
         message: str,
@@ -273,6 +292,7 @@ class ResponseGenerator:
                     "task_frame_id": item.get("task_frame_id"),
                     "status": item.get("status"),
                     "task_summary": item.get("task_summary"),
+                    "structured_result": item.get("structured_result"),
                     "current_step": compact_current_step(
                         content, str(item.get("current_step_id") or "") or None
                     ),
@@ -474,5 +494,8 @@ class ResponseGenerator:
             memory_context=None,
             instructions=PROMPT_PATH.read_text(encoding="utf-8"),
             stage_data=stage_data,
-            output_contract="只输出最终用户可见的纯文本，不输出 JSON、Markdown 代码围栏、分析过程或内部状态。",
+            output_contract=(
+                "只输出最终用户可见的 Markdown 正文，不输出 JSON 外壳、分析过程或内部状态；"
+                "除非用户明确请求代码，否则不要使用 Markdown 代码围栏。"
+            ),
         )

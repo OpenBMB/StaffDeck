@@ -310,10 +310,10 @@ def test_bridge_passes_empty_content_type_as_none() -> None:
             inbound_attachments_to_chat(
                 _binding(), inbound, db_engine=None, tenant_id="t", user_id="u"
             )
-        # content_type="" -> None
+        # content_type="" -> extension-based MIME inference
         args, _kwargs = mock_parse.call_args
         assert args[0] == "report.pdf"
-        assert args[1] is None
+        assert args[1] == "application/pdf"
         assert args[2] == b"some bytes"
     finally:
         register_channel_adapter("feishu", previous)

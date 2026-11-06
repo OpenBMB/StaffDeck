@@ -1,0 +1,251 @@
+"""CapabilityCallbackPort realized as a local MCP server.
+
+the engine's SDK protocol has no client-callable request channel (server→client
+requests are a "dead capability" in 0.1.2), but the Harness v3 engine mounts external MCP
+servers natively (``@deepseek-ai/dsh-mcp-client``) and their tools appear to
+the model like any other. So the Bridge exposes the ``CapabilityHost`` proxy
+tools **as an MCP server over Streamable HTTP**, and the Harness v3 profile patch
+mounts it. Every model tool call therefore travels:
+
+    engine tools/pre-execute → mcp__staffdeck__<proxy> → this server → CapabilityHost
+        → activation fence → ledger → Guarded Facade (PEP) → legacy service
+
+The server is multi-tenant by *activation*: each turn registers an
+``ActivationSlot`` under an opaque token, the engine is told the token through the
+MCP connection headers, and every tool call resolves its slot from that
+header. A call without a live token is refused (``ACTIVATION_FENCED``).
+
+The server runs in-process on a background thread (uvicorn on 127.0.0.1) so
+no extra deployable is introduced for OSS; a Business deployment may run it
+as its own service because it depends only on the Module SDK, the security
+profile and the legacy ORM.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import secrets
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+import mcp.types as mt
+import uvicorn
+from mcp.server.context import ServerRequestContext
+from mcp.server.lowlevel import Server
+from starlette.requests import Request
+
+from staffdeck_harness.contracts.invocation import InvocationContext
+
+logger = logging.getLogger(__name__)
+
+ACTIVATION_HEADER = "x-staffdeck-activation"
+SERVER_NAME = "staffdeck"
+
+
+@dataclass
+class Activation:
+    """One live engine process's binding: the token is per *process*, what it points at is per phase.
+
+    A pooled process keeps its token for its whole life (the MCP header is read from the
+    environment at plugin load). Every phase of a turn — planning, each TaskFrame, the reply —
+    rebinds ``host`` / ``context_factory`` to the object that must answer capability and model
+    calls right now. Between phases the host is a fenced placeholder that refuses tools.
+    """
+
+    token: str
+    host: Any
+    context_factory: Callable[[str], InvocationContext] | None   # trace_id -> ctx
+    created_at: float = field(default_factory=time.monotonic)
+    calls: int = 0
+
+
+class ActivationRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[str, Activation] = {}
+
+    def register(self, host: Any = None, context_factory: Callable[[str], InvocationContext] | None = None, *, token: str | None = None) -> Activation:
+        token = token or secrets.token_urlsafe(24)
+        act = Activation(token=token, host=host, context_factory=context_factory)
+        with self._lock:
+            self._items[token] = act
+        return act
+
+    def rebind(self, token: str, host: Any, context_factory: Callable[[str], InvocationContext] | None) -> Activation:
+        """Point a live token at a new phase host. Raises KeyError for an unknown token."""
+
+        with self._lock:
+            act = self._items[token]
+            act.host = host
+            act.context_factory = context_factory
+            return act
+
+    def release(self, token: str) -> None:
+        with self._lock:
+            self._items.pop(token, None)
+
+    def get(self, token: str | None) -> Activation | None:
+        if not token:
+            return None
+        with self._lock:
+            return self._items.get(token)
+
+    def live_count(self) -> int:
+        """Activations currently bound to a real phase host (i.e. turns in flight)."""
+
+        with self._lock:
+            return sum(1 for a in self._items.values() if a.host is not None and not getattr(a.host, "idle", False))
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._items)
+
+
+def _text(payload: Any) -> list[mt.TextContent]:
+    if isinstance(payload, str):
+        text = payload
+    else:
+        text = json.dumps(payload, ensure_ascii=False, default=str)
+    return [mt.TextContent(type="text", text=text)]
+
+
+
+class _DropAccessRecordsFromThread(logging.Filter):
+    """Keep the capability server's own request lines out of the main server's access log.
+
+    uvicorn always logs to the shared ``uvicorn.access`` logger; the only thing that tells the
+    two servers apart is the thread the record was created on.
+    """
+
+    def __init__(self, thread_ident: int | None) -> None:
+        super().__init__()
+        self.thread_ident = thread_ident
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.thread != self.thread_ident
+
+
+class CapabilityMcpServer:
+    def __init__(self, registry: ActivationRegistry, *, host: str = "127.0.0.1", port: int = 0):
+        self.registry = registry
+        self.host = host
+        self.port = port
+        self._server: uvicorn.Server | None = None
+        self._thread: threading.Thread | None = None
+        self._ready = threading.Event()
+        self.mcp = Server(SERVER_NAME, on_list_tools=self._list_tools, on_call_tool=self._call_tool)
+
+    # -- MCP handlers -------------------------------------------------------------
+
+    def _activation(self, ctx: ServerRequestContext) -> Activation | None:
+        request = ctx.request
+        token = None
+        if isinstance(request, Request):
+            token = request.headers.get(ACTIVATION_HEADER)
+        if token is None and ctx.meta is not None:
+            extra = getattr(ctx.meta, "model_extra", None) or {}
+            token = extra.get(ACTIVATION_HEADER)
+        return self.registry.get(token)
+
+    async def _list_tools(self, ctx: ServerRequestContext, params: Any) -> mt.ListToolsResult:
+        act = self._activation(ctx)
+        if act is None or act.host is None or not callable(getattr(act.host, "tool_schemas", None)):
+            return mt.ListToolsResult(tools=[])
+        tools = [mt.Tool(name=s["name"], description=s["description"], inputSchema=s["parameters"]) for s in act.host.tool_schemas()]
+        return mt.ListToolsResult(tools=tools)
+
+    async def _call_tool(self, ctx: ServerRequestContext, params: mt.CallToolRequestParams) -> mt.CallToolResult:
+        act = self._activation(ctx)
+        if act is None:
+            return mt.CallToolResult(content=_text({"success": False, "error": {"code": "ACTIVATION_FENCED", "message": "no live activation for this connection"}}), isError=True)
+        if act.host is None or not callable(getattr(act.host, "invoke_proxy", None)):
+            return mt.CallToolResult(content=_text({"success": False, "error": {"code": "ACTIVATION_FENCED", "message": "此阶段不能调用能力（当前没有正在执行的任务步骤）"}}), isError=True)
+        act.calls += 1
+        trace_id = f"hcall_{act.calls}_{secrets.token_hex(4)}"
+        inv_ctx = act.context_factory(trace_id) if act.context_factory is not None else None
+        loop = asyncio.get_running_loop()
+        # The CapabilityHost is synchronous (SQLModel session); keep it off the event loop.
+        result, receipt = await loop.run_in_executor(None, act.host.invoke_proxy, params.name, dict(params.arguments or {}), inv_ctx)
+        payload: dict[str, Any] = {"success": result.success}
+        if result.success:
+            payload["data"] = result.data
+        else:
+            payload["error"] = result.error
+        if result.citations:
+            payload["citations"] = list(result.citations)
+        if result.artifacts:
+            payload["artifacts"] = list(result.artifacts)
+        if receipt is not None:
+            payload["receipt"] = {"invocation_id": receipt.invocation_id, "status": receipt.status, "replayed_from": receipt.replayed_from}
+        return mt.CallToolResult(content=_text(payload), isError=not result.success, structuredContent=payload if isinstance(payload, dict) else None)
+
+    # -- lifecycle -----------------------------------------------------------------
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.host}:{self.port}/mcp"
+
+    @property
+    def model_base_url(self) -> str:
+        """OpenAI-compatible base for the subprocess (``/chat/completions`` is appended by the engine)."""
+
+        return f"http://{self.host}:{self.port}/v1"
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        app = self.mcp.streamable_http_app(streamable_http_path="/mcp", json_response=True, stateless_http=True, host=self.host)
+        # Model calls from the Harness v3 subprocess come back here too: same port, activation token as API key.
+        from staffdeck_harness.bridge.model_gateway import ModelGateway
+
+        ModelGateway(self.registry).mount(app)
+        # ``uvicorn.Config`` applies ``log_config``/``log_level``/``access_log`` to the *process-global*
+        # ``uvicorn.*`` loggers. This server shares a process with the main API server, so any of
+        # those would silence the main server's access log and startup lines. Build the config
+        # without touching logging, and keep this server's own access records out of the shared
+        # access log with a thread-scoped filter instead.
+        config = uvicorn.Config(app, host=self.host, port=self.port, log_config=None, log_level=None, access_log=True)
+        self._server = uvicorn.Server(config)
+
+        def run() -> None:
+            asyncio.run(self._serve())
+
+        self._thread = threading.Thread(target=run, name="staffdeck-harness-capability-mcp", daemon=True)
+        self._thread.start()
+        self._access_filter = _DropAccessRecordsFromThread(self._thread.ident)
+        logging.getLogger("uvicorn.access").addFilter(self._access_filter)
+        if not self._ready.wait(timeout=15):
+            self._remove_access_filter()
+            raise RuntimeError("capability MCP server did not start")
+
+    def _remove_access_filter(self) -> None:
+        flt = getattr(self, "_access_filter", None)
+        if flt is not None:
+            logging.getLogger("uvicorn.access").removeFilter(flt)
+            self._access_filter = None
+
+    async def _serve(self) -> None:
+        assert self._server is not None
+        server = self._server
+        config = server.config
+        config.load()
+        server.lifespan = config.lifespan_class(config)
+        await server.startup()
+        for s in server.servers:
+            for sock in s.sockets:
+                self.port = sock.getsockname()[1]
+        self._ready.set()
+        await server.main_loop()
+        await server.shutdown()
+
+    def stop(self) -> None:
+        if self._server is not None:
+            self._server.should_exit = True
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        self._thread = None
+        self._remove_access_filter()

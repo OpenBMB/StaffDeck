@@ -11,6 +11,11 @@ import type { AgentProfileRead, TeamRead } from '@/types';
 
 import AppSidebar from './AppSidebar';
 
+const product = vi.hoisted(() => ({ frameworkManagement: true }));
+vi.mock('@/lib/productFeatures', () => ({
+  get FRAMEWORK_MANAGEMENT_INCLUDED() { return product.frameworkManagement; },
+}));
+
 const agent: AgentProfileRead = {
   id: 'agent-1',
   tenant_id: 'tenant_demo',
@@ -68,6 +73,7 @@ function stubRadixPointerApis() {
 }
 
 function renderSidebar(props: {
+  isAdmin?: boolean;
   selectedAgentId: string;
   onSelectAgent?: (value: string) => void;
   scopeTeams?: TeamRead[];
@@ -79,7 +85,7 @@ function renderSidebar(props: {
           <AppSidebar
             selected="/enterprise/dashboard"
             onNavigate={() => {}}
-            isAdmin={false}
+            isAdmin={props.isAdmin ?? false}
             scopeAgents={[agent]}
             scopeTeams={props.scopeTeams ?? [team]}
             selectedAgentId={props.selectedAgentId}
@@ -93,8 +99,23 @@ function renderSidebar(props: {
 }
 
 afterEach(() => {
+  product.frameworkManagement = true;
   cleanup();
   vi.unstubAllGlobals();
+});
+
+it('customer builds omit the framework console but keep business management navigation', () => {
+  product.frameworkManagement = false;
+  renderSidebar({ selectedAgentId: agent.id, isAdmin: true });
+  expect(screen.queryByText('管理后台')).toBeNull();
+  expect(screen.getAllByText('账号管理').length).toBeGreaterThan(0);
+  expect(screen.getAllByText('模型配置').length).toBeGreaterThan(0);
+  expect(screen.getAllByText('我的数字员工').length).toBeGreaterThan(0);
+});
+
+it('operator builds retain the framework console', () => {
+  renderSidebar({ selectedAgentId: agent.id, isAdmin: true });
+  expect(screen.getAllByText('管理后台').length).toBeGreaterThan(0);
 });
 
 beforeEach(() => {

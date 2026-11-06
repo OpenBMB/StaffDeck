@@ -43,6 +43,7 @@ import ChannelsPage from "./pages/ChannelsPage";
 import ChatPage from "./pages/chat/ChatPage";
 import ChatGalleryPage from "./pages/chat/ChatGalleryPage";
 import DashboardPage from "./pages/dashboard/DashboardPage";
+import { loadEmployeeDirectory } from './api/employee-directory';
 import EmptyEmployeeState from "./components/EmptyEmployeeState";
 import DistillPage from "./pages/DistillPage";
 import GeneralSkillsPage, {
@@ -53,6 +54,7 @@ import KnowledgeManagePage, { KnowledgeAddPage } from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
 import ModelsPage from "./pages/ModelsPage";
 import RuntimeSettingsPage from "./pages/RuntimeSettingsPage";
+import AdminPage from "./pages/admin/AdminPage";
 import OpenPlatformPage from "./pages/OpenPlatformPage";
 import PersonaPage from "./pages/PersonaPage";
 import SkillsPage from "./pages/SkillsPage";
@@ -156,6 +158,7 @@ function Shell({
   const isAdmin = isEnterpriseAdmin(auth.user);
   const accountRoleLabel = isAdmin ? "管理员" : "";
   const isDistillRoute = location.pathname === "/enterprise/skills/distill";
+  const [distillVisited, setDistillVisited] = useState(isDistillRoute);
   const selected =
     location.pathname === "/enterprise"
       ? "/enterprise/dashboard"
@@ -186,6 +189,7 @@ function Shell({
 
   useEffect(() => {
     if (isDistillRoute) {
+      setDistillVisited(true);
       setLastDistillSearch(location.search);
     }
   }, [isDistillRoute, location.search]);
@@ -297,8 +301,7 @@ function Shell({
   }
 
   function loadAgents(preferredAgentId = "") {
-    return api
-      .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
+    return loadEmployeeDirectory()
       .then((rows) => {
         setAgents(rows);
         const selectableRows = rows.filter((item) => canUseAgentScope(item));
@@ -423,9 +426,17 @@ function Shell({
       return;
     }
     const isBlankOnboarding = agentForm.sourceMode === "blank";
-    const sourceAgent = agentForm.copyFromAgentId
+    let sourceAgent = agentForm.copyFromAgentId
       ? sourceAgents.find((item) => item.id === agentForm.copyFromAgentId)
       : undefined;
+    if (!isBlankOnboarding && sourceAgent?.metadata?.directory_summary) {
+      try {
+        sourceAgent = await api.get<AgentProfileRead>(`/api/enterprise/agents/${encodeURIComponent(sourceAgent.id)}?tenant_id=${TENANT_ID}`);
+      } catch (error) {
+        notify.error(error instanceof Error ? error.message : '员工详情加载失败');
+        return;
+      }
+    }
     const sourceMetadata =
       !isBlankOnboarding && sourceAgent?.metadata ? sourceAgent.metadata : {};
     const sourceRoleName =
@@ -479,6 +490,7 @@ function Shell({
       await loadAgents();
       changeAgentScope(created.id);
       setAgentCreateOpen(false);
+      window.dispatchEvent(new Event("ultrarag-enterprise-agent-scope-refresh"));
       notify.success("数字员工创建成功");
     } catch (error) {
       notify.error(error instanceof Error ? error.message : "创建数字员工失败");
@@ -543,7 +555,7 @@ function Shell({
               )}
             </div>
           )}
-          <div
+          {(isDistillRoute || distillVisited) && <div
             className={
               isDistillRoute
                 ? "persistent-distill active flex min-h-0 flex-1 flex-col"
@@ -556,7 +568,7 @@ function Shell({
               currentUser={auth.user}
               onLogout={onLogout}
             />
-          </div>
+          </div>}
           {!isDistillRoute && showEmployeeEmptyState && (
             <EmptyEmployeeState
               isAdmin={isAdmin}
@@ -1003,6 +1015,11 @@ function AuthedApp({
     const nextPath = location.pathname.replace(/^\/enterprise\/chat/, EnterpriseRoute.Chat);
     return <Navigate to={`${nextPath}${location.search}`} replace />;
   }
+  if (location.pathname === EnterpriseRoute.Admin || location.pathname.startsWith(`${EnterpriseRoute.Admin}/`)) {
+    return isEnterpriseAdmin(auth.user)
+      ? <AdminPage currentUser={auth.user} onLogout={onLogout} />
+      : <Navigate to={EnterpriseRoute.Gallery} replace />;
+  }
   if (location.pathname.startsWith(EnterpriseRoute.Workspace)) {
     return (
       <Routes>
@@ -1052,7 +1069,7 @@ export default function App() {
     void api.get<EnterpriseAuthUser>("/api/auth/me")
       .then((user) => {
         if (cancelled) return;
-        const refreshed = { token: auth.token, user };
+        const refreshed = { token: getEnterpriseAuthSession()?.token || auth.token, user };
         setEnterpriseAuthSession(refreshed);
         setAuth(refreshed);
         setAuthChecked(true);
@@ -1071,6 +1088,7 @@ export default function App() {
   }, [auth?.token]);
 
   function logout() {
+    void api.post('/api/auth/logout').catch(() => undefined);
     clearEnterpriseAuthSession();
     setAuth(null);
     setAuthChecked(true);
@@ -1078,7 +1096,7 @@ export default function App() {
 
   return (
     <TooltipProvider>
-      <BrowserRouter>
+      <BrowserRouter basename={import.meta.env.BASE_URL}>
         <Routes>
           <Route
             path="/*"

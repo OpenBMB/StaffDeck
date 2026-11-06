@@ -8,7 +8,9 @@ export function sessionFilterStorageKey(userId: string): string {
 
 export function persistSharedAgentScope(agentId: string, userId?: string): void {
   void userId;
-  if (!agentId) return;
+  // This is an opaque digital-agent/team resource ID, never a human employee
+  // record, name, profile, credential or arbitrary serialized object.
+  if (typeof agentId !== 'string' || !/^(?:team:)?[A-Za-z0-9_-]{1,160}$/.test(agentId)) return;
   window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, agentId);
 }
 

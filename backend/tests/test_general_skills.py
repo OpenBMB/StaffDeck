@@ -542,6 +542,78 @@ def test_import_general_skill_folder_reads_skill_md_metadata() -> None:
         assert row.skill_markdown.startswith("---\nname: 中国城市天气")
 
 
+def test_import_general_skill_rejects_missing_reference_files() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+
+        with pytest.raises(HTTPException) as exc_info:
+            import_general_skill(
+                GeneralSkillImportRequest(
+                    tenant_id="tenant_demo",
+                    name="企业微信日程",
+                    slug="wecom-calendar",
+                    markdown=(
+                        "# 企业微信日程\n\n"
+                        "执行前读取 references/wecomcli-calendar-meeting-room.md。\n"
+                    ),
+                ),
+                db,
+                _admin_user(),
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "references/wecomcli-calendar-meeting-room.md" in str(exc_info.value.detail)
+
+
+def test_markdown_only_update_preserves_existing_skill_package_files() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        created = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="企业微信日程",
+                slug="wecom-calendar",
+                files=[
+                    {
+                        "path": "SKILL.md",
+                        "content": (
+                            "# 企业微信日程\n\n"
+                            "读取 references/wecomcli-calendar-meeting-room.md。\n"
+                        ),
+                    },
+                    {
+                        "path": "references/wecomcli-calendar-meeting-room.md",
+                        "content": "# 会议室日程查询\n",
+                    },
+                ],
+            ),
+            db,
+            _admin_user(),
+        )
+
+        updated = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="企业微信日程",
+                slug=created.slug,
+                original_slug=created.slug,
+                markdown=(
+                    "# 企业微信日程（更新）\n\n"
+                    "读取 references/wecomcli-calendar-meeting-room.md。\n"
+                ),
+            ),
+            db,
+            _admin_user(),
+        )
+
+        assert updated.id == created.id
+        assert [file.path for file in updated.skill_files] == [
+            "SKILL.md",
+            "references/wecomcli-calendar-meeting-room.md",
+        ]
+        assert updated.skill_files[1].content == "# 会议室日程查询\n"
+
+
 def test_import_general_skill_persists_empty_directories_across_updates() -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)
@@ -880,21 +952,20 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
     captured_model_ids: list[str] = []
     read_queries: list[str] = []
 
-    def fake_run(
-        self, skill, query, model_config, user_id="enterprise_demo", max_attempts=5, event_sink=None
-    ):  # noqa: ANN001
+    def fake_run(db, slug, request):
+        model_config = sys.modules[run_general_skill.__module__]._get_request_model(db, request.tenant_id, request.model_config_id)
         captured_model_ids.append(model_config.id)
         return {
-            "skill_slug": skill.slug,
+            "skill_slug": slug,
             "execution_trace": [],
             "generated_code": "",
             "stdout": "",
             "stderr": "",
             "structured_result": {"success": True},
-            "reply": f"{query} ok",
+            "reply": f"{request.message.split(' ', 2)[2]} ok",
         }
 
-    monkeypatch.setattr(GeneralSkillRunner, "run", fake_run)
+    monkeypatch.setattr(sys.modules[run_general_skill.__module__], "_execute_skill_test", fake_run)
 
     def fake_read(self, skill, query, model_config, **kwargs):  # noqa: ANN001
         read_queries.append(query)
@@ -1014,7 +1085,8 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
-async def test_general_skill_stream_executes_through_forced_harness_v2(monkeypatch) -> None:
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_general_skill_test_modes_share_the_harness_execution(monkeypatch, streaming) -> None:
     test_engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -1086,7 +1158,7 @@ async def test_general_skill_stream_executes_through_forced_harness_v2(monkeypat
             db,
             _admin_user(),
         )
-        response = run_general_skill_stream(
+        response = (run_general_skill_stream if streaming else run_general_skill)(
             imported.slug,
             GeneralSkillRunRequest(
                 tenant_id="tenant_demo",
@@ -1097,10 +1169,11 @@ async def test_general_skill_stream_executes_through_forced_harness_v2(monkeypat
             db,
             _admin_user(),
         )
-        chunks = [chunk async for chunk in response.body_iterator]
-        body = "".join(
-            chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk for chunk in chunks
-        )
+        if streaming:
+            chunks = [chunk async for chunk in response.body_iterator]
+            body = "".join(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk for chunk in chunks)
+        else:
+            body = response.model_dump_json()
         debug_session = db.exec(
             select(ChatSession).where(ChatSession.channel == "skill_test")
         ).one()
@@ -1109,10 +1182,11 @@ async def test_general_skill_stream_executes_through_forced_harness_v2(monkeypat
     assert captured_requests[0].message == "/skill weather-harness 北京天气"
     assert captured_requests[0].message_visibility == "internal"
     assert debug_session.id == captured_requests[0].session_id
-    assert '"execution_engine": "harness_v2"' in body
-    assert "已加载技能说明" in body
+    if streaming:
+        assert '"execution_engine": "harness_v3"' in body
+        assert "已加载技能说明" in body
     assert "北京天气晴朗" in body
-    assert '"path": "weather.txt"' in body
+    assert "weather.txt" in body
 
 
 def test_non_overall_agent_delete_hides_general_skill_only_in_branch() -> None:

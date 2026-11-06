@@ -1,0 +1,49 @@
+name: oss-checks
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.19.0'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Validate public product boundary
+        run: python packaging/source_release.py --check
+      - name: Build a clean OSS checkout
+        run: |
+          npm install --global pnpm@11.7.0
+          python prepare.py --no-cli-link
+          backend/.venv/bin/python -m pip install pytest pytest-asyncio
+      - name: Check CLI, defaults, permissions and persistence
+        env:
+          ULTRARAG_DOTENV: /dev/null
+          DATABASE_URL: sqlite:////tmp/staffdeck-oss-checks.db
+          PYTHONPATH: backend:backend/src
+        run: >-
+          backend/.venv/bin/python -m pytest -q
+          backend/tests/test_cli_console.py backend/tests/test_framework_cli.py
+          backend/tests/test_oss_storage_upgrade.py backend/tests/test_oss_install_defaults.py
+          backend/tests/test_public_api_v1.py backend/tests/test_agent_permissions.py
+          backend/tests/test_database_config.py backend/tests/test_desktop_launcher.py
+          backend/tests/test_sdk backend/tests/test_lark_cli.py
+          backend/tests/test_oss_public_boundary.py backend/tests/test_oss_engine_bundle.py
+          backend/tests/test_macho_candidates.py
+          backend/tests/test_macos_packaging_smoke.py
+          backend/tests/test_dev_scripts.py backend/tests/test_oss_preparation.py
+          backend/tests_harness/test_capability_host_hardening.py
+          backend/tests_harness/test_worker_config_preparation.py
+      - name: Checkout the last desktop release for upgrade acceptance
+        uses: actions/checkout@v7
+        with:
+          ref: v0.5.6
+          path: .legacy-checkout
+      - name: Verify real old-schema upgrade
+        run: backend/.venv/bin/python scripts/verify_oss_upgrade.py --legacy-root .legacy-checkout

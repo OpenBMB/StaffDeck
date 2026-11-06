@@ -131,4 +131,54 @@ describe('MessageBubble team group identity', () => {
     expect(screen.getByText('项目领导')).toBeTruthy();
     expect(screen.getByText('团队回复')).toBeTruthy();
   });
+
+  it('shows live team progress and hides feedback until synthesis finishes', () => {
+    const item: ChatMessage = {
+      id: 'message-team-progress',
+      role: 'assistant',
+      content: '已收到全部 2 项成员回复。',
+      metadata: {
+        team_run_id: 'team-run-1',
+        team_progress: {
+          phase: 'synthesizing',
+          completed_tasks: 2,
+          total_tasks: 2,
+          status_text: '正在整理答案',
+        },
+      },
+      created_at: '2026-08-15T00:00:00Z',
+    };
+    const messageRender: MessageRender = {
+      traceTurnId: 'turn-team-progress',
+      summary: null,
+      details: [],
+      expanded: false,
+      showInlineTrace: false,
+      visibleContent: item.content,
+      citations: [],
+      scheduledDraft: null,
+      scheduledTaskPrompt: false,
+      attachments: [],
+      harnessArtifacts: [],
+      statusOnly: false,
+    };
+    const chat = {
+      displayedTeam: { id: 'team-1', name: '项目组' } as TeamRead,
+      slashCommands: [],
+      toggleTrace: vi.fn(),
+      rateMessage: vi.fn(),
+      setActiveCitation: vi.fn(),
+      confirmScheduledTask: vi.fn(),
+      dismissScheduledTaskDraft: vi.fn(),
+      removeQueuedTurn: vi.fn(),
+      tenantId: 'tenant_demo',
+      activeConversationId: 'session-team-1',
+    } as unknown as UseChatSession;
+
+    const { container } = render(<MessageBubble chat={chat} item={item} render={messageRender} />);
+
+    expect(screen.getByText('已收到全部 2 项成员回复。')).toBeTruthy();
+    expect(screen.getByRole('status', { name: '正在整理答案' })).toBeTruthy();
+    expect(container.querySelector('button[aria-label="点赞"]')).toBeNull();
+  });
 });

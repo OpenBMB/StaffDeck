@@ -82,7 +82,7 @@ export default function BindingManagers({ bindingId, users, creatorUserId }: Pro
   return (
     <div className="flex flex-col gap-[12px] border-t border-[#eef0f4] pt-[16px]">
       <div className="flex min-w-0 flex-col gap-[4px]">
-        <span className="text-[13px] font-semibold text-[#18181a]">协作者管理</span>
+        <span className="text-[13px] font-semibold text-[#18181a]">渠道协作管理</span>
         <span className="text-[12px] leading-[1.6] text-[#858b9c]">
           协作者可配置/轮换凭证、管理挂载员工、启停渠道，但不能删除渠道或管理其他协作者。
         </span>

@@ -36,4 +36,20 @@ describe('model provider diagnostics', () => {
     );
     expect(modelActionError(error, '保存失败')).toContain('上游响应：{"error":"bad request"}');
   });
+
+  it('localizes a stable model configuration error code', () => {
+    const error = new ApiError(422, JSON.stringify({
+      detail: 'MODEL_PROTOCOL_OPTIONS_INVALID',
+    }), 'Unprocessable Entity');
+
+    expect(modelActionError(error, '保存失败')).toBe(
+      '模型协议选项无效，请检查 API 协议与协议参数',
+    );
+  });
+
+  it('wraps an unknown stable error code instead of exposing a bare token', () => {
+    const error = new ApiError(422, JSON.stringify({ detail: 'MODEL_NEW_FAILURE' }), '');
+
+    expect(modelActionError(error, '保存失败')).toBe('操作失败（错误码：MODEL_NEW_FAILURE）');
+  });
 });

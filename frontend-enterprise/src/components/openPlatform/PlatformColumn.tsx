@@ -17,6 +17,7 @@ export type PlatformColumnProps = {
   filters?: string[];
   /** Renders a skeleton-free muted list while data loads. */
   loading?: boolean;
+  error?: string;
   /** Whether the column has no content — shows the empty placeholder. */
   isEmpty?: boolean;
   /** Text for the empty placeholder. */
@@ -42,6 +43,7 @@ export default function PlatformColumn({
   countLabel,
   filters,
   loading = false,
+  error,
   isEmpty = false,
   emptyText = '暂无开放内容',
   onViewAll,
@@ -66,7 +68,7 @@ export default function PlatformColumn({
               <p className="truncate text-[12px] font-medium text-[#464c5e]">{title}</p>
             </div>
             <div className="flex shrink-0 items-center gap-[2px] text-[12px] text-[#464c5e]">
-              <span>{count}</span>
+              <span>{error || loading ? '—' : count}</span>
               {/* <span>{countLabel}</span> */}
               {/* <IconChevronDown className="size-[14px] text-[#757f9c]" /> */}
             </div>
@@ -89,7 +91,7 @@ export default function PlatformColumn({
         </div>
 
         <div className="mr-[-12px] flex min-h-0 w-[calc(100%+12px)] flex-1 flex-col gap-[16px] overflow-y-auto pr-[12px]">
-          {loading ? (
+          {error ? <p role="alert" className="text-sm text-amber-800">{error}</p> : loading ? (
             <PlatformColumnSkeleton />
           ) : isEmpty ? (
             <div className="flex min-h-[180px] w-full flex-1 items-center justify-center rounded-[18px] border border-dashed border-[#e4e9f2] bg-[#fbfcfe] px-[18px] py-[28px] text-center">

@@ -541,11 +541,11 @@ def _trace_line_id(event: AgentEvent) -> str:
     if event_type == "harness_action_created":
         action = str(payload.get("action") or "").strip()
         if action == "tool":
-            return f"harness_action_{frame_id}_{iteration or event.id}"
+            return f"harness_action_{frame_id}_{payload.get('call_id') or iteration or event.id}"
         if action == "finish":
             return f"harness_finish_{frame_id}_{iteration or event.id}"
-    if event_type == "harness_tool_completed":
-        return f"harness_action_{frame_id}_{iteration or event.id}"
+    if event_type in {"harness_tool_completed", "harness_tool_result"}:
+        return f"harness_action_{frame_id}_{payload.get('call_id') or iteration or event.id}"
     if event_type == "router_decision_created":
         return "decision_router"
     if event_type in {"knowledge_query_started", "knowledge_query_finished", "knowledge_result"}:

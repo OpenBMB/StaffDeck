@@ -6,6 +6,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.channels.service_autoroute as autoroute_module
+import staffdeck_harness.runtime.inference as inference_module
 import app.channels.service_intake as intake_module
 import app.core.agent_loop as agent_loop_module
 from app.channels.service_autoroute import (
@@ -64,11 +65,11 @@ def _fake_llm(monkeypatch):
     FakeLLMClient.calls = []
     FakeLLMClient.script = json.dumps({"agent_id": "stay", "confidence": 0.9, "reason": "意图不明"})
     FakeLLMClient.error = None
-    monkeypatch.setattr(autoroute_module, "LLMClient", FakeLLMClient)
+    monkeypatch.setattr("app.llm.LLMClient", FakeLLMClient)
     monkeypatch.setattr(
-        autoroute_module,
-        "model_for_agent",
-        lambda db, tenant_id, agent_id, role: ModelConfig(
+        inference_module,
+        "resolve_model",
+        lambda db, tenant_id, agent_id: ModelConfig(
             tenant_id=tenant_id, name="fake", api_key_encrypted="x", model="fake-model"
         ),
     )
@@ -139,9 +140,50 @@ def test_classify_bad_json_and_llm_error_fall_back() -> None:
         assert classify_intent(db, "tenant_demo", CANDIDATES, "agent_xz", "报销?").switched is False
 
 
+@pytest.mark.parametrize("invalid", [
+    '{"agent_id": "agent_cw",',
+    '[]',
+    '{"agent_id":"agent_cw","confidence":NaN}',
+    '{"agent_id":"agent_cw","confidence":2}',
+    '{"agent_id":"agent_cw","confidence":true}',
+    '{"agent_id":"agent_cw","confidence":"0.99"}',
+])
+def test_classifier_repairs_invalid_output_once(monkeypatch, invalid):
+    calls = []
+    def generate(self, system, payload, response_format=None):
+        calls.append(payload)
+        return invalid if len(calls) == 1 else '{"agent_id":"agent_cw","confidence":0.99,"reason":"财务"}'
+    monkeypatch.setattr(FakeLLMClient, "generate_text", generate)
+    with Session(_test_engine()) as db:
+        result = classify_intent(db, "tenant_demo", CANDIDATES, "agent_xz", "报销?")
+    assert result.switched and result.agent_id == "agent_cw"
+    assert len(calls) == 2
+    assert "_schema_repair" not in calls[0]
+    assert calls[1]["_schema_repair"]["previous_output"] == invalid
+    assert calls[0]["candidates"] == calls[1]["candidates"]
+
+
+def test_classifier_repair_is_bounded_and_transport_is_not_retried():
+    with Session(_test_engine()) as db:
+        FakeLLMClient.script = "broken"
+        result = classify_intent(db, "tenant_demo", CANDIDATES, "agent_xz", "报销?")
+        assert not result.switched and "repair exhausted" in result.error
+        assert len(FakeLLMClient.calls) == 2
+        FakeLLMClient.calls = []
+        FakeLLMClient.error = TimeoutError("upstream timeout")
+        classify_intent(db, "tenant_demo", CANDIDATES, "agent_xz", "报销?")
+        assert len(FakeLLMClient.calls) == 1
+
+
+def test_classifier_valid_stay_is_not_retried():
+    with Session(_test_engine()) as db:
+        classify_intent(db, "tenant_demo", CANDIDATES, "agent_xz", "你好")
+    assert len(FakeLLMClient.calls) == 1
+
+
 def test_classify_without_model_config_stays(monkeypatch) -> None:
     engine = _test_engine()
-    monkeypatch.setattr(autoroute_module, "model_for_agent", lambda db, tenant_id, agent_id, role: None)
+    monkeypatch.setattr(inference_module, "resolve_model", lambda db, tenant_id, agent_id: None)
     with Session(engine) as db:
         FakeLLMClient.script = json.dumps({"agent_id": "agent_cw", "confidence": 0.99, "reason": "x"})
         decision = classify_intent(db, "tenant_demo", CANDIDATES, "agent_xz", "报销?")
@@ -394,6 +436,23 @@ def _p2p_message(event_id: str, text: str) -> dict:
         "context_token": f"ctx_{event_id}",
         "item_list": [{"type": 1, "text_item": {"text": text}}],
     }
+
+
+@pytest.mark.parametrize('error_code', [None, 'SOP_RESULT_REPAIR_EXHAUSTED'])
+def test_channel_card_follows_runtime_outcome(monkeypatch, error_code):
+    from types import SimpleNamespace
+    import app.channels.feishu_trace as trace_module
+    state=[]
+    monkeypatch.setattr(trace_module, 'is_feishu_trace_enabled', lambda binding:True)
+    monkeypatch.setattr(trace_module, 'FeishuTraceStreamer', lambda *a,**k:SimpleNamespace(
+        start=lambda:None, on_event=lambda *a:None, finish=lambda:state.append('completed'),
+        abort=lambda reason:state.append(reason)))
+    monkeypatch.setattr(RecordingAgentLoop, 'handle_turn', lambda self, req:SimpleNamespace(
+        reply='结果格式错误' if error_code else '完成', runtime_error_code=error_code))
+    engine=_test_engine()
+    binding=_load_binding(engine,_seed_binding(engine))
+    assert process_inbound(binding,_p2p_message('trace-outcome','你好'),db_engine=engine)
+    assert state==[error_code or 'completed']
 
 
 class RecordingAgentLoop:

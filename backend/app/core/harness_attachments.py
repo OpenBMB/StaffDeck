@@ -178,8 +178,8 @@ def materialize_task_attachments(
                         "图片通过当前 TaskFrame 的隔离视觉输入提供。"
                         if descriptor.get("vision_available")
                         else (
-                            "当前聊天附件协议未保留可写入 workspace 的原始二进制；"
-                            "只能使用这里的元数据和预览。"
+                            "没有找到该附件上传时暂存的原始文件（暂存缺失或与上传记录不一致），"
+                            "无法写入沙箱，只能使用这里的元数据和预览；请让用户重新上传。"
                         )
                     ),
                 }

@@ -4,10 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.db.models import AgentProfile, ChatSession, MemoryRecord, User
+from app.db.models import ChatSession, MemoryRecord, User
 from app.memory.service import memory_agent_id, memory_matches_agent, memory_read, memory_rows_for_read
 from app.security.auth import get_current_user, require_current_tenant
-from app.security.permissions import agent_owned_by_user, is_admin_user
+from app.security.permissions import is_admin_user
 from app.security.tenant import ensure_tenant
 
 
@@ -31,26 +31,32 @@ def list_memories(
         return []
     if not can_view_all and username and username != current_user.username:
         return []
-    statement = select(MemoryRecord).where(
-        MemoryRecord.tenant_id == tenant_id,
-        MemoryRecord.kind != "conversation",
-    )
-    if can_view_all and user_id:
-        statement = statement.where(MemoryRecord.user_id == user_id)
-    elif not can_view_all:
-        statement = statement.where(MemoryRecord.user_id == current_user.id)
-    if can_view_all and username:
-        statement = statement.where(MemoryRecord.username == username)
-    fetch_limit = limit * 5 if agent_id else limit
-    rows = list(db.exec(statement.order_by(MemoryRecord.updated_at.desc()).limit(fetch_limit)).all())
-    session_agents = _session_agent_map(db, rows) if agent_id else {}
-    if agent_id:
-        rows = [row for row in rows if _memory_matches_agent(row, agent_id, session_agents)]
-    rows = memory_rows_for_read(rows[:limit])
-    if q:
-        needle = q.strip().lower()
-        rows = [row for row in rows if needle in row.content.lower() or needle in (row.username or "").lower()]
-    return [_memory_read_with_inferred_agent(row, session_agents) for row in rows]
+    def local():
+        statement = select(MemoryRecord).where(
+            MemoryRecord.tenant_id == tenant_id,
+            MemoryRecord.kind != "conversation",
+        )
+        if can_view_all and user_id:
+            statement = statement.where(MemoryRecord.user_id == user_id)
+        elif not can_view_all:
+            statement = statement.where(MemoryRecord.user_id == current_user.id)
+        if can_view_all and username:
+            statement = statement.where(MemoryRecord.username == username)
+        fetch_limit = limit * 5 if agent_id else limit
+        rows = list(db.exec(statement.order_by(MemoryRecord.updated_at.desc()).limit(fetch_limit)).all())
+        session_agents = _session_agent_map(db, rows) if agent_id else {}
+        if agent_id:
+            rows = [row for row in rows if _memory_matches_agent(row, agent_id, session_agents)]
+        rows = memory_rows_for_read(rows[:limit])
+        if q:
+            needle = q.strip().lower()
+            rows = [row for row in rows if needle in row.content.lower() or needle in (row.username or "").lower()]
+        return [_memory_read_with_inferred_agent(row, session_agents) for row in rows]
+
+    from staffdeck_harness.contracts.memory import MemoryCall
+    call = MemoryCall("list", tenant_id, user_id if can_view_all else current_user.id,
+                      agent_id, query=q or "", limit=limit, username=username)
+    return _call_memory(db, tenant_id, agent_id, call, current_user.id, local)
 
 
 @router.delete("/me")
@@ -63,25 +69,41 @@ def clear_my_memories(
     if tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
     ensure_tenant(db, tenant_id)
-    rows = list(
-        db.exec(
-            select(MemoryRecord)
-            .where(
-                MemoryRecord.tenant_id == tenant_id,
-                MemoryRecord.user_id == current_user.id,
-                MemoryRecord.kind != "conversation",
-            )
-            .order_by(MemoryRecord.updated_at.desc())
-        ).all()
-    )
-    session_agents = _session_agent_map(db, rows) if agent_id else {}
-    if agent_id:
-        rows = [row for row in rows if _memory_matches_agent(row, agent_id, session_agents)]
-    deleted = len(rows)
-    for row in rows:
-        db.delete(row)
-    db.commit()
-    return {"deleted": deleted}
+    def local():
+        rows = list(
+            db.exec(
+                select(MemoryRecord)
+                .where(
+                    MemoryRecord.tenant_id == tenant_id,
+                    MemoryRecord.user_id == current_user.id,
+                    MemoryRecord.kind != "conversation",
+                )
+                .order_by(MemoryRecord.updated_at.desc())
+            ).all()
+        )
+        session_agents = _session_agent_map(db, rows) if agent_id else {}
+        if agent_id:
+            rows = [row for row in rows if _memory_matches_agent(row, agent_id, session_agents)]
+        deleted = len(rows)
+        for row in rows:
+            db.delete(row)
+        db.commit()
+        return {"deleted": deleted}
+
+    from staffdeck_harness.contracts.memory import MemoryCall
+    call = MemoryCall("clear", tenant_id, current_user.id, agent_id)
+    return _call_memory(db, tenant_id, agent_id, call, current_user.id, local)
+
+
+def _call_memory(db: Session, tenant_id: str, agent_id: str | None, call, actor_id: str, local):
+    """记忆模块的拒绝/不可用要按 HTTP 状态返回，否则 ModuleSdkError 会冒成 500。"""
+    from staffdeck_harness.contracts.errors import ModuleSdkError, PermissionDenied
+    from staffdeck_harness.memory import for_staff
+
+    try:
+        return for_staff(db, tenant_id, agent_id).call(call, actor_id=actor_id, local=local)
+    except ModuleSdkError as exc:
+        raise HTTPException(403 if isinstance(exc, PermissionDenied) else 503, exc.message) from exc
 
 
 def _session_agent_map(db: Session, rows: list[MemoryRecord]) -> dict[str, str | None]:
@@ -98,14 +120,10 @@ def _can_view_all_memories(
     agent_id: str | None,
     current_user: User,
 ) -> bool:
-    if is_admin_user(current_user):
-        return True
     if not agent_id:
-        return False
-    agent = db.get(AgentProfile, agent_id)
-    if not agent or agent.tenant_id != tenant_id:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    return agent_owned_by_user(agent, current_user)
+        return is_admin_user(current_user)
+    from staffdeck_harness.runtime.staff_directory import can_manage_staff
+    return can_manage_staff(db, tenant_id, agent_id, current_user)
 
 
 def _memory_matches_agent(row: MemoryRecord, agent_id: str, session_agents: dict[str, str | None]) -> bool:

@@ -34,7 +34,7 @@ from app.llm import LLMClient
 from app.llm.model_config_resolver import resolve_model_config_for_runtime
 from app.skills import SkillEditor
 from app.skills.nesting import SopNestingError, validate_sop_nesting
-from app.skills.skill_schema import SkillCard, SkillRewriteRequest
+from app.skills.skill_schema import SkillCard, SkillRewriteRequest, skill_card_from_persisted
 
 
 GENERAL_SKILL_EVOLUTION_PROMPT = """
@@ -477,7 +477,7 @@ class EvolutionService:
         request: EvolutionAnalyzeRequest,
         model: ModelConfig,
     ) -> EvolutionProposal:
-        current = SkillCard.model_validate(skill.content_json)
+        current = skill_card_from_persisted(skill.content_json)
         instruction = self._rewrite_instruction(evidence, request.instruction)
         result = SkillEditor().rewrite(
             SkillRewriteRequest(

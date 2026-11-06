@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlmodel import Session
 
 from app import paths
@@ -34,6 +34,14 @@ class UIConfigRead(BaseModel):
     show_tool_trace: bool
     reflection_max_rounds: int
     agent_loop_max_actions: int
+    context_token_budget: int
+    context_compaction_trigger_ratio: float
+    context_recent_round_limit: int
+    context_long_summary_token_budget: int
+    context_medium_summary_token_budget: int
+    context_allowed_roles: list[Literal["user", "assistant"]]
+    context_long_summary_prefix: str
+    context_medium_summary_prefix: str
     sandbox_enabled: bool = False
     harness_storage_path: str = ""
     effective_harness_storage_path: str = ""
@@ -59,10 +67,45 @@ class UIConfigUpdateRequest(BaseModel):
     show_tool_trace: bool = True
     reflection_max_rounds: int = Field(default=1, ge=0, le=5)
     agent_loop_max_actions: int = Field(default=32, ge=1, le=100)
+    context_token_budget: int = Field(default=32_000, ge=512, le=262_144)
+    context_compaction_trigger_ratio: float = Field(default=0.70, ge=0.10, le=0.95)
+    context_recent_round_limit: int = Field(default=6, ge=1, le=50)
+    context_long_summary_token_budget: int = Field(default=4_000, ge=128, le=32_768)
+    context_medium_summary_token_budget: int = Field(default=4_000, ge=128, le=32_768)
+    context_allowed_roles: list[Literal["user", "assistant"]] = Field(
+        default_factory=lambda: ["user", "assistant"],
+        min_length=1,
+        max_length=2,
+    )
+    context_long_summary_prefix: str = Field(
+        default="历史的信息可以被总结为：",
+        min_length=1,
+        max_length=200,
+    )
+    context_medium_summary_prefix: str = Field(
+        default="近期的历史信息总结为：",
+        min_length=1,
+        max_length=200,
+    )
     sandbox_enabled: bool = False
     harness_storage_path: str = Field(default="", max_length=1024)
     sandbox_network_mode: Literal["all", "allowlist", "deny"] = "all"
     sandbox_allowed_domains: list[str] = Field(default_factory=list, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_context_budgets(self) -> UIConfigUpdateRequest:
+        summary_budget = (
+            self.context_long_summary_token_budget
+            + self.context_medium_summary_token_budget
+        )
+        if summary_budget > self.context_token_budget:
+            raise ValueError("长期与近期摘要预算之和不能超过上下文预算")
+        self.context_allowed_roles = list(dict.fromkeys(self.context_allowed_roles))
+        self.context_long_summary_prefix = self.context_long_summary_prefix.strip()
+        self.context_medium_summary_prefix = self.context_medium_summary_prefix.strip()
+        if not self.context_long_summary_prefix or not self.context_medium_summary_prefix:
+            raise ValueError("摘要前缀不能为空")
+        return self
 
 
 def ui_config_read(row: UIConfig, *, restart_scheduled: bool = False) -> UIConfigRead:
@@ -80,6 +123,25 @@ def ui_config_read(row: UIConfig, *, restart_scheduled: bool = False) -> UIConfi
         show_tool_trace=row.show_tool_trace,
         reflection_max_rounds=row.reflection_max_rounds,
         agent_loop_max_actions=row.agent_loop_max_actions,
+        context_token_budget=row.context_token_budget,
+        context_compaction_trigger_ratio=row.context_compaction_trigger_ratio,
+        context_recent_round_limit=row.context_recent_round_limit,
+        context_long_summary_token_budget=row.context_long_summary_token_budget,
+        context_medium_summary_token_budget=row.context_medium_summary_token_budget,
+        context_allowed_roles=[
+            role
+            for role in ("user", "assistant")
+            if role in set(row.context_allowed_roles or [])
+        ]
+        or ["user", "assistant"],
+        context_long_summary_prefix=(
+            str(row.context_long_summary_prefix or "").strip()
+            or "历史的信息可以被总结为："
+        ),
+        context_medium_summary_prefix=(
+            str(row.context_medium_summary_prefix or "").strip()
+            or "近期的历史信息总结为："
+        ),
         sandbox_enabled=bool(row.sandbox_enabled),
         harness_storage_path=str(row.harness_storage_path or ""),
         effective_harness_storage_path=_effective_storage_path(row),
@@ -151,6 +213,14 @@ def update_enterprise_ui_config(
     row.show_tool_trace = request.show_tool_trace
     row.reflection_max_rounds = request.reflection_max_rounds
     row.agent_loop_max_actions = request.agent_loop_max_actions
+    row.context_token_budget = request.context_token_budget
+    row.context_compaction_trigger_ratio = request.context_compaction_trigger_ratio
+    row.context_recent_round_limit = request.context_recent_round_limit
+    row.context_long_summary_token_budget = request.context_long_summary_token_budget
+    row.context_medium_summary_token_budget = request.context_medium_summary_token_budget
+    row.context_allowed_roles = request.context_allowed_roles
+    row.context_long_summary_prefix = request.context_long_summary_prefix
+    row.context_medium_summary_prefix = request.context_medium_summary_prefix
     row.sandbox_enabled = request.sandbox_enabled
     row.harness_storage_path = storage_path
     row.sandbox_network_mode = request.sandbox_network_mode

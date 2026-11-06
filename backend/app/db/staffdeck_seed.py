@@ -70,10 +70,11 @@ JsonDict = dict[str, Any]
 ModelT = TypeVar("ModelT", bound=SQLModel)
 
 
-def seed_staffdeck_admin_gallery(session: Session) -> None:
+def seed_staffdeck_admin_gallery(session: Session, *, include_expanded: bool = True) -> None:
     """Seed the curated StaffDeck gallery package as admin-owned resources."""
 
-    data = _load_seed_fixtures((FIXTURE_PATH, EXPANDED_FIXTURE_PATH))
+    paths = (FIXTURE_PATH, EXPANDED_FIXTURE_PATH) if include_expanded else (FIXTURE_PATH,)
+    data = _load_seed_fixtures(paths)
     if not data:
         return
     id_maps: dict[str, dict[str, str]] = {

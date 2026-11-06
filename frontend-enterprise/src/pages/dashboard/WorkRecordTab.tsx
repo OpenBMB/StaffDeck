@@ -54,6 +54,7 @@ type GrowthTimestampSource = {
 };
 
 export type WorkRecordTabProps = {
+  panelStates?: Record<string, 'loading' | 'ready' | 'error'>;
   selectedAgent: AgentProfileRead;
   activeKnowledge: KnowledgeBaseRead[];
   activeGeneralSkills: GeneralSkillRead[];
@@ -79,6 +80,7 @@ const capabilityBarFillClass = 'block h-full w-[20px] rounded-[90px] bg-[#282931
 const capabilityDescClass = 'line-clamp-5 min-w-0 overflow-hidden text-[10px] leading-[16px] font-normal text-[#757f9c] [overflow-wrap:anywhere] group-data-[tone=dark]:line-clamp-2 group-data-[tone=dark]:text-[#f6f6f6]';
 
 export default function WorkRecordTab({
+  panelStates = {},
   selectedAgent,
   activeKnowledge,
   activeGeneralSkills,
@@ -94,6 +96,7 @@ export default function WorkRecordTab({
 }: WorkRecordTabProps) {
   const navigate = useNavigate();
   const goToLogs = () => navigate(`/enterprise/feedback?agent_id=${encodeURIComponent(selectedAgent.id)}`);
+  const metric = (key: string, value: number) => panelStates[key] && panelStates[key] !== 'ready' ? '—' : value;
 
   const capabilityCards = [
     {
@@ -153,17 +156,22 @@ export default function WorkRecordTab({
       dark: true,
       illustration: capabilityLogs,
     },
-  ];
+  ].map((item, index) => {
+    const key = ['knowledge', 'generalSkills', 'skills', 'tools', 'tasks', 'sessions'][index];
+    const state = panelStates[key] || 'ready';
+    return { ...item, key, state, count: state === 'ready' ? item.count : '—',
+      body: state === 'error' ? '加载失败，请重试' : state === 'loading' ? '加载中' : item.body };
+  });
 
   const growthItems = growthTimeline(activeSkills, activeGeneralSkills, activeTools);
 
   return (
     <section className="relative flex w-full min-w-0 max-w-full mt-[-2px] flex-col gap-[24px] overflow-hidden rounded-[18px] shadow-[0_20px_42px_rgba(21,26,38,0.045)] bg-white p-[14px] *:min-w-0 min-[521px]:p-[18px] in-data-[theme=dark]:border-[#343741] in-data-[theme=dark]:bg-[#202126] in-data-[theme=dark]:text-[#f0f2f6]">
       <div className="flex w-full items-stretch gap-[16px]">
-        <ClickableMetric label="对话次数" value={conversationCount} onClick={goToLogs} />
-        <ClickableMetric label="反馈次数" value={feedbackCount} onClick={goToLogs} />
-        <ClickableMetric label="好评率" value={positiveRate} suffix="%" tone="positive" onClick={goToLogs} />
-        <ClickableMetric label="差评率" value={negativeRate} suffix="%" tone="negative" onClick={goToLogs} />
+        <ClickableMetric label="对话次数" value={metric('sessions', conversationCount)} onClick={goToLogs} />
+        <ClickableMetric label="反馈次数" value={metric('feedback', feedbackCount)} onClick={goToLogs} />
+        <ClickableMetric label="好评率" value={metric('feedback', positiveRate)} suffix={panelStates.feedback === 'error' || panelStates.feedback === 'loading' ? '' : '%'} tone="positive" onClick={goToLogs} />
+        <ClickableMetric label="差评率" value={metric('feedback', negativeRate)} suffix={panelStates.feedback === 'error' || panelStates.feedback === 'loading' ? '' : '%'} tone="negative" onClick={goToLogs} />
       </div>
       <ActivityTimeline events={activityEvents} />
       <div className="flex w-full min-w-0 max-w-full flex-col gap-[10px] mt-[20px]">
@@ -202,6 +210,8 @@ export default function WorkRecordTab({
           <button
             type="button"
             key={item.title}
+            data-panel={item.key}
+            data-state={item.state}
             className={`${capabilityCardClass} ${item.dark ? capabilityDarkCardClass : capabilityLightCardClass}`}
             data-tone={item.dark ? 'dark' : 'light'}
             onClick={() => navigate(item.route)}
@@ -256,7 +266,7 @@ function ClickableMetric({
   onClick,
 }: {
   label: string;
-  value: number;
+  value: number | string;
   suffix?: string;
   tone?: MetricTone;
   onClick: () => void;

@@ -102,6 +102,11 @@ function makeFetchMock(overrides: { bindings?: unknown; teams?: unknown; agents?
     if (method === 'POST' && url.endsWith('/api/enterprise/channels')) {
       return jsonResponse({ ...teamBinding, id: 'binding-new' });
     }
+    if (method === 'PUT' && /\/api\/enterprise\/channels\/[^/?]+/.test(url)) {
+      const body = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>;
+      const base = Array.isArray(bindings) && bindings[0] ? bindings[0] : teamBinding;
+      return jsonResponse({ ...base, ...(body.name !== undefined ? { name: body.name } : {}) });
+    }
     if (url.includes('/channels/meta')) return jsonResponse(channelMetas);
     if (url.includes('/my-identity-bindings')) return jsonResponse([]);
     if (url.includes('/deliveries/days')) {
@@ -131,6 +136,9 @@ function renderPage() {
 async function openCreateDialog(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getAllByRole('button', { name: /接入渠道/ })[0]);
   await user.click(await screen.findByRole('button', { name: /微信/ }));
+  // 命名步骤:默认名已预填,直接进入下一步
+  await screen.findByText('命名接入');
+  await user.click(screen.getByRole('button', { name: '下一步' }));
   await screen.findByText('选择绑定对象');
 }
 
@@ -154,7 +162,13 @@ describe('ChannelsPage', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     renderPage();
-    await openCreateDialog(user);
+    await user.click(screen.getAllByRole('button', { name: /接入渠道/ })[0]);
+    await user.click(await screen.findByRole('button', { name: /微信/ }));
+    // 命名步骤预填默认名:渠道名 + YYYYMMDDHHMM
+    const nameInput = (await screen.findByLabelText('接入名称')) as HTMLInputElement;
+    expect(nameInput.value).toMatch(/^微信\d{12}$/);
+    await user.click(screen.getByRole('button', { name: '下一步' }));
+    await screen.findByText('选择绑定对象');
 
     await screen.findByText('小艾');
     await user.click(screen.getAllByRole('radio')[0]);
@@ -164,7 +178,118 @@ describe('ChannelsPage', () => {
       const body = createPostBody(fetchMock);
       expect(body.agent_id).toBe('agent-1');
       expect(body).not.toHaveProperty('team_id');
+      expect(body.name).toMatch(/^微信\d{12}$/);
     });
+  });
+
+  it('sends the edited binding name when creating', async () => {
+    const user = userEvent.setup();
+    const fetchMock = makeFetchMock();
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPage();
+    await user.click(screen.getAllByRole('button', { name: /接入渠道/ })[0]);
+    await user.click(await screen.findByRole('button', { name: /微信/ }));
+    const nameInput = (await screen.findByLabelText('接入名称')) as HTMLInputElement;
+    await user.clear(nameInput);
+    await user.type(nameInput, '客服微信');
+    await user.click(screen.getByRole('button', { name: '下一步' }));
+    await screen.findByText('选择绑定对象');
+
+    await screen.findByText('小艾');
+    await user.click(screen.getAllByRole('radio')[0]);
+    await user.click(screen.getByRole('button', { name: '创建微信接入' }));
+
+    await waitFor(() => {
+      const body = createPostBody(fetchMock);
+      expect(body.name).toBe('客服微信');
+    });
+  });
+
+  it('renames a binding from the detail view', async () => {
+    const user = userEvent.setup();
+    const namedBinding: ChannelBindingRead = {
+      ...teamBinding,
+      id: 'binding-1',
+      channel: 'feishu',
+      name: '飞书客服',
+      team_id: null,
+      team_name: null,
+      my_role: 'owner',
+      agents: [{ agent_id: 'agent-1', name: '小艾', is_default: true, sort_order: 0 }],
+    };
+    const fetchMock = makeFetchMock({ bindings: [namedBinding] });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPage();
+    // 列表卡片展示自定义名称
+    expect(await screen.findByText('飞书客服')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /飞书客服/ }));
+
+    await user.click(await screen.findByRole('button', { name: '重命名' }));
+    const input = (await screen.findByLabelText('接入名称')) as HTMLInputElement;
+    // 预填当前名称
+    expect(input.value).toBe('飞书客服');
+    await user.clear(input);
+    await user.type(input, '售前飞书群');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([requestUrl, init]) =>
+          init?.method === 'PUT' &&
+          String(requestUrl).includes('/api/enterprise/channels/binding-1'),
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        tenant_id: 'tenant_demo',
+        name: '售前飞书群',
+      });
+    });
+    // 详情标题同步更新为新名称
+    expect(await screen.findByText('售前飞书群')).toBeTruthy();
+  });
+
+  it('renames a binding directly from the list card without entering the detail view', async () => {
+    const user = userEvent.setup();
+    const namedBinding: ChannelBindingRead = {
+      ...teamBinding,
+      id: 'binding-1',
+      channel: 'feishu',
+      name: '飞书客服',
+      team_id: null,
+      team_name: null,
+      my_role: 'owner',
+      agents: [{ agent_id: 'agent-1', name: '小艾', is_default: true, sort_order: 0 }],
+    };
+    const fetchMock = makeFetchMock({ bindings: [namedBinding] });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPage();
+    expect(await screen.findByText('飞书客服')).toBeTruthy();
+    // 列表卡片上的重命名按钮
+    await user.click(screen.getByRole('button', { name: '重命名' }));
+    const input = (await screen.findByLabelText('接入名称')) as HTMLInputElement;
+    expect(input.value).toBe('飞书客服');
+    await user.clear(input);
+    await user.type(input, '售后飞书群');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([requestUrl, init]) =>
+          init?.method === 'PUT' &&
+          String(requestUrl).includes('/api/enterprise/channels/binding-1'),
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        tenant_id: 'tenant_demo',
+        name: '售后飞书群',
+      });
+    });
+    // 仍停留在列表页,卡片标题已更新
+    expect(await screen.findByText('售后飞书群')).toBeTruthy();
+    expect(screen.queryByText('选择绑定对象')).toBeNull();
   });
 
   it('creates a binding with team_id when the team target is selected', async () => {

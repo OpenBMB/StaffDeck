@@ -1,0 +1,180 @@
+/* Zero-height sticky slot, like the back-to-bottom control: the rail floats
+   over the transcript's right gutter without extending scrollHeight. */
+.slot {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  height: 0;
+  pointer-events: none;
+}
+
+.rail {
+  /* The band a reader actually sees: the scrollport minus the sticky composer
+     stack covering its floor. ConversationRoot publishes both measurements on
+     the scrollport; the fallbacks carry the first paint before its observer
+     fires. */
+  --turn-rail-band: calc(
+    var(--dsh-conversation-viewport-height, 100dvh) - var(--dsh-composer-height, 152px)
+  );
+  --turn-preview-height: 100px;
+
+  position: absolute;
+  top: calc(var(--turn-rail-band) / 2);
+  /* Flush with the scrollport edge: the slot sits inside the transcript's side
+     padding, so the rail gives that inset back and keeps 12px of its own. */
+  right: calc(12px - (var(--dsh-composer-side-clearance) + 16px));
+  width: 28px;
+  /* Never taller than the band it centers in: a short window (a tall composer,
+     a low viewport) shrinks the rail instead of pushing marks under the
+     composer or above the scrollport. */
+  height: min(
+    var(--turn-natural-height),
+    max(0px, calc(var(--turn-rail-band) - 64px)),
+    420px
+  );
+  cursor: pointer;
+  pointer-events: auto;
+  transform: translateY(-50%);
+  transition: height 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.marks {
+  position: absolute;
+  inset: var(--turn-rail-inset) 0;
+}
+
+.markPosition {
+  position: absolute;
+  top: min(var(--turn-natural-position), var(--turn-position));
+  right: 0;
+  left: 0;
+  height: 10px;
+  transform: translateY(-50%);
+  transition: top 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: dsh-turn-mark-enter 150ms ease-out;
+}
+
+/* The rail owns pointer input for the whole column, so a mark is a keyboard
+   destination that paints one tick — never a mouse target of its own. */
+.mark {
+  position: absolute;
+  /* As wide as the longest tick, right-aligned with it: the focus ring below
+     then wraps the tick instead of the rail's full pointer column. */
+  inset: 0 0 0 auto;
+  width: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: none;
+}
+
+.mark::before {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  width: 12px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--dsw-alias-border-l4);
+  content: '';
+  transform: translateY(-50%);
+  transition: width 140ms ease, background-color 140ms ease;
+}
+
+.markPreview::before {
+  width: 18px;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+.markActive::before {
+  width: 20px;
+  background: var(--dsw-alias-label-primary);
+}
+
+/* Keyboard focus outranks both resting states: the tick takes the brand color
+   the rest of the rail never uses, and a hairline ring keeps it legible
+   against a busy transcript. */
+.mark:focus-visible::before {
+  width: 20px;
+  background: var(--dsw-alias-state-business-primary);
+}
+
+.mark:focus-visible {
+  outline: 1px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+}
+
+.preview {
+  position: absolute;
+  /* Centered on its mark (mark positions are measured inside the rail inset),
+     then held clear of both rail ends. */
+  top: clamp(
+    0px,
+    calc(
+      min(var(--turn-natural-position), var(--turn-position))
+      + var(--turn-rail-inset) - var(--turn-preview-height) / 2
+    ),
+    calc(100% - var(--turn-preview-height))
+  );
+  right: calc(100% + 10px);
+  box-sizing: border-box;
+  width: min(300px, calc(100cqw - 120px));
+  max-height: var(--turn-preview-height);
+  overflow: hidden;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: var(--dsw-shadow-lv2);
+  pointer-events: none;
+  animation: dsh-turn-preview-enter 120ms ease-out;
+  transition: top 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.previewPrompt,
+.previewResponse {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+}
+
+.previewPrompt {
+  font: var(--dsw-font-xs-strong-13);
+  -webkit-line-clamp: 2;
+}
+
+.previewResponse {
+  margin-top: 4px;
+  color: var(--dsw-alias-label-caption);
+  font: var(--dsw-font-xxs-12);
+  -webkit-line-clamp: 2;
+}
+
+@keyframes dsh-turn-mark-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes dsh-turn-preview-enter {
+  from { opacity: 0; transform: translateX(4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@container (max-width: 900px) {
+  .slot {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail,
+  .markPosition,
+  .mark::before,
+  .preview {
+    transition: none;
+    animation: none;
+  }
+}

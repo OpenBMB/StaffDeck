@@ -8,7 +8,6 @@ from sqlmodel import Session, select
 
 from app.channels.service_identity import channel_label
 from app.db.models import (
-    AgentProfile,
     ChannelBinding,
     ChannelBindingAgent,
     ChannelConvState,
@@ -71,14 +70,25 @@ def parse_command(text: str) -> ChannelCommand | None:
 
 
 def mounted_agents(db: Session, binding: ChannelBinding) -> list[ChannelBindingAgent]:
-    """挂载集;无挂载行(存量 v1 绑定)回退为 [binding.agent_id] 默认,不依赖回填。"""
+    """挂载集;无挂载行(存量 v1 绑定)回退为 [binding.agent_id] 默认,不依赖回填。
+
+    指向已删除员工的孤儿挂载行直接过滤(删除员工会清理挂载,这里兜底历史数据),
+    避免 /员工 列表出现裸 agent_id、或 /切换 把会话路由到已删除员工。
+    挂载行全部失效时按存量绑定回退。
+    """
     rows = db.exec(
         select(ChannelBindingAgent)
-        .where(ChannelBindingAgent.binding_id == binding.id)
+        .where(ChannelBindingAgent.binding_id == binding.id,
+               ChannelBindingAgent.tenant_id == binding.tenant_id)
         .order_by(ChannelBindingAgent.sort_order, ChannelBindingAgent.created_at)
     ).all()
     if rows:
-        return list(rows)
+        alive_ids = set(
+            agent_names(db, binding.tenant_id, [row.agent_id for row in rows])
+        )
+        mounted = [row for row in rows if row.agent_id in alive_ids]
+        if mounted:
+            return mounted
     return [
         ChannelBindingAgent(
             tenant_id=binding.tenant_id,
@@ -98,15 +108,8 @@ def default_agent_id(mounts: list[ChannelBindingAgent]) -> str:
 
 
 def agent_names(db: Session, tenant_id: str, agent_ids: list[str]) -> dict[str, str]:
-    if not agent_ids:
-        return {}
-    rows = db.exec(
-        select(AgentProfile).where(
-            AgentProfile.tenant_id == tenant_id,
-            AgentProfile.id.in_(agent_ids),
-        )
-    ).all()
-    return {row.id: row.name for row in rows}
+    from staffdeck_harness.runtime.staff_directory import staff_names
+    return staff_names(db, tenant_id, agent_ids)
 
 
 def _get_conv_state(db: Session, binding: ChannelBinding, external_conv_id: str) -> ChannelConvState | None:

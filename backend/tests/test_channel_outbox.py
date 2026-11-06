@@ -1542,3 +1542,28 @@ def test_notify_identity_fallback_skips_when_scope_missing() -> None:
 
         notify_binding_creator(db, db.get(ChannelBinding, binding_b.id), "测试告警")
         assert db.exec(select(ChannelDelivery)).all() == []
+
+
+def test_daemon_resets_stuck_sending_rows_between_batches(monkeypatch) -> None:
+    import app.channels.service_outbox as outbox
+
+    engine = _test_engine()
+    register_channel_adapter("fake", FakeAdapter())
+    calls = []
+    real_reset = outbox._reset_stuck_deliveries
+
+    def reset(db, *, reaction_lane=False):
+        calls.append(reaction_lane)
+        if len(calls) == 3:
+            outbox._delivery_stop.set()
+        real_reset(db, reaction_lane=reaction_lane)
+
+    monkeypatch.setattr(outbox, "_reset_stuck_deliveries", reset)
+    monkeypatch.setattr(outbox, "STUCK_RESET_INTERVAL_SECONDS", 0)
+    outbox._delivery_stop.clear()
+    try:
+        run_delivery_daemon(poll_seconds=0.01, db_engine=engine)
+    finally:
+        outbox._delivery_stop.clear()
+    # 启动一次，之后每批之前再做：不必等下次重启。
+    assert calls == [False, False, False]

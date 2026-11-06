@@ -17,13 +17,14 @@ from app.public_api.errors import (
     public_validation_error_handler,
 )
 from app.public_api.utils import audit_request
+from app.public_api import identity
 
 
 def create_public_api_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
         title=f"{settings.app_name} Open API",
-        description="数字员工、Harness v2、SOP、知识与自动任务开放 API。",
+        description="数字员工、Harness v3、SOP、知识与自动任务开放 API。",
         version="1.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
@@ -58,8 +59,9 @@ def create_public_api_app() -> FastAPI:
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:
-        return {"status": "ok", "version": "v1", "engine": "harness_v2"}
+        return {"status": "ok", "version": "v1", "engine": "harness_v3"}
 
+    app.include_router(identity.router)
     app.include_router(credentials.router)
     app.include_router(gallery.router)
     app.include_router(agents.router)

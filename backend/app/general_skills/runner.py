@@ -45,7 +45,6 @@ REPLY_PROMPT = PROMPT_DIR / "general_skill_reply_prompt.md"
 READ_PROMPT = PROMPT_DIR / "general_skill_read_prompt.md"
 RUN_TIMEOUT_SECONDS = 12
 MAX_OUTPUT_CHARS = 20000
-GENERAL_SKILL_MAX_TOKENS = 8192
 GENERAL_SKILL_MAX_ATTEMPTS = 10
 MAX_DECLARED_ARTIFACTS = 20
 TraceSink = Callable[[dict[str, Any]], None]
@@ -455,7 +454,7 @@ class GeneralSkillRunner:
             output_contract=GENERAL_SKILL_PLAN_OUTPUT,
         )
         with llm_operation("general_skill.plan"):
-            raw = LLMClient(_with_min_tokens(model_config, GENERAL_SKILL_MAX_TOKENS)).generate_json(
+            raw = LLMClient(snapshot_model_config(model_config)).generate_json(
                 unified_system_prompt(),
                 payload,
             )
@@ -617,7 +616,7 @@ class GeneralSkillRunner:
             output_contract=GENERAL_SKILL_PLAN_OUTPUT,
         )
         with llm_operation("general_skill.repair", attempt=next_attempt):
-            raw = LLMClient(_with_min_tokens(model_config, GENERAL_SKILL_MAX_TOKENS)).generate_json(
+            raw = LLMClient(snapshot_model_config(model_config)).generate_json(
                 unified_system_prompt(),
                 payload,
             )
@@ -1366,10 +1365,6 @@ def _normalize_failure_diagnostics(structured_result: dict[str, Any]) -> None:
             "retryable",
         ],
     )
-
-
-def _with_min_tokens(model_config: ModelConfig, max_output_tokens: int) -> ModelConfig:
-    return snapshot_model_config(model_config, min_output_tokens=max_output_tokens)
 
 
 def _fallback_reply(structured_result: dict[str, Any]) -> str:

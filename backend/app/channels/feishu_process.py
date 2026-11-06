@@ -71,9 +71,11 @@ class FeishuProcessSupervisor:
         lock_wait_seconds: float = 3.0,
         parent_watchdog_grace_seconds: float = 0.1,
         startup_timeout_seconds: float = 10.0,
+        assembly_fingerprint: str = "",
     ):
         self._ctx = multiprocessing.get_context("spawn")
         self._runtime_path = runtime_path
+        self._assembly_fingerprint = assembly_fingerprint
         root = (data_dir or Path.cwd()).expanduser().resolve()
         # database_path 为兼容旧参数;子进程统一按完整 SQLAlchemy URL 自建引擎
         if database_url:
@@ -184,6 +186,7 @@ class FeishuProcessSupervisor:
             runtime_path=self._runtime_path,
             database_url=self._database_url,
             watchdog_seconds=self._watchdog_seconds,
+            assembly_fingerprint=self._assembly_fingerprint,
         )
         process = self._ctx.Process(
             target=connector_child_entry,

@@ -19,8 +19,12 @@
 </div>
 
 ## News
-
-- 📌 **Pinned · 2026-07-15**: StaffDeck is now open source! We welcome your feedback and support with a Star.
+- **2026-10-22**: We present v1.0.0-preview for a modular architecture upgrade and CLI support.
+- **2026-09-01**: We present v0.5.0 for faster and more stable execution.
+- **2026-08-18**: We present v0.4.0 for multi-staff cooperation and faster runing.
+- **2026-08-06**: We present v0.3.0 for SOP editing and sandbox.
+- **2026-08-03**: We present v0.2.0 for harnessv2 and IM system.
+- **2026-07-15**: StaffDeck is now open source! We welcome your feedback and support with a Star.
 
 # 💡 About StaffDeck
 
@@ -69,7 +73,7 @@ deployments, you can also override the launch at runtime with
 
 ```text
 Read https://raw.githubusercontent.com/OpenBMB/StaffDeck/main/README.md.
-Clone the OpenBMB/StaffDeck repository, prepare Python 3.11 or newer and Node.js 20,
+Clone the OpenBMB/StaffDeck repository, prepare Python 3.11 or newer and Node.js 22.19+,
 create backend/.venv, install the backend and frontend dependencies, copy
 backend/.env.example to backend/.env, ask me for the OpenAI-compatible model
 endpoint and API key if they are missing, and use the commands documented for
@@ -104,6 +108,28 @@ plus /workspace/gallery before reporting success.
   - [Citation](#citation)
   - [License](#license)
   - [Acknowledgments](#acknowledgments)
+
+## OSS release and CLI
+
+This checkout contains the standalone OSS product and the Harness v3 runtime.
+See [installation and upgrades](INSTALL.md) and the [CLI guide](CLI.md).
+Use Python 3.11+ and Node.js **22.19+ within 22.x, or 24+**:
+
+```sh
+python3 prepare.py
+staffdeck serve
+# In another terminal:
+staffdeck login       # fresh installations: admin / admin
+staffdeck agent list
+staffdeck chat
+staffdeck chat --agent 财务
+```
+
+Fresh installations include IT, HR, Administration, Finance and Legal employees
+owned by `@admin`, with their SOPs, knowledge bases, skills and example connectors.
+Existing installations retain their accounts, data and encryption key.
+Configure a model before chatting; provider credentials are never shipped.
+[Release build instructions](packaging/RELEASE.md).
 
 ## Quick Start
 
@@ -274,7 +300,7 @@ Current limitations when running on PostgreSQL/openGauss:
 
 - **Fresh databases only**: `create_all` initializes a new database, but there is no migration path for existing schemas yet (Alembic migrations are a follow-up task). A startup warning is emitted as a reminder.
 - **Single-writer startup**: run only one application worker during first boot/upgrades — concurrent `create_all` + demo seeding from multiple workers can race (DuplicateTable / unique conflicts). SQLite serializes this via write locks; PostgreSQL deployments should init with a single worker first.
-- `APP_TIMEZONE` only affects PostgreSQL day bucketing; on SQLite, day buckets always use the server's local timezone.
+- `APP_TIMEZONE` only affects PostgreSQL day bucketing; on SQLite, day buckets always use the server's local timezone (setting it there logs a warning and is ignored).
 - Run exactly one connector process per database — the single-instance guard uses a session-scoped PostgreSQL advisory lock (held on a dedicated autocommit connection) with periodic liveness checks (channel services degrade and stop if the lock is lost).
 
 ## Project Structure

@@ -1,0 +1,55 @@
+{
+  "name": "@deepseek-ai/dsh-experimental-webworker-packer",
+  "description": "Build-time packer for the browser runtime's base VFS image and ordered data-overlay archives",
+  "version": "0.1.2-alpha.2",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "directory": "packages/experimental/webworker-packer"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "bin": {
+    "dsh-pack-vfs-image": "./bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./invariant": {
+      "types": "./lib/types/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/invariant.js",
+    "lib/bin.js",
+    "bin.js",
+    "lib/repository-*.js",
+    "lib/types/**/*.d.ts"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/cordis-plugin-include": "workspace:^",
+    "@deepseek-ai/dsh-experimental-webworker-runtime": "workspace:^",
+    "@deepseek-ai/dsh-home-paths": "workspace:^",
+    "js-yaml": "^4.2.0",
+    "picomatch": "^4.0.4"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-invariants": "workspace:^",
+    "@types/js-yaml": "^4.0.9",
+    "@types/picomatch": "^3.0.2"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-invariants": "workspace:^"
+  }
+}

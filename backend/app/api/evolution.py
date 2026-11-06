@@ -13,7 +13,7 @@ from app.evolution.schema import (
     EvolutionRejectRequest,
 )
 from app.security.auth import get_current_user
-from app.security.permissions import ensure_agent_scope_manager
+from staffdeck_harness.runtime.staff_directory import ensure_staff_manager as ensure_agent_scope_manager
 from app.security.tenant import ensure_tenant
 
 

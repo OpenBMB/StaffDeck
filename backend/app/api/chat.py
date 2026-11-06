@@ -18,16 +18,15 @@ from sqlalchemy import and_, or_, update
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
-from app.agents.branching import model_for_agent, visible_published_skills
+from app.agents.branching import model_for_agent
 from app.channels.service_outbox import stage_channel_delivery
 from app.core import AgentLoop
 from app.core.cancellation import cancel_chat_turn, is_chat_turn_cancelled
-from app.core.capability_manifest import CapabilityManifestBuilder
-from app.core.harness_session_cleanup import (
-    harness_task_workspace_path,
-    remove_harness_session_workspace,
-    stage_harness_session_record_deletion,
+from app.core.handoff_reply_service import (  # noqa: F401 - legacy import compatibility
+    resume_human_handoff_async as _resume_human_handoff_async,
+    resume_human_handoff_worker as _resume_human_handoff_worker,
 )
+from app.core.harness_session_cleanup import harness_task_workspace_path
 from app.core.harness_turn_store import HarnessTurnStore
 from app.core.slash_commands import SlashCommandRead, slash_command_catalog
 from app.db import engine, get_session
@@ -69,6 +68,10 @@ from app.security.tenant import ensure_tenant
 from app.session.attachments import (
     parse_chat_attachment,
     validate_chat_turn_attachments,
+)
+from app.session.cleanup import (
+    purge_chat_session_records,
+    remove_chat_session_workspace,
 )
 from app.session.helpers import public_session
 from app.session.message_visibility import (
@@ -185,13 +188,20 @@ class HumanHandoffReplyRequest(BaseModel):
 
 
 def session_read(
-    row: ChatSession, *, is_scheduled: bool = False, team_name: str | None = None
+    row: ChatSession,
+    *,
+    is_scheduled: bool = False,
+    team_name: str | None = None,
+    agent_name: str | None = None,
+    agent_available: bool | None = None,
 ) -> ChatSessionRead:
     return ChatSessionRead(
         id=row.id,
         tenant_id=row.tenant_id,
         user_id=row.user_id,
         agent_id=row.agent_id,
+        agent_name=agent_name,
+        agent_available=agent_available,
         title=row.title,
         active_skill_id=row.active_skill_id,
         active_step_id=row.active_step_id,
@@ -245,10 +255,11 @@ def _schedule_session_title_summary(
     user_id: str,
     session_id: str,
     agent_id: str | None,
+    *, data_services=None,
 ) -> None:
     if not session_id:
         return
-    job_key = f"{tenant_id}:{user_id}:{session_id}"
+    job_key = f"{getattr(data_services, 'namespace', 'oss-local')}:{tenant_id}:{user_id}:{session_id}"
     with _session_title_summary_jobs_lock:
         if job_key in _session_title_summary_jobs:
             return
@@ -256,16 +267,17 @@ def _schedule_session_title_summary(
 
     def run() -> None:
         try:
-            _summarize_session_title_once(tenant_id, user_id, session_id, agent_id)
+            _summarize_session_title_once(tenant_id, user_id, session_id, agent_id, data_services=data_services)
         finally:
             with _session_title_summary_jobs_lock:
                 _session_title_summary_jobs.discard(job_key)
 
-    thread = threading.Thread(
-        target=run,
-        daemon=True,
-    )
-    thread.start()
+    from staffdeck_harness.runtime.jobs import enqueue_runtime_job
+    try:
+        enqueue_runtime_job("session.title", run, registry=getattr(data_services, "registry", None))
+    except Exception:
+        with _session_title_summary_jobs_lock:
+            _session_title_summary_jobs.discard(job_key)
 
 
 def _summarize_session_title_once(
@@ -273,13 +285,16 @@ def _summarize_session_title_once(
     user_id: str,
     session_id: str,
     agent_id: str | None,
+    *, data_services=None,
 ) -> None:
+    def session_factory():
+        return data_services.session(None, purpose="session.title") if data_services else Session(engine)
     try:
         for attempt in range(8):
             messages: list[Message] = []
             model_config = None
             effective_agent_id = agent_id
-            with Session(engine) as db:
+            with session_factory() as db:
                 session = db.exec(
                     select(ChatSession).where(
                         ChatSession.id == session_id,
@@ -310,7 +325,16 @@ def _summarize_session_title_once(
                     messages = []
                 else:
                     effective_agent_id = agent_id or session.agent_id
-                    model_config = model_for_agent(db, tenant_id, effective_agent_id)
+                    if data_services:
+                        from staffdeck_harness.modules.registry import peek_registry
+                        from staffdeck_harness.composition.sources import resolve_source
+                        from staffdeck_harness.contracts.manifest import SlotName
+                        from staffdeck_harness.contracts.sources import SourceContext
+                        model_config = resolve_source(getattr(data_services, "registry", None) or peek_registry(),
+                            SlotName.STAFF_SOURCE, db).model(SourceContext(tenant_id, effective_agent_id,
+                            session_id, "web", user_id))
+                    else:
+                        model_config = model_for_agent(db, tenant_id, effective_agent_id)
 
             if not messages:
                 if attempt < 7:
@@ -339,7 +363,7 @@ def _summarize_session_title_once(
                         if title_turn_id:
                             traced_payload.setdefault("turn_id", title_turn_id)
                             traced_payload.setdefault("user_message_id", title_turn_id)
-                        with Session(engine) as span_db:
+                        with session_factory() as span_db:
                             _persist_relay_only_event(
                                 span_db,
                                 tenant_id,
@@ -360,7 +384,7 @@ def _summarize_session_title_once(
             if not title:
                 return
 
-            with Session(engine) as db:
+            with session_factory() as db:
                 session = db.exec(
                     select(ChatSession).where(
                         ChatSession.id == session_id,
@@ -454,131 +478,11 @@ def _normalized_session_event_payload(row: AgentEvent) -> dict[str, object]:
     return normalized
 
 
-def _apply_handoff_reply(
-    db: Session,
-    row: HumanHandoffRequest,
-    reply: str,
-    *,
-    answered_by_user_id: str | None,
-    source: str = "web",
-) -> None:
-    """把一条 pending handoff 置为 answered 并触发 SOP 恢复。
+def _apply_handoff_reply(db, row, reply, *, answered_by_user_id, source="web"):
+    from app.core.handoff_reply_service import apply_handoff_reply
 
-    供网页 API(reply_human_handoff)与飞书 intake 回复分支复用。
-    调用前需已完成权限校验与状态校验;本函数负责落库 + 事件 + 异步恢复。
-    source: "web" 或 "feishu",由调用方显式指定(不再靠 user_id 前缀推断)。
-    """
-    now = utc_now()
-    row.status = "answered"
-    row.human_reply = reply
-    row.answered_at = now
-    row.updated_at = now
-    row.resume_payload_json = {
-        **(row.resume_payload_json or {}),
-        "answered_by_user_id": answered_by_user_id,
-    }
-    db.add(row)
-
-    chat_session = db.get(ChatSession, row.session_id)
-    if chat_session and chat_session.tenant_id == row.tenant_id:
-        chat_session.status = "active"
-        chat_session.awaiting_input_json = None
-        chat_session.summary = f"最近回复：{reply[:120]}"
-        chat_session.updated_at = now
-        db.add(chat_session)
-    db.add(
-        AgentEvent(
-            tenant_id=row.tenant_id,
-            session_id=row.session_id,
-            event_type="human_handoff_answered",
-            payload_json={
-                "handoff_id": row.id,
-                "agent_id": row.agent_id,
-                "trigger_skill_id": row.trigger_skill_id,
-                "trigger_step_id": row.trigger_step_id,
-                "answered_by_user_id": answered_by_user_id,
-                "reply_preview": reply[:180],
-                "source": source,
-            },
-            created_at=now,
-        )
-    )
-    db.commit()
-    db.refresh(row)
-    _resume_human_handoff_async(row.id)
-
-
-def _resume_human_handoff_async(handoff_id: str) -> None:
-    thread = threading.Thread(target=_resume_human_handoff_worker, args=(handoff_id,), daemon=True)
-    thread.start()
-
-
-def _resume_human_handoff_worker(handoff_id: str) -> None:
-    try:
-        with Session(engine) as db:
-            handoff = db.get(HumanHandoffRequest, handoff_id)
-            if not handoff or handoff.status != "answered" or not handoff.human_reply:
-                return
-            chat_session = db.get(ChatSession, handoff.session_id)
-            if not chat_session or chat_session.tenant_id != handoff.tenant_id:
-                return
-            metadata = dict(handoff.metadata_json or {})
-            if metadata.get("resume_started_at"):
-                return
-            now = utc_now()
-            metadata["resume_started_at"] = now.isoformat()
-            handoff.metadata_json = metadata
-            db.add(handoff)
-            db.add(
-                AgentEvent(
-                    tenant_id=handoff.tenant_id,
-                    session_id=handoff.session_id,
-                    event_type="human_handoff_resume_started",
-                    payload_json={
-                        "handoff_id": handoff.id,
-                        "agent_id": handoff.agent_id,
-                        "trigger_skill_id": handoff.trigger_skill_id,
-                        "trigger_step_id": handoff.trigger_step_id,
-                    },
-                    created_at=now,
-                )
-            )
-            db.commit()
-
-            request = ChatTurnRequest(
-                tenant_id=handoff.tenant_id,
-                session_id=handoff.session_id,
-                agent_id=handoff.agent_id or chat_session.agent_id,
-                user_id=handoff.requester_user_id or chat_session.user_id or "",
-                message=handoff.human_reply,
-                channel="human_handoff_resume",
-                debug=False,
-            )
-            AgentLoop(db).handle_turn(request)
-            # resume turn 完成后不再写 resume_finished_at 标记:
-            # _inject_handoff_context 已改为用 request.channel == "human_handoff_resume"
-            # 判定 resume turn,时序可靠,无需事后标记。
-    except Exception as exc:
-        with Session(engine) as db:
-            handoff = db.get(HumanHandoffRequest, handoff_id)
-            if not handoff:
-                return
-            metadata = dict(handoff.metadata_json or {})
-            metadata["resume_failed_at"] = utc_now().isoformat()
-            metadata["resume_error"] = str(exc)[:300]
-            handoff.status = "failed"
-            handoff.metadata_json = metadata
-            handoff.updated_at = utc_now()
-            db.add(handoff)
-            db.add(
-                AgentEvent(
-                    tenant_id=handoff.tenant_id,
-                    session_id=handoff.session_id,
-                    event_type="human_handoff_resume_failed",
-                    payload_json={"handoff_id": handoff.id, "error": str(exc)[:300]},
-                )
-            )
-            db.commit()
+    return apply_handoff_reply(db, row, reply, answered_by_user_id=answered_by_user_id,
+                              source=source, resume=_resume_human_handoff_async)
 
 
 def _maybe_handle_scheduled_task_request(
@@ -925,13 +829,23 @@ def list_slash_commands(
         agent_id,
         current_user,
     )
-    skills = discoverable_sops(visible_published_skills(db, tenant_id, agent.id))
-    manifest = CapabilityManifestBuilder(db).build(
-        tenant_id,
-        agent.id,
-        None,
-        None,
-    )
+    from types import SimpleNamespace
+    from app.config import get_settings
+    from staffdeck_harness.composition.sources import resolve_staff
+    from staffdeck_harness.composition.compiler import CompositionCompiler
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.contracts.sop import SopDefinition
+    from staffdeck_harness.modules.registry import get_registry
+    from staffdeck_harness.security.profile import get_profile, Guard
+    from staffdeck_harness.capabilities.manifest import SnapshotManifestBuilder
+    registry, profile = get_registry(get_settings()), get_profile(get_settings())
+    staff, identity = resolve_staff(registry, db, SourceContext(tenant_id, agent.id, user_id=current_user.id), profile)
+    snapshot = CompositionCompiler().compile(staff, generation=registry.generation, strict=False)
+    skills = discoverable_sops([SopDefinition(v.row_id, tenant_id, v.skill_id, v.version,
+        v.name, dict(v.content)) for v in staff.sops if snapshot.sop(v.skill_id)])
+    manifest = SnapshotManifestBuilder(SimpleNamespace(db=db, registry=registry, snapshot=snapshot,
+        user_message_id=None, session=None, security_context=identity, guard=Guard("staff", profile))).build(
+            tenant_id, agent.id, None, None)
     return slash_command_catalog(skills, manifest)
 
 
@@ -1013,10 +927,12 @@ def chat_turn(
         scheduled_response = _maybe_handle_scheduled_task_request(db, request, chat_session)
         if scheduled_response:
             response, _draft = scheduled_response
-            _schedule_session_title_summary(request.tenant_id, request.user_id, response.session_id, request.agent_id)
+            from staffdeck_harness.runtime.services import runtime_services
+            _schedule_session_title_summary(request.tenant_id, request.user_id, response.session_id, request.agent_id, data_services=runtime_services(db))
             return response
     response = AgentLoop(db).handle_turn(request)
-    _schedule_session_title_summary(request.tenant_id, request.user_id, response.session_id, request.agent_id)
+    from staffdeck_harness.runtime.services import runtime_services
+    _schedule_session_title_summary(request.tenant_id, request.user_id, response.session_id, request.agent_id, data_services=runtime_services(db))
     if team_tl_team is not None:
         # TL 回复后处理:解析派任务块并创建任务(与 tl_chat 端点同语义);
         # 后处理失败不影响本轮回复
@@ -1087,6 +1003,8 @@ def chat_stream(
         )
 
     relay_ready = threading.Event()
+    from staffdeck_harness.runtime.services import runtime_services
+    data_services = runtime_services(db)
     worker_done = threading.Event()
     source_session_id = {"value": request.session_id or ""}
     worker_terminal = {"seen": False}
@@ -1104,7 +1022,7 @@ def chat_stream(
     def run_stream_worker() -> None:
         span_sink_token = None
         try:
-            with Session(engine) as worker_db:
+            with data_services.session(None, purpose="stream-worker") as worker_db:
                 span_turn_id = {"value": ""}
 
                 def persist_span(event_type: str, payload: dict[str, object]) -> None:
@@ -1212,6 +1130,7 @@ def chat_stream(
                             request.user_id,
                             response.session_id,
                             request.agent_id,
+                            data_services=data_services,
                         )
                         return
                 for item in AgentLoop(worker_db).handle_turn_stream(request):
@@ -1241,6 +1160,7 @@ def chat_stream(
                             request.user_id,
                             event_source_session_id,
                             request.agent_id,
+                            data_services=data_services,
                         )
                         continue
                     if item["event"] == "complete":
@@ -1250,6 +1170,7 @@ def chat_stream(
                             request.user_id,
                             event_source_session_id,
                             request.agent_id,
+                            data_services=data_services,
                         )
                         if team_tl_team_id is not None:
                             # 团队 TL 会话:complete 后做派任务后处理(与 tl_chat 端点同语义);
@@ -1304,9 +1225,10 @@ def chat_stream(
                             )
         except Exception as exc:
             logger.exception("chat stream worker failed")
+            unavailable = _is_chat_agent_unavailable(exc, request.agent_id)
             session_id = source_session_id["value"] or request.session_id or ""
             if session_id:
-                with Session(engine) as error_db:
+                with data_services.session(None, purpose="stream-error") as error_db:
                     chat_session = error_db.get(ChatSession, session_id)
                     if chat_session:
                         _persist_chat_turn_interrupted(
@@ -1316,6 +1238,10 @@ def chat_stream(
                             request.client_turn_id or "",
                             str(exc) or "stream worker failed",
                             error_details={
+                                **(
+                                    {"error_code": "AGENT_UNAVAILABLE", "message": "此数字员工不再可用"}
+                                    if unavailable else {}
+                                ),
                                 "error_type": exc.__class__.__name__,
                                 "error_traceback": traceback.format_exc()[-STREAM_INTERRUPTED_TRACEBACK_CHAR_LIMIT:],
                             },
@@ -1327,7 +1253,7 @@ def chat_stream(
             logger.exception("chat stream worker stopped with base exception")
             session_id = source_session_id["value"] or request.session_id or ""
             if session_id:
-                with Session(engine) as error_db:
+                with data_services.session(None, purpose="stream-error") as error_db:
                     chat_session = error_db.get(ChatSession, session_id)
                     if chat_session:
                         _persist_chat_turn_interrupted(
@@ -1351,7 +1277,7 @@ def chat_stream(
                 reset_span_sink(span_sink_token)
             session_id = source_session_id["value"] or request.session_id or ""
             if session_id and not worker_terminal["seen"]:
-                with Session(engine) as final_db:
+                with data_services.session(None, purpose="stream-finalize") as final_db:
                     chat_session = final_db.get(ChatSession, session_id)
                     if chat_session:
                         changed = _persist_chat_turn_interrupted(
@@ -1379,7 +1305,7 @@ def chat_stream(
             session_id = source_session_id["value"]
             emitted = False
             if session_id:
-                with Session(engine) as relay_db:
+                with data_services.session(None, purpose="stream-relay") as relay_db:
                     rows = _events_after_cursor(relay_db, request.tenant_id, session_id, initial_cursor)
                 for row in rows:
                     payload = row.payload_json or {}
@@ -1407,7 +1333,7 @@ def chat_stream(
                 return
             if time.monotonic() > deadline:
                 if session_id:
-                    with Session(engine) as timeout_db:
+                    with data_services.session(None, purpose="stream-timeout") as timeout_db:
                         chat_session = timeout_db.get(ChatSession, session_id)
                         if chat_session:
                             _persist_chat_turn_interrupted(
@@ -1963,6 +1889,8 @@ def create_chat_session(
         agent_id=request.agent_id,
         title=title,
     )
+    from staffdeck_harness.runtime.session_binding import bind_session
+    bind_session(db, row, created=True)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -2044,11 +1972,14 @@ def list_chat_sessions(
         team.id: team.name
         for team in db.exec(select(Team).where(Team.id.in_(team_ids))).all()
     } if team_ids else {}
+    from staffdeck_harness.runtime.staff_directory import staff_names
+    agent_names = staff_names(db, tenant_id, [row.agent_id for row in rows if row.agent_id])
     return [
         session_read(
             row,
             is_scheduled=row.id in scheduled_session_ids,
             team_name=team_names.get(row.team_id) if row.team_id else None,
+            agent_name=agent_names.get(row.agent_id or ""),
         )
         for row in rows
     ]
@@ -2065,7 +1996,23 @@ def get_chat_session(
     _ensure_request_tenant(tenant_id, current_user)
     row = _get_readable_chat_session(db, tenant_id, current_user, session_id)
     team = db.get(Team, row.team_id) if row.team_id else None
-    return session_read(row, team_name=team.name if team else None)
+    from staffdeck_harness.runtime.staff_directory import staff_names
+    names = staff_names(db, tenant_id, [row.agent_id] if row.agent_id else [])
+    available = None
+    if row.agent_id:
+        try:
+            _ensure_chat_agent_available(db, tenant_id, row.agent_id, current_user)
+            available = True
+        except HTTPException as exc:
+            # Reading one's history does not grant execution rights. Outages remain unknown.
+            if isinstance(exc.detail, dict) and exc.detail.get("code") == "AGENT_UNAVAILABLE":
+                available = False
+    return session_read(
+        row,
+        team_name=team.name if team else None,
+        agent_name=names.get(row.agent_id or ""),
+        agent_available=available,
+    )
 
 
 @router.put("/sessions/{session_id}", response_model=ChatSessionRead)
@@ -2102,46 +2049,9 @@ def delete_chat_session(
 ) -> dict[str, str]:
     _ensure_request_tenant(tenant_id, current_user)
     row = _get_user_chat_session(db, tenant_id, current_user.id, session_id)
-    messages = db.exec(
-        select(Message).where(Message.tenant_id == tenant_id, Message.session_id == session_id)
-    ).all()
-    events = db.exec(
-        select(AgentEvent).where(AgentEvent.tenant_id == tenant_id, AgentEvent.session_id == session_id)
-    ).all()
-    feedback_rows = db.exec(
-        select(MessageFeedback).where(MessageFeedback.tenant_id == tenant_id, MessageFeedback.session_id == session_id)
-    ).all()
-    skill_feedback_rows = db.exec(
-        select(SkillFeedback).where(SkillFeedback.tenant_id == tenant_id, SkillFeedback.session_id == session_id)
-    ).all()
-    stage_harness_session_record_deletion(
-        db,
-        tenant_id=tenant_id,
-        session_id=session_id,
-    )
-    for message in messages:
-        db.delete(message)
-    for event in events:
-        db.delete(event)
-    for feedback in feedback_rows:
-        db.delete(feedback)
-    for feedback in skill_feedback_rows:
-        db.delete(feedback)
-    db.delete(row)
+    purge_chat_session_records(db, row)
     db.commit()
-    try:
-        remove_harness_session_workspace(
-            tenant_id=tenant_id,
-            session_id=session_id,
-            db=db,
-        )
-    except OSError:
-        logger.warning(
-            "Failed to remove Harness workspace for tenant=%s session=%s",
-            tenant_id,
-            session_id,
-            exc_info=True,
-        )
+    remove_chat_session_workspace(tenant_id=tenant_id, session_id=session_id, db=db)
     return {"status": "deleted"}
 
 
@@ -2367,6 +2277,58 @@ def reply_human_handoff(
     _apply_handoff_reply(
         db, row, reply, answered_by_user_id=current_user.id, source="web"
     )
+    return human_handoff_read(row)
+
+
+class HumanHandoffCreateRequest(BaseModel):
+    tenant_id: str
+    message_id: str | None = None
+    message_ids: list[str] = []
+    reasons: list[str] = []
+    note: str = ""
+    include_feedback: bool = False
+
+
+@router.post("/sessions/{session_id}/handoffs", response_model=HumanHandoffRead)
+def create_human_handoff(
+    session_id: str,
+    request: HumanHandoffCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> HumanHandoffRead:
+    """用户在会话里主动转人工：复用 SOP 节点转人工的建单逻辑，处理人按数字员工负责人解析。"""
+    from app.core.human_handoff_service import HumanHandoffService
+    from app.observability import EventLog
+    from app.session.session_schema import StepAgentResult
+
+    _ensure_request_tenant(request.tenant_id, current_user)
+    chat_session = _get_readable_chat_session(db, request.tenant_id, current_user, session_id)
+    if chat_session.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the session owner can request a handoff")
+    service = HumanHandoffService(db, EventLog(db))
+    reason_text = "；".join(item for item in request.reasons if item)
+    question = "；".join(item for item in (reason_text, request.note.strip()) if item)
+    row = service.create(
+        request.tenant_id,
+        chat_session,
+        StepAgentResult(action="handoff", reply=question or None, handoff=True),
+        current_step_resolver=lambda: None,
+        assignee_resolver=lambda tenant_id, agent_id, fallback: service.assignee_user_id(
+            tenant_id, agent_id, fallback, tenant_admin_resolver=service.tenant_admin_user_id
+        ),
+        context_summary=service.context_summary,
+        pending_question=service.pending_question,
+    )
+    row.metadata_json = {
+        **dict(row.metadata_json or {}),
+        "source": "user_request",
+        "reasons": request.reasons,
+        "note": request.note,
+        "message_ids": request.message_ids or ([request.message_id] if request.message_id else []),
+    }
+    db.add(row)
+    db.commit()
+    db.refresh(row)
     return human_handoff_read(row)
 
 
@@ -2626,21 +2588,62 @@ def _user_can_read_handoff_session(db: Session, tenant_id: str, current_user: Us
     return db.exec(statement).first() is not None
 
 
+def _is_chat_agent_unavailable(exc: Exception, agent_id: str | None) -> bool:
+    from staffdeck_harness.contracts.errors import ModuleSdkError, PermissionDenied
+
+    if not isinstance(exc, ModuleSdkError):
+        return False
+    if exc.code == "STAFF_NOT_FOUND":
+        return True
+    if not isinstance(exc, PermissionDenied):
+        return False
+    return exc.message == "target Staff unavailable" or (
+        exc.details.get("operation") == "staff.use/v1"
+        and exc.details.get("resource_type") == "agent"
+        and exc.details.get("resource") == agent_id
+    )
+
+
 def _ensure_chat_agent_available(
     db: Session,
     tenant_id: str,
     agent_id: str | None,
     current_user: User,
-) -> AgentProfile:
+):
     if not agent_id:
         raise HTTPException(status_code=400, detail="Agent is required")
     ensure_tenant(db, tenant_id)
-    row = db.get(AgentProfile, agent_id)
-    if not row or row.tenant_id != tenant_id or row.status != "active" or row.is_overall:
-        raise HTTPException(status_code=404, detail="Agent not available")
-    if not _chat_agent_visible_to_user(row, current_user):
-        raise HTTPException(status_code=403, detail="Agent not available")
-    return row
+    from staffdeck_harness.composition.sources import authorize_staff
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.contracts.errors import ModuleSdkError, PermissionDenied
+    from staffdeck_harness.modules.registry import get_registry
+    from staffdeck_harness.security.profile import get_profile
+    from app.config import get_settings
+    settings = get_settings()
+    try:
+        _, _, ref = authorize_staff(get_registry(settings), db,
+            SourceContext(tenant_id, agent_id, user_id=current_user.id), get_profile(settings))
+    except PermissionDenied as exc:
+        if _is_chat_agent_unavailable(exc, agent_id):
+            code = 404 if exc.message == "target Staff unavailable" else 403
+            raise HTTPException(
+                status_code=code,
+                detail={"code": "AGENT_UNAVAILABLE", "message": "此数字员工不再可用"},
+            ) from exc
+        raise HTTPException(status_code=403, detail=exc.to_dict()) from exc
+    except ModuleSdkError as exc:
+        status = 404 if exc.code == "STAFF_NOT_FOUND" else 503
+        detail = (
+            {"code": "AGENT_UNAVAILABLE", "message": "此数字员工不再可用"}
+            if status == 404 else exc.to_dict()
+        )
+        raise HTTPException(status_code=status, detail=detail) from exc
+    if ref.attributes.get("is_overall"):
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "AGENT_UNAVAILABLE", "message": "此数字员工不再可用"},
+        )
+    return ref
 
 
 def _bind_request_to_session_agent(
@@ -2652,6 +2655,7 @@ def _bind_request_to_session_agent(
     if chat_session.agent_id:
         if request.agent_id and request.agent_id != chat_session.agent_id:
             raise HTTPException(status_code=409, detail="Session is already bound to another agent")
+        _ensure_chat_agent_available(db, request.tenant_id, chat_session.agent_id, current_user)
         return request.model_copy(update={"agent_id": chat_session.agent_id})
 
     agent = _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user)
@@ -3061,7 +3065,157 @@ def _general_skill_trace_output(payload: dict, phase: str) -> dict[str, str]:
     return {}
 
 
-def _harness_event_trace_line(event: AgentEvent) -> dict | None:
+_FRAME_STATUS_TEXTS = {
+    "completed": "任务执行完成",
+    "awaiting_user": "等待用户补充信息",
+    "handoff": "已转人工处理",
+    "action_budget": "本轮处理已达上限",
+    "failed": "任务执行失败",
+    "blocked": "暂时无法继续处理",
+    "cancelled": "任务已取消",
+}
+
+_SKILL_STATE_LABELS = {
+    "suspended": "挂起SOP",
+    "pending": "等待SOP",
+    "select": "选择SOP",
+    "switch": "切换SOP",
+    "resume": "恢复SOP",
+    "advance": "推进SOP",
+}
+
+_SKILL_STATE_LABELS_FRIENDLY = {
+    "suspended": "已暂停",
+    "pending": "排队处理",
+    "select": "进入流程",
+    "switch": "切换流程",
+    "resume": "恢复流程",
+    "advance": "推进流程",
+}
+
+_SKILL_EVENT_LABELS = {
+    "skill_started": "选择SOP",
+    "skill_resumed": "恢复SOP",
+    "skill_step_changed": "推进SOP",
+}
+
+_SKILL_EVENT_LABELS_FRIENDLY = {
+    "skill_started": "进入流程",
+    "skill_resumed": "恢复流程",
+    "skill_step_changed": "推进流程",
+}
+
+_STEP_EXACT_LABELS = {
+    "end": "流程结束",
+    "start": "开始处理",
+    "reply_final_result": "反馈最终结果",
+}
+
+# 内置能力与文件/命令工具的中文名（不走 tools 表的保留能力）。
+_RESERVED_TOOL_LABELS = {
+    "capability_search": "检索可用能力",
+    "capability_describe": "查看能力详情",
+    "knowledge_search": "检索知识库",
+    "exec_command": "执行命令",
+    "read_file": "读取文件",
+    "extract_document_text": "提取文档内容",
+    "write_file": "写入文件",
+    "edit_file": "编辑文件",
+    "list_directory": "查看目录",
+    "glob": "查找文件",
+    "grep": "搜索文件内容",
+    "file_info": "查看文件信息",
+    "publish_artifact": "发布产物",
+    "mkdir": "创建目录",
+    "delete_file": "删除文件",
+    "move_file": "移动文件",
+    "copy_file": "复制文件",
+}
+
+_SKILL_COMPLETED_REASON_LABELS = {
+    "step_completed": "全部步骤已完成",
+    "stale_terminal_state": "会话状态已更新，流程自动结束",
+}
+
+
+def _resolve_tool_label(tool_name: str, tool_names: dict[str, str] | None) -> str:
+    tool_name = str(tool_name or "").strip()
+    if not tool_name:
+        return ""
+    if tool_names is None:
+        return tool_name
+    return tool_names.get(tool_name) or _RESERVED_TOOL_LABELS.get(tool_name, tool_name)
+
+
+def _fallback_step_label(step_id: str) -> str | None:
+    normalized = step_id.strip().lower().replace("-", "_")
+    if not normalized:
+        return None
+    exact = _STEP_EXACT_LABELS.get(normalized)
+    if exact:
+        return exact
+    tokens = [token for token in normalized.split("_") if token]
+
+    def has_word(*roots: str) -> bool:
+        return any(
+            token == root or token.startswith(root)
+            for token in tokens
+            for root in roots
+        )
+
+    if has_word("handoff", "escalate", "manual", "human"):
+        return "转人工处理"
+    if has_word("final", "last") and has_word("reply", "answer", "result", "feedback"):
+        return "反馈最终结果"
+    if has_word("collect", "gather"):
+        return "收集需要的信息"
+    if has_word("confirm", "verify", "validate", "check"):
+        return "核对信息"
+    if has_word("identify", "recognize", "detect", "intent"):
+        return "识别用户需求"
+    if has_word("summarize", "summary", "recap"):
+        return "总结处理情况"
+    if has_word("schedule", "remind", "appointment", "reservation"):
+        return "安排提醒"
+    if has_word("apolog", "comfort", "soothe"):
+        return "安抚用户"
+    if has_word("reply", "answer", "respond", "feedback", "notify", "inform", "send", "message"):
+        return "反馈处理结果"
+    if has_word("end", "finish", "close", "done", "complete"):
+        return "流程结束"
+    if has_word("start", "begin", "init"):
+        return "开始处理"
+    return None
+
+
+def _resolve_step_label(
+    step_id: str,
+    step_names: dict[str, dict[str, str]] | None,
+    skill_id: str | None = None,
+) -> str:
+    step_id = str(step_id or "").strip()
+    if not step_id:
+        return ""
+    if step_names is None:
+        return step_id
+    scoped = step_names.get(skill_id or "") or {}
+    label = scoped.get(step_id)
+    if not label:
+        for steps in step_names.values():
+            label = steps.get(step_id)
+            if label:
+                break
+    if not label:
+        label = _fallback_step_label(step_id)
+    return label or step_id
+
+
+def _harness_event_trace_line(
+    event: AgentEvent,
+    skill_hint: str | None = None,
+    step_names: dict[str, dict[str, str]] | None = None,
+    tool_names: dict[str, str] | None = None,
+) -> dict | None:
     payload = event.payload_json or {}
     event_type = event.event_type
     frame_id = str(payload.get("task_frame_id") or event.id).strip()
@@ -3070,50 +3224,76 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
 
     if event_type == "task_frame_started":
         kind = str(payload.get("kind") or "conversation").strip()
+        skill_name = str(payload.get("skill_name") or payload.get("skill_id") or "").strip()
         step_id = str(payload.get("step_id") or "").strip()
-        detail_parts = [
-            "SOP TaskFrame" if kind == "sop" else "对话 TaskFrame",
-            f"步骤 {step_id}" if step_id else "",
-            (
-                f"单步上限 {payload.get('step_timeout_seconds')} 秒"
-                if payload.get("step_timeout_seconds")
-                else ""
-            ),
-            (
-                f"Harness 最多 {payload.get('harness_max_actions')} 轮"
-                if payload.get("harness_max_actions")
-                else ""
-            ),
-        ]
+        if step_names is None:
+            detail_parts = [
+                "SOP TaskFrame" if kind == "sop" else "对话 TaskFrame",
+                f"步骤 {step_id}" if step_id else "",
+                (
+                    f"单步上限 {payload.get('step_timeout_seconds')} 秒"
+                    if payload.get("step_timeout_seconds")
+                    else ""
+                ),
+                (
+                    f"Harness 最多 {payload.get('harness_max_actions')} 轮"
+                    if payload.get("harness_max_actions")
+                    else ""
+                ),
+            ]
+        else:
+            detail_parts = [
+                f"当前环节 {_resolve_step_label(step_id, step_names, skill_hint)}" if step_id else "",
+            ]
         return {
             "id": f"harness_frame_{frame_id}",
             "kind": "skill" if kind == "sop" else "decision",
-            "text": "开始执行任务",
+            "text": f"开始SOP {skill_name}" if kind == "sop" and skill_name else "开始执行任务",
             "detail": " · ".join(part for part in detail_parts if part) or None,
             "state": "running",
         }
     if event_type == "task_frame_finished":
+        kind = str(payload.get("kind") or "conversation").strip()
+        skill_name = str(payload.get("skill_name") or payload.get("skill_id") or "").strip()
+        step_id = str(payload.get("step_id") or "").strip()
         status = str(payload.get("status") or "completed").strip()
         action_count = payload.get("action_count")
         failed = status in {"failed", "blocked", "cancelled"}
-        detail_parts = [
-            f"状态 {status}",
-            f"执行 {action_count} 个动作" if isinstance(action_count, int) else "",
-        ]
+        if step_names is None:
+            detail_parts = [
+                f"状态 {status}",
+                f"步骤 {step_id}" if step_id else "",
+                f"执行 {action_count} 个动作" if isinstance(action_count, int) else "",
+            ]
+            if kind == "sop" and skill_name:
+                if failed:
+                    text = f"SOP执行失败 {skill_name}"
+                elif status == "awaiting_user":
+                    text = f"等待用户补充 {skill_name}"
+                else:
+                    text = f"SOP任务执行完成 {skill_name}"
+            else:
+                text = "任务执行失败" if failed else "任务执行完成"
+        else:
+            text = _FRAME_STATUS_TEXTS.get(status, "任务执行失败" if failed else "任务执行完成")
+            detail_parts = [
+                f"共执行 {action_count} 个操作" if isinstance(action_count, int) else "",
+            ]
         return {
             "id": f"harness_frame_{frame_id}",
-            "kind": "decision",
-            "text": "任务执行失败" if failed else "任务执行完成",
+            "kind": "skill" if kind == "sop" else "decision",
+            "text": text,
             "detail": " · ".join(part for part in detail_parts if part) or None,
-            "state": "failed" if failed else "completed",
+            "state": "failed" if failed else ("running" if status == "awaiting_user" else "completed"),
         }
     if event_type == "harness_action_created":
         action = str(payload.get("action") or "").strip()
         if action == "tool":
+            display_tool_name = _resolve_tool_label(tool_name, tool_names)
             return {
-                "id": f"harness_action_{frame_id}_{iteration or event.id}",
+                "id": f"harness_action_{frame_id}_{payload.get('call_id') or iteration or event.id}",
                 "kind": "tool",
-                "text": f"调用能力 {tool_name}" if tool_name else "调用能力",
+                "text": f"调用能力 {display_tool_name}" if display_tool_name else "调用能力",
                 "detail": f"第 {iteration} 个动作" if iteration else None,
                 "state": "running",
             }
@@ -3139,19 +3319,21 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
             "mcpApp": mcp_app,
             "state": "completed",
         }
-    if event_type == "harness_tool_completed":
-        success = bool(payload.get("success"))
+    if event_type in {"harness_tool_completed", "harness_tool_result"}:
+        success = bool(payload.get("success")) if 'success' in payload else payload.get('is_error') is False
         error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
         error_detail = " · ".join(
             part
             for part in (
                 str(error.get("code") or "").strip(),
                 str(error.get("message") or "").strip(),
+                f"{payload['duration_ms'] / 1000:.2f} s" if isinstance(payload.get('duration_ms'), (int, float)) else '',
             )
             if part
         )
         result_payload = payload.get("result")
         output = _trace_payload_text(result_payload)
+        display_tool_name = _resolve_tool_label(tool_name, tool_names)
         mcp_app = (
             result_payload.get("mcp_app")
             if isinstance(result_payload, dict)
@@ -3159,19 +3341,21 @@ def _harness_event_trace_line(event: AgentEvent) -> dict | None:
             else None
         )
         return {
-            "id": f"harness_action_{frame_id}_{iteration or event.id}",
+            "id": f"harness_action_{frame_id}_{payload.get('call_id') or iteration or event.id}",
             "kind": "tool",
             "text": (
-                f"能力调用完成 {tool_name}"
-                if success and tool_name
-                else f"能力调用失败 {tool_name}"
-                if tool_name
+                f"能力调用完成 {display_tool_name}"
+                if success and display_tool_name
+                else f"能力调用失败 {display_tool_name}"
+                if display_tool_name
                 else "能力调用完成"
                 if success
                 else "能力调用失败"
             ),
             "detail": error_detail or None,
             "output": output or None,
+            "code": _trace_payload_text(payload.get('arguments')) or None,
+            "language": 'json',
             "outputLanguage": _trace_payload_language(output) if output else None,
             "outputTitle": "查看能力结果" if output else None,
             "collapsible": bool(output),
@@ -3357,8 +3541,19 @@ def _with_scheduled_draft_message_traces(traces: list[dict], messages: list[Mess
     return next_traces
 
 
-def _event_trace_lines(event: AgentEvent, skill_names: dict[str, str], skill_hint: str | None = None) -> list[dict]:
-    line = _event_trace_line(event, skill_names, skill_hint)
+def _event_trace_lines(
+    event: AgentEvent,
+    skill_names: dict[str, str],
+    skill_hint: str | None = None,
+    step_names: dict[str, dict[str, str]] | None = None,
+    tool_names: dict[str, str] | None = None,
+) -> list[dict]:
+    if event.event_type in {'composition_snapshot_compiled', 'capability_manifest_resolved'}:
+        from staffdeck_harness.runtime.trace_names import merge_trace_names
+        merge_trace_names(event.payload_json or {}, skill_names,
+                          step_names if step_names is not None else {},
+                          tool_names if tool_names is not None else {})
+    line = _event_trace_line(event, skill_names, skill_hint, step_names, tool_names)
     if not line:
         return []
     lines = line if isinstance(line, list) else [line]
@@ -3413,7 +3608,11 @@ def _event_trace_icon(event: AgentEvent, line: dict) -> str:
 
 
 def _event_trace_line(
-    event: AgentEvent, skill_names: dict[str, str], skill_hint: str | None = None
+    event: AgentEvent,
+    skill_names: dict[str, str],
+    skill_hint: str | None = None,
+    step_names: dict[str, dict[str, str]] | None = None,
+    tool_names: dict[str, str] | None = None,
 ) -> dict | list[dict] | None:
     payload = event.payload_json or {}
     if event.event_type in {
@@ -3422,9 +3621,15 @@ def _event_trace_line(
         "harness_action_created",
         "harness_mcp_app_view",
         "harness_tool_completed",
+        "harness_tool_result",
         "harness_step_timeout",
     }:
-        return _harness_event_trace_line(event)
+        return _harness_event_trace_line(
+            event,
+            skill_hint=skill_hint,
+            step_names=step_names,
+            tool_names=tool_names,
+        )
     if event.event_type == "stream_status":
         phase = str(payload.get("phase") or "").strip()
         text = str(payload.get("text") or "").strip()
@@ -3628,11 +3833,11 @@ def _event_trace_line(
             name = str(entry.get("name") or skill_id).strip()
             state = str(entry.get("state") or "active").strip()
             if state == "suspended":
-                label = "挂起SOP"
+                label_key = "suspended"
             elif state == "pending":
-                label = "等待SOP"
+                label_key = "pending"
             elif runtime_decision in {"start_skill", "start_new_task"}:
-                label = "选择SOP"
+                label_key = "select"
             elif runtime_decision == "suspend_current_and_start_new_skill" or (
                 runtime_decision
                 in {"answer_related_question_then_resume", "answer_chitchat_then_resume"}
@@ -3640,19 +3845,30 @@ def _event_trace_line(
                 and to_skill_id
                 and from_skill_id != to_skill_id
             ):
-                label = "切换SOP"
+                label_key = "switch"
             elif runtime_decision == "exit_current_skill":
-                label = "恢复SOP"
+                label_key = "resume"
             else:
-                label = "推进SOP"
+                label_key = "advance"
+            state_labels = (
+                _SKILL_STATE_LABELS_FRIENDLY
+                if step_names is not None
+                else _SKILL_STATE_LABELS
+            )
+            label = state_labels[label_key]
             step_id = str(entry.get("stepId") or "").strip()
+            step_label = (
+                _resolve_step_label(step_id, step_names, skill_id)
+                if step_names is not None and step_id
+                else step_id
+            )
             state_key = step_id or str(index)
             lines.append(
                 {
                     "id": f"skill_state_{skill_id}_{state}_{state_key}",
                     "kind": "skill",
                     "text": f"{label} {name}",
-                    "detail": f"当前步骤 {step_id}" if step_id else None,
+                    "detail": f"当前步骤 {step_label}" if step_id else None,
                     "state": "completed" if state == "suspended" else "running",
                 }
             )
@@ -3673,6 +3889,13 @@ def _event_trace_line(
         tool_call = payload.get("tool_call") if isinstance(payload.get("tool_call"), dict) else {}
         knowledge_query = payload.get("knowledge_query") if isinstance(payload.get("knowledge_query"), dict) else {}
         next_step_id = str(payload.get("next_step_id") or "").strip()
+        if next_step_id:
+            if step_names is None:
+                next_step_part = f"下一节点 {next_step_id}"
+            else:
+                next_step_part = f"下一步 {_resolve_step_label(next_step_id, step_names, skill_hint)}"
+        else:
+            next_step_part = ""
         reply = str(payload.get("reply") or "").strip()
         raw_tool_name = tool_call.get("name") if isinstance(tool_call, dict) else ""
         raw_knowledge_query = knowledge_query.get("query") if isinstance(knowledge_query, dict) else ""
@@ -3681,7 +3904,7 @@ def _event_trace_line(
         detail = " · ".join(
             part
             for part in (
-                f"下一节点 {next_step_id}" if next_step_id else "",
+                next_step_part,
                 f"查询：{knowledge_query_text}" if knowledge_query_text else "",
                 reply[:80] if not tool_name and not knowledge_query_text and reply else "",
             )
@@ -3723,16 +3946,26 @@ def _event_trace_line(
         skill_id = to_skill_id or from_skill_id or (skill_hint or "")
         if not skill_id:
             return None
-        label = {
-            "skill_started": "选择SOP",
-            "skill_resumed": "恢复SOP",
-            "skill_step_changed": "推进SOP",
-        }[event.event_type]
+        event_labels = (
+            _SKILL_EVENT_LABELS_FRIENDLY
+            if step_names is not None
+            else _SKILL_EVENT_LABELS
+        )
+        label = event_labels[event.event_type]
         detail_parts = []
         if from_skill_id and from_skill_id != to_skill_id:
-            detail_parts.append(f"from {skill_names.get(from_skill_id, from_skill_id)}")
+            from_name = skill_names.get(from_skill_id, from_skill_id)
+            detail_parts.append(
+                f"原流程 {from_name}" if step_names is not None else f"from {from_name}"
+            )
         if payload.get("to_step_id"):
-            detail_parts.append(f"step {payload['to_step_id']}")
+            to_step_id = str(payload["to_step_id"])
+            if step_names is None:
+                detail_parts.append(f"step {to_step_id}")
+            else:
+                detail_parts.append(
+                    f"当前步骤 {_resolve_step_label(to_step_id, step_names, skill_id)}"
+                )
         step_id = str(payload.get("to_step_id") or payload.get("from_step_id") or "").strip()
         state_key = step_id or "0"
         return {
@@ -3744,11 +3977,15 @@ def _event_trace_line(
         }
     if event.event_type == "skill_completed":
         skill_id = str(payload.get("skill_id") or "")
+        prefix = "完成流程" if step_names is not None else "完成SOP"
+        reason = str(payload.get("reason") or "").strip()
+        if step_names is not None:
+            reason = _SKILL_COMPLETED_REASON_LABELS.get(reason, reason)
         return {
             "id": f"skill_{event.id}",
             "kind": "skill",
-            "text": f"完成SOP {skill_names.get(skill_id, skill_id)}" if skill_id else "完成SOP",
-            "detail": str(payload.get("reason") or "") or None,
+            "text": f"{prefix} {skill_names.get(skill_id, skill_id)}" if skill_id else prefix,
+            "detail": reason or None,
             "state": "completed",
         }
     if event.event_type == "tool_call_started":
@@ -3854,7 +4091,11 @@ def _event_trace_line(
             "id": "reflection",
             "kind": "decision",
             "text": "反思后继续尝试" if needs_retry else "反思通过",
-            "detail": _reflection_trace_detail(payload),
+            "detail": _reflection_trace_detail(
+                payload,
+                step_names=step_names,
+                skill_hint=skill_hint,
+            ),
             "state": "completed",
         }
     if event.event_type == "reflection_skipped":
@@ -3870,10 +4111,11 @@ def _event_trace_line(
         target_tool = str(payload.get("target_tool_name") or "").strip()
         target_skill = str(payload.get("target_skill_id") or "").strip()
         target = target_tool or skill_names.get(target_skill, target_skill)
+        target_kind = "工具" if mode == "tool" else ("流程" if step_names is not None else "SOP")
         return {
             "id": "reflection",
             "kind": "decision",
-            "text": f"重试{ '工具' if mode == 'tool' else 'SOP' } {target}".strip(),
+            "text": f"重试{target_kind} {target}".strip(),
             "detail": str(payload.get("reason") or "") or None,
             "state": "completed",
         }
@@ -3903,12 +4145,23 @@ def _tool_trace_detail(payload: dict) -> str | None:
     return text or None
 
 
-def _reflection_trace_detail(payload: dict) -> str | None:
+def _reflection_trace_detail(
+    payload: dict,
+    step_names: dict[str, dict[str, str]] | None = None,
+    skill_hint: str | None = None,
+) -> str | None:
+    target_step_id = str(payload.get("target_step_id") or "").strip()
+    if not target_step_id:
+        step_part = ""
+    elif step_names is None:
+        step_part = f"步骤 {target_step_id}"
+    else:
+        step_part = f"步骤 {_resolve_step_label(target_step_id, step_names, skill_hint)}"
     parts = [
         str(payload.get("reason") or "").strip(),
         f"工具 {payload['target_tool_name']}" if payload.get("target_tool_name") else "",
         f"技能 {payload['target_skill_id']}" if payload.get("target_skill_id") else "",
-        f"步骤 {payload['target_step_id']}" if payload.get("target_step_id") else "",
+        step_part,
     ]
     text = " · ".join(part for part in parts if part)
     return text or None

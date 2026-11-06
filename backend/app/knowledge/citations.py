@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
+import logging
+from collections.abc import Mapping
 from typing import Any
 
 CITATION_EXCERPT_CHAR_LIMIT = 6000
@@ -15,6 +19,103 @@ TRUNCATED_EMAIL_PATTERN = re.compile(
     r"(?P<ellipsis>\.{3}|…)",
     re.IGNORECASE,
 )
+SOURCE_FOOTER_PATTERN = re.compile(
+    r"(?:\n|\s){0,3}(?:参考来源|参考资料|引用来源|资料来源)\s*[:：]\s*"
+    r"(?:\[\d+\]\s*)+$"
+)
+CITATION_REFERENCE_PATTERN = re.compile(
+    r"\[(\d+)\](?:\s*(?:-|–|—|至)\s*\[(\d+)\])?"
+)
+
+
+def knowledge_citation_identity(citation: Mapping[str, Any]) -> str:
+    """Identity is independent of the response-local display number."""
+    def text(key):
+        value = citation.get(key)
+        return str(value).strip() if isinstance(value, (str, int)) and not isinstance(value, bool) else ''
+    for key in ('chunk_id', 'concept_id'):
+        if text(key):
+            fields = {k: text(k) for k in (key, 'document_id', 'knowledge_base_id') if text(k)}
+            return json.dumps(fields, ensure_ascii=False, sort_keys=True)
+    fields = {k: text(k).replace('\r\n', '\n') for k in
+              ('source_path', 'source_ref', 'document_id', 'section_path', 'title', 'content', 'excerpt', 'summary') if text(k)}
+    if not fields and text('id'):
+        fields = {'id': text('id')}
+    return json.dumps(fields, ensure_ascii=False, sort_keys=True) if fields else ''
+
+
+def normalize_knowledge_citations(citations: object) -> list[dict[str, Any]]:
+    """Fill structural identifiers, not source facts. Do not mutate Provider data.
+
+    Keep labels and order intact here: message compaction owns deduplication and
+    rewrites text references together with labels. Dropping duplicates here would
+    strand references already emitted by the model.
+    """
+    if not isinstance(citations, (list, tuple)):
+        return []
+    rows = []
+    existing_ids = {}
+    for citation in citations:
+        if isinstance(citation, Mapping):
+            value = citation.get('id')
+            if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value).strip():
+                existing_ids.setdefault(str(value).strip(), set()).add(knowledge_citation_identity(citation))
+    invalid = 0
+    for index, citation in enumerate(citations, start=1):
+        if not isinstance(citation, Mapping):
+            invalid += 1
+            continue
+        identity = knowledge_citation_identity(citation)
+        if not identity:
+            invalid += 1
+            continue
+        row = dict(citation)
+        identifier = row.get('id')
+        if isinstance(identifier, (str, int)) and not isinstance(identifier, bool) and str(identifier).strip():
+            row['id'] = str(identifier).strip()
+        else:
+            row['id'] = 'kref_' + hashlib.sha256(identity.encode()).hexdigest()[:32]
+        if len(existing_ids.get(row['id'], ())) > 1:
+            row['id'] = 'kref_' + hashlib.sha256(identity.encode()).hexdigest()[:32]
+        if not re.fullmatch(r'\[\d+\]', str(row.get('label') or '').strip()):
+            row['label'] = f'[{index}]'
+        _fill_citation_display_fields(row)
+        rows.append(row)
+    if invalid:
+        logging.getLogger(__name__).warning('CITATION_INVALID: %d entries lack source identity or content', invalid)
+    return rows
+
+
+def _fill_citation_display_fields(row: dict[str, Any]) -> None:
+    """Prefer explicit facts; recover legacy native Knowledge breadcrumbs only.
+
+    The Knowledge chunker emits 【document title > section】 followed by a newline.
+    Older enterprise citations kept that text and a numeric document source, but
+    discarded the display fields. No request to a local/remote database is needed.
+    """
+    for target, aliases in (('title', ('document_title', 'documentTitle')),
+                            ('section_path', ('sectionPath',))):
+        if not isinstance(row.get(target), str) or not row[target].strip():
+            value = next((row[k].strip() for k in aliases if isinstance(row.get(k), str) and row[k].strip()), None)
+            if value:
+                row[target] = value
+    native = row.get('source_format') == 'knowledge_breadcrumb_v1'
+    legacy = str(row.get('source_path') or '').isdecimal()
+    if not (native or legacy):
+        return
+    body = row.get('content') or row.get('excerpt')
+    if not isinstance(body, str):
+        return
+    match = re.match(r'\A【([^【】\r\n]{1,512})】\r?\n', body.lstrip())
+    if not match:
+        return
+    parts = [p.strip() for p in match.group(1).split(' > ')]
+    if not all(parts) or (legacy and not native and len(parts) < 2):
+        return
+    if not isinstance(row.get('title'), str) or not row['title'].strip():
+        row['title'] = parts[0]
+    if len(parts) > 1 and (not isinstance(row.get('section_path'), str) or not row['section_path'].strip()):
+        row['section_path'] = ' > '.join(parts[1:])
 
 
 def compact_knowledge_citation_labels(
@@ -22,8 +123,13 @@ def compact_knowledge_citation_labels(
     citations: object,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Keep cited sources and renumber them by first appearance in the reply."""
+    content = SOURCE_FOOTER_PATTERN.sub("", content.rstrip()).rstrip()
     if not isinstance(citations, list) or not citations:
+        # A model may emit a reference footer even when retrieval produced no
+        # durable citations. Do not expose labels that cannot open a source.
         return content, []
+
+    citations = normalize_knowledge_citations(citations)
 
     citations_by_label: dict[int, dict[str, Any]] = {}
     for index, citation in enumerate(citations, start=1):
@@ -34,30 +140,39 @@ def compact_knowledge_citation_labels(
         citations_by_label.setdefault(label, citation)
 
     ordered_labels: list[int] = []
-    for match in re.finditer(r"\[(\d+)\]", content):
-        label = int(match.group(1))
-        if label in citations_by_label and label not in ordered_labels:
-            ordered_labels.append(label)
+    for match in CITATION_REFERENCE_PATTERN.finditer(content):
+        start_label = int(match.group(1))
+        end_label = int(match.group(2)) if match.group(2) else start_label
+        step = 1 if end_label >= start_label else -1
+        for label in range(start_label, end_label + step, step):
+            if label in citations_by_label and label not in ordered_labels:
+                ordered_labels.append(label)
 
     if not ordered_labels:
         ordered_labels = list(citations_by_label)
         if not ordered_labels:
             return content, []
-        source_labels = " ".join(f"[{label}]" for label in ordered_labels)
-        content = f"{content.rstrip()}\n\n参考来源：{source_labels}"
 
-    label_mapping = {old_label: index for index, old_label in enumerate(ordered_labels, start=1)}
+    label_mapping = {}
+    labels_by_identity = {}
+    compacted_citations = []
+    for old_label in ordered_labels:
+        citation = citations_by_label[old_label]
+        identity = knowledge_citation_identity(citation)
+        if identity not in labels_by_identity:
+            labels_by_identity[identity] = len(compacted_citations) + 1
+            compacted_citations.append({**citation, 'label': f'[{labels_by_identity[identity]}]'})
+        label_mapping[old_label] = labels_by_identity[identity]
 
     def replace_label(match: re.Match[str]) -> str:
         old_label = int(match.group(1))
         new_label = label_mapping.get(old_label)
-        return f"[{new_label}]" if new_label is not None else match.group(0)
+        # Metadata is authoritative. Unsupported labels are model-generated
+        # references with no corresponding source card and must not survive.
+        return f"[{new_label}]" if new_label is not None else ""
 
     compacted_content = re.sub(r"\[(\d+)\]", replace_label, content)
-    compacted_citations = [
-        {**citations_by_label[old_label], "label": f"[{label_mapping[old_label]}]"}
-        for old_label in ordered_labels
-    ]
+    compacted_content = re.sub(r"[ \t]+(?=\n|$)", "", compacted_content).rstrip()
     return compacted_content, compacted_citations
 
 

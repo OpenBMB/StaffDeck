@@ -12,10 +12,16 @@ from datetime import datetime, timedelta
 
 from sqlmodel import Session, select
 
-from app.db import engine
 from app.db.models import Team, TeamTask, TeamWakeEvent, utc_now
 from app.teams.service import apply_task_transition
-from app.teams.wakeup import _drain_member_queue
+from app.teams.module_scope import team_module_enabled
+from app.teams.wakeup import (
+    _drain_member_queue,
+    dispatch_pending_wake_events,
+    maybe_enqueue_team_synthesis,
+    recover_orphaned_wake_events,
+    start_wakeup_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +47,8 @@ def sweep_timed_out_tasks(db: Session, *, now: datetime | None = None) -> list[T
     in_progress 任务超时后释放成员执行额度,尝试出队该成员的排队唤醒。
     返回本次被升级的任务列表。
     """
+    if not team_module_enabled(db):
+        return []
     now = now or utc_now()
     rows = db.exec(
         select(TeamTask).where(TeamTask.status.in_(list(TIMEOUT_SCAN_STATUSES)))
@@ -77,6 +85,8 @@ def sweep_timed_out_tasks(db: Session, *, now: datetime | None = None) -> list[T
             db.add(wake)
         db.commit()
         escalated.append(task)
+        if task.team_run_id:
+            maybe_enqueue_team_synthesis(db, team, task.team_run_id)
         if previous == "in_progress" and task.assignee_agent_id:
             _drain_member_queue(db, team, task.assignee_agent_id)
     return escalated
@@ -87,12 +97,30 @@ _sweeper_thread: threading.Thread | None = None
 
 
 def _sweep_loop(interval_seconds: float) -> None:
-    while not _stop_event.wait(max(1.0, interval_seconds)):
+    while not _stop_event.is_set():
         try:
-            with Session(engine) as db:
-                sweep_timed_out_tasks(db)
+            from staffdeck_harness.runtime.services import maintenance_sessions
+            for db in maintenance_sessions():
+                if not team_module_enabled(db):
+                    continue
+                recovered = recover_orphaned_wake_events(db)
+                # 刚恢复的事件无需再等待一轮扫描。claim_wake_event 的条件更新
+                # 会保证多线程/多进程同时恢复时最多只有一个执行者真正取得租约。
+                for wake_event_id in recovered:
+                    start_wakeup_async(wake_event_id, db=db)
+                dispatched = dispatch_pending_wake_events(db)
+                timed_out = sweep_timed_out_tasks(db)
+                if recovered or dispatched or timed_out:
+                    logger.info(
+                        "团队任务恢复扫描完成: recovered=%d dispatched=%d timed_out=%d",
+                        len(recovered),
+                        len(dispatched),
+                        len(timed_out),
+                    )
         except Exception:  # 后台清扫不让异常杀死守护线程
             logger.exception("团队任务超时清扫失败")
+        if _stop_event.wait(max(1.0, interval_seconds)):
+            break
 
 
 def start_timeout_sweeper(*, interval_seconds: float = SWEEP_INTERVAL_SECONDS) -> None:

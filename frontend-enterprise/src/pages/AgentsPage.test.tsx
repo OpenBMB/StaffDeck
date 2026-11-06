@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -54,6 +54,19 @@ afterEach(() => {
 });
 
 describe('AgentsPage team scope compatibility', () => {
+  it('refreshes the mounted list when an employee is created elsewhere in the shell', async () => {
+    let rows = [agent];
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(rows)));
+    render(
+      <I18nProvider><TooltipProvider><MemoryRouter>
+        <AgentsPage currentUser={{ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' }} />
+      </MemoryRouter></TooltipProvider></I18nProvider>,
+    );
+    await screen.findByText('小艾');
+    rows = [agent, { ...agent, id: 'agent-new', name: '新建回归员工' }];
+    act(() => window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh')));
+    expect(await screen.findByText('新建回归员工')).toBeTruthy();
+  });
   it('renders gracefully when the stored scope is a team', async () => {
     window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, 'team:team-1');
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {

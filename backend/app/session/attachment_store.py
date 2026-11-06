@@ -15,8 +15,11 @@ from app.session.session_schema import ChatAttachmentRead
 
 def sandbox_attachment_path(attachment: ChatAttachmentRead, index: int = 1) -> str:
     basename = PurePath(attachment.filename or f"attachment-{index}").name
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", basename).strip(".-")
-    safe_name = safe_name[:96] or f"attachment-{index}.bin"
+    # 先单独保留扩展名：中文文件名（如「需求.docx」）清洗后只剩「-.docx」，
+    # 整体 strip 会把点一起削掉，文档工具就认不出格式。
+    suffix = re.sub(r"[^A-Za-z0-9.]+", "", PurePath(basename).suffix)[:16]
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", PurePath(basename).stem).strip(".-")
+    safe_name = f"{stem[: 96 - len(suffix)]}{suffix}" if stem else f"attachment-{index}{suffix or '.bin'}"
     attachment_key = hashlib.sha256(attachment.id.encode("utf-8")).hexdigest()[:32]
     relative = f"attachments/{attachment_key}-{safe_name}"
     return f"{SANDBOX_WORKSPACE}/{relative}"

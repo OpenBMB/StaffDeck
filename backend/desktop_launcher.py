@@ -950,12 +950,39 @@ def _run_windows_taskbar_app(cfg: dict, url: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
+    explicit_server = bool(raw_args and raw_args[0] == "serve")
+    if explicit_server:
+        raw_args = raw_args[1:]
+    # Dispatch before network setup, log redirection or server imports. CLI
+    # commands must never launch a second server or open a desktop window.
+    if raw_args and raw_args[0] == "cli":
+        from staffdeck_harness.cli import main as cli_main
+
+        return cli_main(raw_args[1:])
     if raw_args == ["--packaging-smoke"]:
         return _run_packaging_smoke()
     if raw_args and raw_args[0] == "setup":
         return _setup_network(raw_args[1:])
+    cli_commands = {"chat", "--chat", "auth", "--auth", "login", "logout", "status",
+                    "agent", "agents", "sop", "sops", "skill", "skills", "tool", "tools",
+                    "session", "sessions", "knowledge-bases", "kb", "mcp-servers", "runs",
+                    "jobs", "scheduled-tasks", "gallery", "system", "api", "guide",
+                    "--help", "-h", "--version", "--base-url", "--profile",
+                    "--output", "--http-timeout", "--max-retries"}
+    if not explicit_server and ((raw_args and raw_args[0] in cli_commands)
+                                or (not raw_args and sys.stdin is not None and sys.stdin.isatty())):
+        from staffdeck_harness.cli import main as cli_main
+        return cli_main(raw_args)
+    from staffdeck_harness.distribution.bootstrap import configure_environment
+    configure_environment()
     _apply_network_config(raw_args)
     _redirect_logs_when_frozen()
+    if getattr(sys, 'frozen', False) and not _env_flag('STAFFDECK_HEADLESS'):
+        try:
+            from staffdeck_harness.cli_install import install_native
+            install_native()
+        except (OSError, ValueError):
+            logging.getLogger(__name__).warning('CLI 自动注册未完成，可直接运行随应用提供的 staffdeck-cli。')
 
     host = os.environ.get("ULTRARAG_HOST", "127.0.0.1")
     existing_url = _find_existing_app_url(host)
@@ -975,6 +1002,13 @@ def main(argv: list[str] | None = None) -> int:
 
     # 时序：先选定端口并设 env，再 import uvicorn / 触发 app.* import。
     cfg = build_server_config()
+    # Publish the actual selected port, including automatic collision fallback.
+    data = user_data_dir()
+    data.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w', dir=data, delete=False, encoding='utf-8') as state:
+        json.dump({'port': cfg['port'], 'pid': os.getpid()}, state)
+        state_path = Path(state.name)
+    state_path.replace(data / 'service.json')
     apply_runtime_env(cfg)
     url = cfg.get("public_url") or f"http://{cfg['host']}:{cfg['port']}"
     preload_server_app(cfg)

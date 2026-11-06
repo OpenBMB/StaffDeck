@@ -1,3 +1,5 @@
+import { APP_BASE } from './lib/app-path';
+
 export type EnterpriseAuthUser = {
   id: string;
   tenant_id: string;
@@ -5,6 +7,7 @@ export type EnterpriseAuthUser = {
   display_name?: string;
   role: 'admin' | 'member';
   avatar_url?: string;
+  source?: string;
 };
 
 export type EnterpriseAuthSession = {
@@ -12,7 +15,7 @@ export type EnterpriseAuthSession = {
   user: EnterpriseAuthUser;
 };
 
-export const ENTERPRISE_AUTH_STORAGE_KEY = 'ultrarag_auth';
+export const ENTERPRISE_AUTH_STORAGE_KEY = `ultrarag_auth${APP_BASE ? `:${APP_BASE}` : ''}`;
 
 export function getEnterpriseAuthSession(): EnterpriseAuthSession | null {
   return readStoredSession(ENTERPRISE_AUTH_STORAGE_KEY);

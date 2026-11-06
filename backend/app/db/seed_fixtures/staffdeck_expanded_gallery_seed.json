@@ -1773,6 +1773,197 @@
       "tenant_id": "tenant_demo",
       "updated_at": "2026-08-18 00:00:00.000000",
       "version": "1.0.0"
+    },
+    {
+      "id": "skill_preset_admin_lark_approval_001",
+      "tenant_id": "tenant_demo",
+      "skill_id": "lark_approval_submit",
+      "version": "1.0.0",
+      "name": "飞书审批提交",
+      "business_domain": "办公协作",
+      "description": "通过飞书官方 lark-cli 以用户本人身份提交审批申请：先完成一次性设备码授权登录，再检索审批定义、组装表单并 dry-run 预览，把内容逐字段展示给用户，获得明确确认后才真实提交。",
+      "content_json": {
+        "skill_id": "lark_approval_submit",
+        "name": "飞书审批提交",
+        "version": "1.0.0",
+        "business_domain": "办公协作",
+        "description": "通过飞书官方 lark-cli 以用户本人身份提交审批申请：应用凭据缺失时可在对话内一次性配置（提供现有应用凭据或现场创建新应用），随后完成一次性设备码授权登录，再检索审批定义、组装表单并 dry-run 预览，把内容逐字段展示给用户，获得明确确认后才真实提交。",
+        "trigger_intents": [
+          "提交审批",
+          "发起审批",
+          "提审批单",
+          "帮我走审批流程"
+        ],
+        "user_utterance_examples": [
+          "帮我提一个报销审批",
+          "发起一个请假审批，下周一到周三",
+          "走一下采购审批流程"
+        ],
+        "goal": [
+          "以用户本人的飞书身份成功创建审批实例，并把审批单链接反馈给用户",
+          "提交内容必须与用户确认过的预览逐字节一致"
+        ],
+        "response_rules": [
+          "展示预览时必须逐字段列出表单内容，不得省略",
+          "用户未明确回复确认前，绝不调用真实提交；但用户已确认且内容未变时不得重复索要确认，直接推进提交",
+          "工具调用失败必须如实告知用户失败与原因，严禁把失败或\"即将提交\"表述为已提交；提交成功的唯一标志是返回 instance_code；标记 retryable=true 的报错是可恢复错误，不得据此宣告任务失败或提前结束步骤——应按错误信息中的指引修正重试，或如实说明后留在当前步骤等待用户回复",
+          "所有飞书相关操作只能通过 lark_cli 能力完成，禁止使用 exec_command 等其他方式操作飞书或计算日期（当前时间在任务书 current_time 字段里）",
+          "任何 lark-cli 错误要翻译成用户能懂的话，并给出下一步建议",
+          "用户在对话中提供的 App Secret 只用于调用 config init，绝不在回复中复述或展示",
+          "收集信息时不过度追问：有合理默认或可推断的字段直接采用默认值，预览时统一让用户核对修改"
+        ],
+        "start_node_id": "n_auth_check",
+        "terminal_node_ids": [
+          "n_done"
+        ],
+        "nodes": [
+          {
+            "node_id": "n_auth_check",
+            "type": "action",
+            "name": "检查登录状态",
+            "instruction": "调用 lark_cli 执行 auth status --json 确认登录态（这是后续所有飞书操作的前提，包括检索审批定义）。若返回错误提示应用未配置（LARK_CLI_APP_NOT_CONFIGURED），进入应用配置步骤。否则查看 identities.user.available 是否为 true（用户身份是否已登录）：已登录则进入信息收集步骤；未登录则进入发起授权步骤。"
+          },
+          {
+            "node_id": "n_app_setup",
+            "type": "collect_info",
+            "name": "配置飞书应用",
+            "instruction": "当前还没有可用的飞书应用凭据，需在对话中完成一次性配置。向用户说明并给出两个选项：A) 已有飞书应用——请用户提供应用的 App ID 和 App Secret（飞书开放平台 https://open.feishu.cn 应用详情页的「凭证与基础信息」可查），拿到后调用 lark_cli 执行 config init --app-id <App ID> --app-secret <App Secret>；不要在回复中复述用户提供的 App Secret。B) 没有应用——调用 lark_cli 执行 config init --new，把返回的 verification_url 发给用户，请其在浏览器中登录飞书开放平台完成应用创建并回复完成；用户回复后再次调用 config init --new 查询进度，直到返回 configured。配置成功后回到登录状态检查步骤。注意：新创建的应用还需要在开放平台开通审批相关权限（approval:approval:read、approval:instance:write 等）并发布版本，后续登录步骤会检查并给出指引。",
+            "expected_user_info": [
+              "应用凭据（App ID 与 App Secret）或应用创建完成的确认"
+            ]
+          },
+          {
+            "node_id": "n_auth_start",
+            "type": "collect_info",
+            "name": "发起授权登录",
+            "instruction": "进入本步骤后的第一个动作必须是调用 lark_cli 执行 auth login --scope \"approval:approval:read approval:instance:read approval:instance:write approval:task:read approval:task:write\" --no-wait --json，从结果取 verification_url 与 device_code：把 verification_url 原样发给用户，请用户打开链接完成飞书授权并在完成后回复确认；device_code 原样保留用于下一步收尾。不要在登录前调用 auth scopes 查询应用权限——该命令需要应用管理类权限（admin:app.info:readonly 等），普通审批应用并未申请，调用必然失败并白白多耗一轮。若登录或后续审批调用报 app_scope_not_applied，说明该应用后台尚未开通审批权限，请如实告知用户需由管理员在飞书开放平台按错误提示中的链接申请权限并发布版本。不要尝试生成二维码（auth qrcode 等命令未开放，控制台也无法展示本地图片），把链接原样发给用户即可。本步骤在把 verification_url 发给用户之前不算完成；期间任何命令报错都不构成任务失败——如实向用户说明并留在本步骤等待用户回复，严禁直接宣告失败。",
+            "expected_user_info": [
+              "用户已完成飞书授权的确认"
+            ]
+          },
+          {
+            "node_id": "n_auth_complete",
+            "type": "action",
+            "name": "完成授权登录",
+            "instruction": "用户确认已授权后，调用 lark_cli 执行 auth login --device-code <上一步的 device_code> --json 完成登录，再用 auth status --json 复核身份与 scope。若提示 authorization_pending，请用户完成授权后重试一次。登录成功后进入信息收集步骤。"
+          },
+          {
+            "node_id": "n_collect",
+            "type": "collect_info",
+            "name": "收集审批需求",
+            "instruction": "了解用户要提交哪类审批（关键词，如：报销/请假/采购）以及表单需要的信息。用 lark_cli 的 approval approvals search（--data 里带 keyword）检索可发起的审批定义，确认后用 approvals get --approval-code <code> 查看该定义的表单控件结构。据此向用户收集缺失的字段值（一次性问全，不要分多轮）；选择类控件要把可选项列给用户（记录每个选项文字对应的 key）。不过度追问：凡是能从用户已给信息合理推断或有惯例默认值的字段，直接采用默认并留到预览步骤让用户核对，不要再问——例如日期给到天即视为全天，按 09:00 至 18:00 组装起止时间。用户在收集阶段回复「提交/确认/用默认」等，视为同意用合理默认补齐全部缺失字段，立即停止提问并进入下一步骤。涉及\"明天/下周一\"等相对日期时，用任务书 current_time 字段换算，不要调用命令获取日期。",
+            "expected_user_info": [
+              "审批类型或关键词",
+              "表单所需字段的取值"
+            ]
+          },
+          {
+            "node_id": "n_preview",
+            "type": "collect_info",
+            "name": "预览并等待用户确认",
+            "instruction": "根据已收集的信息组装 --data：approval_code 加 form。form 组装规范（务必遵守）：① 控件 id、type 与嵌套结构必须逐一取自 approvals get 返回的 form 定义，严禁自造控件 id；复合控件（如 leaveGroupV2）的子控件必须嵌套在该复合控件的 value 数组内整体组装，严禁平铺到 form 顶层；② radioV2/select 等选择类控件的 value 必须用定义返回的选项 key，不是选项文字；③ date 控件的值推荐写 RFC3339（如 2026-08-27T09:00:00+08:00）；定义详情里显示的 YYYY-MM-DD hh:mm 只是展示格式，系统也会自动把这类常见日期写法规范化为 RFC3339；④ form 传 JSON 数组或字符串均可，系统会自动规范化为官方线上格式。然后调用 lark_cli 执行 approval instances create --data <JSON> --dry-run，获得预览与 submission_digest。向用户逐字段展示：审批定义名称、每个字段的名称与取值（选择类字段同时展示选项文字）。明确询问用户是否确认提交并等待回复。用户回复确认（如「提交」「确认」「OK」「没问题」）后：严禁再次询问确认，也严禁在本步骤调用真实提交（系统会拒绝）——正确做法是在 finish 时把 slot_updates 写入 {\"用户对提交内容的明确确认\": \"已确认\"} 并给出 next_step_id 进入提交步骤，由提交步骤执行真实提交。用户要求修改时回到收集步骤重新组装并重新预览。",
+            "expected_user_info": [
+              "用户对提交内容的明确确认"
+            ]
+          },
+          {
+            "node_id": "n_submit",
+            "type": "action",
+            "name": "提交审批",
+            "instruction": "仅在用户明确确认后执行。进入本步骤后的第一个动作必须是调用 lark_cli 完成真实提交：args 只需 [\"approval\",\"instances\",\"create\"]，不带 --data 也不带 confirmed_form_digest——系统会自动提交用户在预览步骤确认过的表单内容并注入 --yes 与幂等 uuid，严禁重新获取审批定义或重新组装表单。此前步骤的 dry-run 预览不等于提交，严禁未调用提交就结束本步骤，也严禁因上一步骤的拒绝报错而直接宣告失败。提交成功的唯一标志是返回结果中包含 instance_code——此时向用户反馈审批单链接。若提交失败：必须如实告知用户失败原因，严禁表述为已提交或即将提交；若系统提示没有可重放的预览记录或表单被服务端拒绝，回到预览步骤重新组装 --data、重新 dry-run 并再次征得用户确认后才能重试提交。",
+            "capability_refs": {
+              "tool_ids": [
+                "lark_cli"
+              ],
+              "required_tool_ids": [
+                "lark_cli"
+              ]
+            }
+          },
+          {
+            "node_id": "n_done",
+            "type": "action",
+            "name": "完成",
+            "instruction": "向用户反馈审批已提交成功、审批单链接与后续查看方式（也可用 approval tasks query / instances get 查询进度）。"
+          },
+          {
+            "node_id": "n_handoff",
+            "type": "handoff",
+            "name": "转人工处理",
+            "instruction": "授权多次失败、审批定义不存在、或提交持续报错且用户希望人工介入时，转交人工处理并附上已收集的上下文。"
+          }
+        ],
+        "edges": [
+          {
+            "source_node_id": "n_auth_check",
+            "next_node_id": "n_collect",
+            "condition": "auth status 显示用户身份已登录（identities.user.available 为 true）"
+          },
+          {
+            "source_node_id": "n_auth_check",
+            "next_node_id": "n_auth_start",
+            "condition": "用户身份尚未登录"
+          },
+          {
+            "source_node_id": "n_auth_check",
+            "next_node_id": "n_app_setup",
+            "condition": "报错应用未配置（LARK_CLI_APP_NOT_CONFIGURED）"
+          },
+          {
+            "source_node_id": "n_app_setup",
+            "next_node_id": "n_auth_check",
+            "condition": "应用凭据配置成功（configured）"
+          },
+          {
+            "source_node_id": "n_auth_start",
+            "next_node_id": "n_auth_complete",
+            "condition": "用户回复已完成授权"
+          },
+          {
+            "source_node_id": "n_auth_complete",
+            "next_node_id": "n_collect",
+            "condition": "登录成功且 scope 满足"
+          },
+          {
+            "source_node_id": "n_auth_complete",
+            "next_node_id": "n_handoff",
+            "condition": "多次尝试后登录仍失败且用户希望人工协助"
+          },
+          {
+            "source_node_id": "n_collect",
+            "next_node_id": "n_preview",
+            "condition": "审批类型与表单信息已收集齐全"
+          },
+          {
+            "source_node_id": "n_preview",
+            "next_node_id": "n_submit",
+            "condition": "用户明确确认提交内容无误"
+          },
+          {
+            "source_node_id": "n_preview",
+            "next_node_id": "n_collect",
+            "condition": "用户要求修改表单内容"
+          },
+          {
+            "source_node_id": "n_submit",
+            "next_node_id": "n_done",
+            "condition": "审批实例创建成功"
+          },
+          {
+            "source_node_id": "n_submit",
+            "next_node_id": "n_handoff",
+            "condition": "提交持续失败且用户希望人工协助"
+          },
+          {
+            "source_node_id": "n_submit",
+            "next_node_id": "n_preview",
+            "condition": "提交被服务端拒绝（如表单格式错误），需修正后重新预览并让用户确认"
+          }
+        ]
+      },
+      "status": "published",
+      "created_at": "2026-08-26 00:00:00.000000",
+      "updated_at": "2026-08-26 00:00:00.000000"
     }
   ],
   "skill_versions": [
@@ -2355,6 +2546,197 @@
       "tenant_id": "tenant_demo",
       "updated_at": "2026-08-18 00:00:00.000000",
       "version": "1.0.0"
+    },
+    {
+      "id": "skillver_preset_admin_lark_approval_001",
+      "tenant_id": "tenant_demo",
+      "skill_id": "lark_approval_submit",
+      "version": "1.0.0",
+      "name": "飞书审批提交",
+      "business_domain": "办公协作",
+      "description": "通过飞书官方 lark-cli 以用户本人身份提交审批申请：先完成一次性设备码授权登录，再检索审批定义、组装表单并 dry-run 预览，把内容逐字段展示给用户，获得明确确认后才真实提交。",
+      "content_json": {
+        "skill_id": "lark_approval_submit",
+        "name": "飞书审批提交",
+        "version": "1.0.0",
+        "business_domain": "办公协作",
+        "description": "通过飞书官方 lark-cli 以用户本人身份提交审批申请：应用凭据缺失时可在对话内一次性配置（提供现有应用凭据或现场创建新应用），随后完成一次性设备码授权登录，再检索审批定义、组装表单并 dry-run 预览，把内容逐字段展示给用户，获得明确确认后才真实提交。",
+        "trigger_intents": [
+          "提交审批",
+          "发起审批",
+          "提审批单",
+          "帮我走审批流程"
+        ],
+        "user_utterance_examples": [
+          "帮我提一个报销审批",
+          "发起一个请假审批，下周一到周三",
+          "走一下采购审批流程"
+        ],
+        "goal": [
+          "以用户本人的飞书身份成功创建审批实例，并把审批单链接反馈给用户",
+          "提交内容必须与用户确认过的预览逐字节一致"
+        ],
+        "response_rules": [
+          "展示预览时必须逐字段列出表单内容，不得省略",
+          "用户未明确回复确认前，绝不调用真实提交；但用户已确认且内容未变时不得重复索要确认，直接推进提交",
+          "工具调用失败必须如实告知用户失败与原因，严禁把失败或\"即将提交\"表述为已提交；提交成功的唯一标志是返回 instance_code；标记 retryable=true 的报错是可恢复错误，不得据此宣告任务失败或提前结束步骤——应按错误信息中的指引修正重试，或如实说明后留在当前步骤等待用户回复",
+          "所有飞书相关操作只能通过 lark_cli 能力完成，禁止使用 exec_command 等其他方式操作飞书或计算日期（当前时间在任务书 current_time 字段里）",
+          "任何 lark-cli 错误要翻译成用户能懂的话，并给出下一步建议",
+          "用户在对话中提供的 App Secret 只用于调用 config init，绝不在回复中复述或展示",
+          "收集信息时不过度追问：有合理默认或可推断的字段直接采用默认值，预览时统一让用户核对修改"
+        ],
+        "start_node_id": "n_auth_check",
+        "terminal_node_ids": [
+          "n_done"
+        ],
+        "nodes": [
+          {
+            "node_id": "n_auth_check",
+            "type": "action",
+            "name": "检查登录状态",
+            "instruction": "调用 lark_cli 执行 auth status --json 确认登录态（这是后续所有飞书操作的前提，包括检索审批定义）。若返回错误提示应用未配置（LARK_CLI_APP_NOT_CONFIGURED），进入应用配置步骤。否则查看 identities.user.available 是否为 true（用户身份是否已登录）：已登录则进入信息收集步骤；未登录则进入发起授权步骤。"
+          },
+          {
+            "node_id": "n_app_setup",
+            "type": "collect_info",
+            "name": "配置飞书应用",
+            "instruction": "当前还没有可用的飞书应用凭据，需在对话中完成一次性配置。向用户说明并给出两个选项：A) 已有飞书应用——请用户提供应用的 App ID 和 App Secret（飞书开放平台 https://open.feishu.cn 应用详情页的「凭证与基础信息」可查），拿到后调用 lark_cli 执行 config init --app-id <App ID> --app-secret <App Secret>；不要在回复中复述用户提供的 App Secret。B) 没有应用——调用 lark_cli 执行 config init --new，把返回的 verification_url 发给用户，请其在浏览器中登录飞书开放平台完成应用创建并回复完成；用户回复后再次调用 config init --new 查询进度，直到返回 configured。配置成功后回到登录状态检查步骤。注意：新创建的应用还需要在开放平台开通审批相关权限（approval:approval:read、approval:instance:write 等）并发布版本，后续登录步骤会检查并给出指引。",
+            "expected_user_info": [
+              "应用凭据（App ID 与 App Secret）或应用创建完成的确认"
+            ]
+          },
+          {
+            "node_id": "n_auth_start",
+            "type": "collect_info",
+            "name": "发起授权登录",
+            "instruction": "进入本步骤后的第一个动作必须是调用 lark_cli 执行 auth login --scope \"approval:approval:read approval:instance:read approval:instance:write approval:task:read approval:task:write\" --no-wait --json，从结果取 verification_url 与 device_code：把 verification_url 原样发给用户，请用户打开链接完成飞书授权并在完成后回复确认；device_code 原样保留用于下一步收尾。不要在登录前调用 auth scopes 查询应用权限——该命令需要应用管理类权限（admin:app.info:readonly 等），普通审批应用并未申请，调用必然失败并白白多耗一轮。若登录或后续审批调用报 app_scope_not_applied，说明该应用后台尚未开通审批权限，请如实告知用户需由管理员在飞书开放平台按错误提示中的链接申请权限并发布版本。不要尝试生成二维码（auth qrcode 等命令未开放，控制台也无法展示本地图片），把链接原样发给用户即可。本步骤在把 verification_url 发给用户之前不算完成；期间任何命令报错都不构成任务失败——如实向用户说明并留在本步骤等待用户回复，严禁直接宣告失败。",
+            "expected_user_info": [
+              "用户已完成飞书授权的确认"
+            ]
+          },
+          {
+            "node_id": "n_auth_complete",
+            "type": "action",
+            "name": "完成授权登录",
+            "instruction": "用户确认已授权后，调用 lark_cli 执行 auth login --device-code <上一步的 device_code> --json 完成登录，再用 auth status --json 复核身份与 scope。若提示 authorization_pending，请用户完成授权后重试一次。登录成功后进入信息收集步骤。"
+          },
+          {
+            "node_id": "n_collect",
+            "type": "collect_info",
+            "name": "收集审批需求",
+            "instruction": "了解用户要提交哪类审批（关键词，如：报销/请假/采购）以及表单需要的信息。用 lark_cli 的 approval approvals search（--data 里带 keyword）检索可发起的审批定义，确认后用 approvals get --approval-code <code> 查看该定义的表单控件结构。据此向用户收集缺失的字段值（一次性问全，不要分多轮）；选择类控件要把可选项列给用户（记录每个选项文字对应的 key）。不过度追问：凡是能从用户已给信息合理推断或有惯例默认值的字段，直接采用默认并留到预览步骤让用户核对，不要再问——例如日期给到天即视为全天，按 09:00 至 18:00 组装起止时间。用户在收集阶段回复「提交/确认/用默认」等，视为同意用合理默认补齐全部缺失字段，立即停止提问并进入下一步骤。涉及\"明天/下周一\"等相对日期时，用任务书 current_time 字段换算，不要调用命令获取日期。",
+            "expected_user_info": [
+              "审批类型或关键词",
+              "表单所需字段的取值"
+            ]
+          },
+          {
+            "node_id": "n_preview",
+            "type": "collect_info",
+            "name": "预览并等待用户确认",
+            "instruction": "根据已收集的信息组装 --data：approval_code 加 form。form 组装规范（务必遵守）：① 控件 id、type 与嵌套结构必须逐一取自 approvals get 返回的 form 定义，严禁自造控件 id；复合控件（如 leaveGroupV2）的子控件必须嵌套在该复合控件的 value 数组内整体组装，严禁平铺到 form 顶层；② radioV2/select 等选择类控件的 value 必须用定义返回的选项 key，不是选项文字；③ date 控件的值推荐写 RFC3339（如 2026-08-27T09:00:00+08:00）；定义详情里显示的 YYYY-MM-DD hh:mm 只是展示格式，系统也会自动把这类常见日期写法规范化为 RFC3339；④ form 传 JSON 数组或字符串均可，系统会自动规范化为官方线上格式。然后调用 lark_cli 执行 approval instances create --data <JSON> --dry-run，获得预览与 submission_digest。向用户逐字段展示：审批定义名称、每个字段的名称与取值（选择类字段同时展示选项文字）。明确询问用户是否确认提交并等待回复。用户回复确认（如「提交」「确认」「OK」「没问题」）后：严禁再次询问确认，也严禁在本步骤调用真实提交（系统会拒绝）——正确做法是在 finish 时把 slot_updates 写入 {\"用户对提交内容的明确确认\": \"已确认\"} 并给出 next_step_id 进入提交步骤，由提交步骤执行真实提交。用户要求修改时回到收集步骤重新组装并重新预览。",
+            "expected_user_info": [
+              "用户对提交内容的明确确认"
+            ]
+          },
+          {
+            "node_id": "n_submit",
+            "type": "action",
+            "name": "提交审批",
+            "instruction": "仅在用户明确确认后执行。进入本步骤后的第一个动作必须是调用 lark_cli 完成真实提交：args 只需 [\"approval\",\"instances\",\"create\"]，不带 --data 也不带 confirmed_form_digest——系统会自动提交用户在预览步骤确认过的表单内容并注入 --yes 与幂等 uuid，严禁重新获取审批定义或重新组装表单。此前步骤的 dry-run 预览不等于提交，严禁未调用提交就结束本步骤，也严禁因上一步骤的拒绝报错而直接宣告失败。提交成功的唯一标志是返回结果中包含 instance_code——此时向用户反馈审批单链接。若提交失败：必须如实告知用户失败原因，严禁表述为已提交或即将提交；若系统提示没有可重放的预览记录或表单被服务端拒绝，回到预览步骤重新组装 --data、重新 dry-run 并再次征得用户确认后才能重试提交。",
+            "capability_refs": {
+              "tool_ids": [
+                "lark_cli"
+              ],
+              "required_tool_ids": [
+                "lark_cli"
+              ]
+            }
+          },
+          {
+            "node_id": "n_done",
+            "type": "action",
+            "name": "完成",
+            "instruction": "向用户反馈审批已提交成功、审批单链接与后续查看方式（也可用 approval tasks query / instances get 查询进度）。"
+          },
+          {
+            "node_id": "n_handoff",
+            "type": "handoff",
+            "name": "转人工处理",
+            "instruction": "授权多次失败、审批定义不存在、或提交持续报错且用户希望人工介入时，转交人工处理并附上已收集的上下文。"
+          }
+        ],
+        "edges": [
+          {
+            "source_node_id": "n_auth_check",
+            "next_node_id": "n_collect",
+            "condition": "auth status 显示用户身份已登录（identities.user.available 为 true）"
+          },
+          {
+            "source_node_id": "n_auth_check",
+            "next_node_id": "n_auth_start",
+            "condition": "用户身份尚未登录"
+          },
+          {
+            "source_node_id": "n_auth_check",
+            "next_node_id": "n_app_setup",
+            "condition": "报错应用未配置（LARK_CLI_APP_NOT_CONFIGURED）"
+          },
+          {
+            "source_node_id": "n_app_setup",
+            "next_node_id": "n_auth_check",
+            "condition": "应用凭据配置成功（configured）"
+          },
+          {
+            "source_node_id": "n_auth_start",
+            "next_node_id": "n_auth_complete",
+            "condition": "用户回复已完成授权"
+          },
+          {
+            "source_node_id": "n_auth_complete",
+            "next_node_id": "n_collect",
+            "condition": "登录成功且 scope 满足"
+          },
+          {
+            "source_node_id": "n_auth_complete",
+            "next_node_id": "n_handoff",
+            "condition": "多次尝试后登录仍失败且用户希望人工协助"
+          },
+          {
+            "source_node_id": "n_collect",
+            "next_node_id": "n_preview",
+            "condition": "审批类型与表单信息已收集齐全"
+          },
+          {
+            "source_node_id": "n_preview",
+            "next_node_id": "n_submit",
+            "condition": "用户明确确认提交内容无误"
+          },
+          {
+            "source_node_id": "n_preview",
+            "next_node_id": "n_collect",
+            "condition": "用户要求修改表单内容"
+          },
+          {
+            "source_node_id": "n_submit",
+            "next_node_id": "n_done",
+            "condition": "审批实例创建成功"
+          },
+          {
+            "source_node_id": "n_submit",
+            "next_node_id": "n_handoff",
+            "condition": "提交持续失败且用户希望人工协助"
+          },
+          {
+            "source_node_id": "n_submit",
+            "next_node_id": "n_preview",
+            "condition": "提交被服务端拒绝（如表单格式错误），需修正后重新预览并让用户确认"
+          }
+        ]
+      },
+      "status": "published",
+      "created_at": "2026-08-26 00:00:00.000000",
+      "updated_at": "2026-08-26 00:00:00.000000"
     }
   ],
   "tools": [],
@@ -2529,6 +2911,23 @@
       "status": "active",
       "tenant_id": "tenant_demo",
       "updated_at": "2026-08-18 00:00:00.000000"
+    },
+    {
+      "id": "agentres_preset_admin_lark_approval_001",
+      "tenant_id": "tenant_demo",
+      "agent_id": "agent_30b8f623c6fe445b",
+      "resource_id": "skill_preset_admin_lark_approval_001",
+      "resource_type": "skill",
+      "status": "active",
+      "metadata_json": {
+        "created_by": "admin",
+        "created_from_agent": true,
+        "owner_agent_id": "agent_30b8f623c6fe445b",
+        "scope": "agent_private",
+        "visibility": "agent_private"
+      },
+      "created_at": "2026-08-26 00:00:00.000000",
+      "updated_at": "2026-08-26 00:00:00.000000"
     }
   ],
   "agent_skill_branches": [

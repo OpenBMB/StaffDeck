@@ -98,6 +98,28 @@ def test_runtime_resolver_preserves_legacy_chat_options_as_read_only() -> None:
             resolved.protocol_options["new"] = True  # type: ignore[index]
 
 
+def test_verification_resolver_preserves_provider_extra_body() -> None:
+    with _session() as db:
+        db.add(
+            _row(
+                trust_status="unverified",
+                enabled=False,
+                verification_attempt_id="attempt_a",
+                verification_attempt_status="verifying",
+                extra_body_json={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+        )
+        db.commit()
+
+        resolved = resolve_model_config_for_verification(
+            db, "tenant_a", "model_a", "attempt_a"
+        )
+
+        assert _normalize_extra_body(resolved.legacy_extra_body) == {
+            "chat_template_kwargs": {"enable_thinking": False}
+        }
+
+
 def test_runtime_resolver_rejects_unverified_but_verification_resolver_allows_it() -> None:
     with _session() as db:
         db.add(
@@ -151,4 +173,4 @@ def test_snapshot_model_config_preserves_anthropic_protocol_and_options() -> Non
     snapshot = snapshot_model_config(row, min_output_tokens=16_384)
 
     assert snapshot.api_protocol is ModelApiProtocol.ANTHROPIC_MESSAGES
-    assert snapshot.max_output_tokens == 16_384
+    assert snapshot.max_output_tokens == row.max_output_tokens

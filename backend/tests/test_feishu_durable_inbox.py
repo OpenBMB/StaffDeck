@@ -248,7 +248,8 @@ def test_daemon_recovers_received_event_without_memory_notification(
     with Session(engine) as db:
         row = db.get(ChannelInboundEvent, staged.event_pk)
         assert row.status == "done"
-        assert row.processor_run_id
+        assert row.processor_run_id is None
+        assert row.processor_lease_expires_at is None
         assert len(db.exec(select(User)).all()) == 1
         assert len(db.exec(select(ChatSession)).all()) == 1
 

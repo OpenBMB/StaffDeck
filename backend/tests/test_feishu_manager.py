@@ -62,6 +62,8 @@ def test_manager_reconciles_pause_resume_revision_and_shutdown(tmp_path) -> None
                 channel="feishu",
                 status="active",
                 config_revision=4,
+                credentials_enc="enc",
+                config_json={"app_id": "cli_test", "bot_open_id": "ou_test"},
             )
         )
         db.commit()
@@ -113,6 +115,8 @@ def test_manager_keeps_tracking_binding_when_stop_times_out(tmp_path) -> None:
                 channel="feishu",
                 status="active",
                 config_revision=1,
+                credentials_enc="enc",
+                config_json={"app_id": "cli_test", "bot_open_id": "ou_test"},
             )
         )
         db.commit()
@@ -154,6 +158,8 @@ def test_manager_writes_disconnected_truth_and_accepts_backoff_as_stopped(tmp_pa
                 channel="feishu",
                 status="active",
                 config_revision=1,
+                credentials_enc="enc",
+                config_json={"app_id": "cli_test", "bot_open_id": "ou_test"},
             )
         )
         db.commit()
@@ -193,6 +199,8 @@ def test_pause_starts_stop_without_consuming_wait_deadline(tmp_path) -> None:
                 channel="feishu",
                 status="active",
                 config_revision=1,
+                credentials_enc="enc",
+                config_json={"app_id": "cli_test", "bot_open_id": "ou_test"},
             )
         )
         db.commit()

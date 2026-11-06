@@ -109,6 +109,11 @@ class MockOrderQueryRequest(BaseModel):
     order_id: str
 
 
+class MockOrderRefundRequest(BaseModel):
+    order_id: str
+    refund_reason: str
+
+
 class MockProductPurchaseRequest(BaseModel):
     user_id: str = "user_demo"
     product_id: str
@@ -169,6 +174,65 @@ def mock_order_archive_query(request: MockOrderQueryRequest) -> dict[str, Any]:
     if not record:
         return _order_miss(order_id, "archive_order_center")
     return _order_hit(order_id, "archive_order_center", record)
+
+
+@router.post("/order/refund")
+def mock_order_refund(
+    request: MockOrderRefundRequest, db: Session = Depends(get_session)
+) -> dict[str, Any]:
+    order_id = _normalize_id(request.order_id)
+    row = db.get(MockOrder, order_id)
+    if row is None:
+        return {
+            **_order_miss(order_id, "primary_order_center"),
+            "refunded": False,
+        }
+    if row.status == "refunded":
+        return {
+            **_order_hit(
+                order_id,
+                "primary_order_center",
+                _find_dynamic_order(db, order_id) or {},
+            ),
+            "refunded": True,
+            "refund_reason": str(
+                (row.metadata_json or {}).get("refund_reason") or request.refund_reason
+            ),
+            "idempotent_replay": True,
+        }
+    if not row.refundable:
+        return {
+            **_order_hit(
+                order_id,
+                "primary_order_center",
+                _find_dynamic_order(db, order_id) or {},
+            ),
+            "refunded": False,
+            "refund_reason": request.refund_reason,
+            "failure_reason": "order_not_refundable",
+        }
+    metadata = dict(row.metadata_json or {})
+    metadata.update(
+        {
+            "refund_id": f"REF{uuid4().hex[:10].upper()}",
+            "refund_reason": request.refund_reason,
+            "refunded_at": _now_iso(),
+        }
+    )
+    row.status = "refunded"
+    row.order_status = "refunded"
+    row.payment_status = "refunded"
+    row.refundable = False
+    row.metadata_json = metadata
+    row.updated_at = utc_now()
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {
+        **_order_hit(order_id, "primary_order_center", _find_dynamic_order(db, order_id) or {}),
+        "refunded": True,
+        "refund_reason": request.refund_reason,
+    }
 
 
 @router.post("/product/purchase")

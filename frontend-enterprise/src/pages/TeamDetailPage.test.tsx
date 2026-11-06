@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -38,6 +38,21 @@ const team: TeamRead = {
   ],
   created_at: '2026-08-01T00:00:00Z',
   updated_at: '2026-08-01T00:00:00Z',
+};
+
+const crowdedTeam: TeamRead = {
+  ...team,
+  members: [
+    team.members[0],
+    ...Array.from({ length: 9 }, (_, index) => ({
+      id: `member-crowded-${index + 1}`,
+      team_id: 'team-1',
+      agent_id: `agent-crowded-${index + 1}`,
+      role: 'member' as const,
+      agent_name: index === 0 ? '产品经理' : `成员${index + 2}`,
+      created_at: '2026-08-01T00:00:00Z',
+    })),
+  ],
 };
 
 function makeTask(overrides: Partial<TeamTaskRead>): TeamTaskRead {
@@ -106,12 +121,40 @@ const agents: AgentProfileRead[] = [
   },
 ];
 
+const teamLog = {
+  schema_version: 'staffdeck.team-log.v1',
+  exported_at: '2026-08-03T00:00:00Z',
+  team: { id: 'team-1', name: '增长团队' },
+  summary: {
+    task_count: 3,
+    wake_event_count: 2,
+    blackboard_entry_count: 1,
+    session_count: 1,
+  },
+  tasks: [],
+  wake_events: [],
+  blackboard_entries: [],
+  sessions: [
+    {
+      session: { id: 'session-log-1', title: '成员调研', agent_id: 'agent-2', status: 'completed' },
+      messages: [
+        { id: 'message-log-1', role: 'user', content: '调研用户反馈' },
+        { id: 'message-log-2', role: 'assistant', content: '已完成用户反馈调研' },
+      ],
+      traces: [],
+      events: [{ id: 'event-log-1', event_type: 'model_exchange_completed' }],
+      tool_invocations: [{ id: 'tool-log-1', tool_name: 'knowledge_search', status: 'completed' }],
+    },
+  ],
+};
+
 function jsonResponse(body: unknown): Response {
   return {
     ok: true,
     status: 200,
     statusText: 'OK',
     text: async () => JSON.stringify(body ?? {}),
+    blob: async () => new Blob([JSON.stringify(body ?? {})], { type: 'application/json' }),
   } as Response;
 }
 
@@ -141,10 +184,14 @@ function stubDetailFetch(overrides?: {
   taskList?: TeamTaskRead[];
   onTlSession?: () => { session_id: string };
   taskDetails?: Record<string, TeamTaskRead>;
+  publicationTargets?: { targets: { id: string; name: string }[]; can_use_default: boolean; default_id?: string };
 }) {
   let boardRows = [...(overrides?.entries ?? [])];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url.includes('/knowledge-targets')) return jsonResponse(overrides?.publicationTargets ?? {
+      targets: [{ id: 'kb-1', name: '测试知识库' }], can_use_default: true,
+    });
     if (url.includes('/blackboard')) {
       const method = (init?.method || 'GET').toUpperCase();
       if (url.includes('/archive')) {
@@ -176,6 +223,7 @@ function stubDetailFetch(overrides?: {
     if (url.includes('/tl/session')) {
       return jsonResponse(overrides?.onTlSession?.() ?? { session_id: 'session-1' });
     }
+    if (url.includes('/export')) return jsonResponse(teamLog);
     if (url.includes('/award-override')) {
       return jsonResponse(makeTask({ status: 'pending', assignee_agent_id: 'agent-1' }));
     }
@@ -267,6 +315,36 @@ beforeAll(() => {
 });
 
 describe('TeamDetailPage', () => {
+  it('opens the complete team execution log online and keeps JSON download available', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubDetailFetch();
+    const createObjectURL = vi.fn(() => 'blob:team-log');
+    const revokeObjectURL = vi.fn();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    renderDetail();
+
+    await user.click(await screen.findByRole('button', { name: '查看完整日志' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('团队完整日志')).toBeTruthy();
+    expect(within(dialog).getByText('成员调研')).toBeTruthy();
+    expect(within(dialog).getByText('任务数')).toBeTruthy();
+    await user.click(within(dialog).getByText('成员调研'));
+    expect(await within(dialog).findByText('已完成用户反馈调研')).toBeTruthy();
+    await user.click(within(dialog).getByRole('button', { name: '下载 JSON' }));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) =>
+        String(input).includes('/api/enterprise/teams/team-1/export?tenant_id=tenant_demo'),
+      )).toBe(true);
+      expect(createObjectURL).toHaveBeenCalledTimes(1);
+      expect(click).toHaveBeenCalledTimes(1);
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:team-log');
+    });
+  });
+
   it('renders members and groups kanban tasks by status', async () => {
     stubDetailFetch();
     renderDetail();
@@ -287,6 +365,32 @@ describe('TeamDetailPage', () => {
     expect(within(pendingColumn).getByText('未分配')).toBeTruthy();
     const progressColumn = within(board).getByText('进行中').closest('div')?.parentElement as HTMLElement;
     expect(within(progressColumn).getByText('投放分析')).toBeTruthy();
+  });
+
+  it('starts an overflowed member list from the left and shows a horizontal scroll hint', async () => {
+    vi.spyOn(Element.prototype, 'scrollWidth', 'get').mockReturnValue(1000);
+    vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(500);
+    stubDetailFetch({ teamOverride: crowdedTeam });
+    renderDetail();
+
+    const memberList = await screen.findByRole('region', { name: '团队成员列表' });
+    const memberSection = screen.getByRole('region', { name: '成员管理' });
+    await waitFor(() => {
+      expect(within(memberSection).getByText('横向滑动查看更多成员')).toBeTruthy();
+    });
+    expect(memberList.scrollLeft).toBe(0);
+    expect(memberList.firstElementChild?.className).toContain('w-max');
+    expect(memberList.firstElementChild?.className).toContain('min-w-full');
+    expect(memberSection.querySelector('[data-scroll-edge="right"]')).toBeTruthy();
+    expect(within(memberSection).getByText('产品经理')).toBeTruthy();
+    expect(within(memberSection).getAllByText('成员', { exact: true })).toHaveLength(9);
+
+    memberList.scrollLeft = 500;
+    fireEvent.scroll(memberList);
+    await waitFor(() => {
+      expect(memberSection.querySelector('[data-scroll-edge="left"]')).toBeTruthy();
+      expect(memberSection.querySelector('[data-scroll-edge="right"]')).toBeFalsy();
+    });
   });
 
   it('submits an override verdict from the task detail dialog', async () => {
@@ -636,6 +740,9 @@ describe('TeamDetailPage', () => {
     expect(promotedButton.disabled).toBe(true);
 
     await user.click(within(board).getByRole('button', { name: '沉淀到知识库' }));
+    const publicationDialog = await screen.findByRole('dialog', { name: '沉淀到知识库' });
+    await waitFor(() => expect((within(publicationDialog).getByRole('button', { name: '确认提交' }) as HTMLButtonElement).disabled).toBe(false));
+    await user.click(within(publicationDialog).getByRole('button', { name: '确认提交' }));
 
     await waitFor(() => {
       const promoteCall = fetchMock.mock.calls.find(([input]) =>
@@ -647,6 +754,26 @@ describe('TeamDetailPage', () => {
     });
     await waitFor(() => {
       expect(within(board).getAllByRole('button', { name: '已沉淀' }).length).toBe(2);
+    });
+  });
+
+  it('requires a module-provided publication target when there is no default', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubDetailFetch({ entries: [makeEntry({ id: 'entry-1', content: 'publish me' })],
+      publicationTargets: { targets: [{ id: '_default', name: '企业资料库' }], can_use_default: false } });
+    renderDetail();
+    const board = screen.getByLabelText('团队黑板');
+    await within(board).findByText('publish me');
+    await user.click(within(board).getByRole('button', { name: '沉淀到知识库' }));
+    const dialog = await screen.findByRole('dialog', { name: '沉淀到知识库' });
+    expect((within(dialog).getByRole('button', { name: '确认提交' }) as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect((within(dialog).getByRole('combobox', { name: '目标知识库' }) as HTMLButtonElement).disabled).toBe(false));
+    await user.click(within(dialog).getByRole('combobox', { name: '目标知识库' }));
+    await user.click(await screen.findByRole('option', { name: '企业资料库' }));
+    await user.click(within(dialog).getByRole('button', { name: '确认提交' }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([input]) => String(input).includes('/blackboard/entry-1/promote'));
+      expect(JSON.parse(String(call?.[1]?.body)).knowledge_base_id).toBe('_default');
     });
   });
 

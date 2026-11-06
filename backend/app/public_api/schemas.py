@@ -157,6 +157,8 @@ class JobRead(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     updated_at: datetime
+    # Only terminal jobs certify the last persisted public SSE event.
+    final_event_id: str | None = None
 
 
 class SOPGenerateRequest(BaseModel):

@@ -20,7 +20,7 @@ if [[ "$ARCH" != "x86_64" ]]; then
 fi
 
 TOOLCHAIN="$REPO/packaging/toolchain"
-NODE_VERSION="${NODE_VERSION:-20.19.5}"
+NODE_VERSION="${NODE_VERSION:-22.19.0}"
 NODE_HOME="$TOOLCHAIN/node-v${NODE_VERSION}-linux-x64"
 NODE_TARBALL="$TOOLCHAIN/node-v${NODE_VERSION}-linux-x64.tar.xz"
 mkdir -p "$TOOLCHAIN"
@@ -99,13 +99,17 @@ DEPS="$(cd backend && "$BUILD_PY" -c "import pathlib,tomllib; print(' '.join(tom
 "$VENV_PY" -m pip install --disable-pip-version-check --no-cache-dir "pyinstaller>=6.6.0" "certifi>=2024.2.2"
 
 echo "==> [5/8] Building application with PyInstaller"
+"$VENV_PY" packaging/distribution/install_dependencies.py
 rm -rf packaging/out packaging/build
 (
   cd backend
   .venv/bin/pyinstaller ../packaging/ultrarag.spec --noconfirm \
     --distpath ../packaging/out --workpath ../packaging/build
 )
+python3 packaging/bundle_engine.py packaging/out/staffdeck/harness-engine
 packaging/out/staffdeck/staffdeck --packaging-smoke
+packaging/out/staffdeck/staffdeck-cli --version
+packaging/out/staffdeck/staffdeck-cli guide >/dev/null
 rm -rf packaging/out/staffdeck/runtime
 cp -a "$RUNTIME_DL_ROOT/python" packaging/out/staffdeck/runtime
 echo "==> [5b/8] Bundling SRT + Node runtime"
@@ -130,6 +134,11 @@ cat > "$STAGE/usr/bin/staffdeck" <<'SH'
 exec /opt/staffdeck/staffdeck "$@"
 SH
 chmod 0755 "$STAGE/usr/bin/staffdeck"
+cat > "$STAGE/usr/bin/staffdeck-cli" <<'SH'
+#!/bin/sh
+exec /opt/staffdeck/staffdeck-cli "$@"
+SH
+chmod 0755 "$STAGE/usr/bin/staffdeck-cli"
 cat > "$STAGE/usr/share/applications/staffdeck.desktop" <<'DESK'
 [Desktop Entry]
 Name=StaffDeck
@@ -183,6 +192,12 @@ HERE="$(dirname "$(readlink -f "$0")")"
 exec "$HERE/../lib/staffdeck/staffdeck" "$@"
 SH
 chmod 0755 "$APPDIR/usr/bin/staffdeck"
+cat > "$APPDIR/usr/bin/staffdeck-cli" <<'SH'
+#!/bin/sh
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/../lib/staffdeck/staffdeck-cli" "$@"
+SH
+chmod 0755 "$APPDIR/usr/bin/staffdeck-cli"
 cat > "$APPDIR/AppRun" <<'SH'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"

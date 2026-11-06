@@ -137,6 +137,15 @@ afterEach(() => {
 });
 
 describe('App team scope selection', () => {
+  it('does not load the hidden SOP editor on an unrelated page', async () => {
+    const fetchMock = stubAppFetch();
+    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, 'agent-1');
+    window.history.pushState({}, '', '/enterprise/agents');
+    const view = render(<I18nProvider><App /></I18nProvider>);
+    await screen.findByLabelText('切换当前员工');
+    expect(view.container.querySelector('.persistent-distill')).toBeNull();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/auth/users'))).toBe(false);
+  });
   it('opens the team group in the chat app when a team is selected', async () => {
     const user = userEvent.setup();
     const fetchMock = stubAppFetch();

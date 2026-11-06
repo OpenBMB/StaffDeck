@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, TextIO
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -32,6 +33,12 @@ MCP_APP_MIME_TYPE = "text/html;profile=mcp-app"
 # --------------------------------------------------------------------------- #
 # Transport 归一化
 # --------------------------------------------------------------------------- #
+
+def _safe_url(url: str) -> str:
+    """错误提示里只留 scheme+host+path，query 里可能带密钥。"""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc.rsplit('@', 1)[-1]}{parts.path}"
+
 
 def normalize_transport(config: dict[str, Any]) -> str:
     """从连接配置推断 transport 类型。
@@ -264,9 +271,43 @@ class _MCPSession:
     def list_tools_with_capabilities(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         with self:
             self._initialize()
-            result = self._request("tools/list", {})
-            tools = result.get("tools") if isinstance(result, dict) else None
-            return tools if isinstance(tools, list) else [], dict(self.initialize_result)
+            tools = self._list_all_pages("tools/list", "tools")
+            return tools, dict(self.initialize_result)
+
+    def _list_all_pages(self, method: str, result_key: str) -> list[dict[str, Any]]:
+        """Collect a cursor-paginated MCP list result.
+
+        MCP servers may paginate ``tools/list`` even when the first version of a
+        server returned every tool in one response.  Discovery must therefore
+        follow ``nextCursor`` on every refresh; otherwise tools added later can
+        remain permanently invisible once they move beyond the first page.
+        """
+
+        items: list[dict[str, Any]] = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        while True:
+            params = {"cursor": cursor} if cursor is not None else {}
+            result = self._request(method, params)
+            if not isinstance(result, dict):
+                raise MCPClientError(f"MCP {method} 返回内容不是 object。")
+            page = result.get(result_key)
+            if page is not None and not isinstance(page, list):
+                raise MCPClientError(f"MCP {method} 的 {result_key} 不是数组。")
+            items.extend(item for item in (page or []) if isinstance(item, dict))
+
+            raw_cursor = result.get("nextCursor")
+            if raw_cursor is None:
+                # Tolerate snake_case implementations while keeping the MCP
+                # specification's nextCursor as the canonical form.
+                raw_cursor = result.get("next_cursor")
+            next_cursor = str(raw_cursor).strip() if raw_cursor is not None else ""
+            if not next_cursor:
+                return items
+            if next_cursor in seen_cursors:
+                raise MCPClientError(f"MCP {method} 返回了重复分页游标：{next_cursor}")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
 
     def read_resource(self, uri: str) -> dict[str, Any]:
         with self:
@@ -572,7 +613,9 @@ class _HttpSession(_MCPSession):
             response = client.post(self._endpoint(), headers=self._headers(), json=payload)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise MCPClientError(f"HTTP MCP 返回异常状态码：{exc.response.status_code}") from exc
+            raise MCPClientError(
+                f"HTTP MCP 返回异常状态码：{exc.response.status_code}（{_safe_url(self._endpoint())}）"
+            ) from exc
         except Exception as exc:
             raise MCPClientError(str(exc)) from exc
         session_id = response.headers.get("mcp-session-id")
@@ -676,7 +719,9 @@ class _SseSession(_MCPSession):
             posted = client.post(str(self._message_url), headers=self._post_headers(), json=payload)
             posted.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise MCPClientError(f"SSE MCP 返回异常状态码：{exc.response.status_code}") from exc
+            raise MCPClientError(
+                f"SSE MCP 返回异常状态码：{exc.response.status_code}（{_safe_url(str(self._message_url))}）"
+            ) from exc
         except Exception as exc:
             raise MCPClientError(str(exc)) from exc
         body = self._await_response(request_id)

@@ -1,4 +1,4 @@
-from app.general_skills.runner import GeneralSkillReader, GeneralSkillRunner, GeneralSkillSelector
+from app.general_skills.runner import GeneralSkillReader, GeneralSkillSelector
 from app.general_skills.schema import (
     GeneralSkillClawHubImportRequest,
     GeneralSkillImportRequest,
@@ -15,7 +15,6 @@ __all__ = [
     "GeneralSkillRead",
     "GeneralSkillRunRequest",
     "GeneralSkillRunResponse",
-    "GeneralSkillRunner",
     "GeneralSkillReader",
     "GeneralSkillSelector",
 ]

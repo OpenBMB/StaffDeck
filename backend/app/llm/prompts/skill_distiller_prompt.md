@@ -28,6 +28,10 @@ nodes 中每个 node_id 必须全局唯一，不得重复；如果两个节点�
 仅当原始内容明确给出现有 SOP ID 时才生成 subflow 节点，并将该 ID 写入 sub_sop_id；不得臆造子 SOP ID。
 如果原始流程需要工具，请优先从 available_tools 中选择工具，并在 allowed_actions 中使用 call_tool:<tool_name>。
 capability_refs 必须包含 general_skill_ids、tool_ids、knowledge_base_ids 以及对应的 required_general_skill_ids、required_tool_ids、required_knowledge_base_ids。前三者表示节点允许使用的能力，后三者必须是对应允许列表的子集。默认使用可选执行；只有原文明确要求“必须执行”“依次执行”或该能力是节点完成的必要条件时，才放入 required_*_ids。
+available_tools、available_general_skills、available_knowledge_bases 中的 ID 是系统真实能力 ID。tool_ids、general_skill_ids、knowledge_base_ids 必须填写对应目录里的 ID，不得填写展示名称、调用名或自行编造 ID。
+如果原始流程与某个 available_general_skills 的名称、调用名或说明匹配，应在对应节点的 general_skill_ids 中引用该技能 ID；如果该技能是完成节点不可缺少的执行能力，同时写入 required_general_skill_ids。
+如果节点调用 available_tools 中的工具，allowed_actions 使用 call_tool:<tool_name>，同时在 tool_ids 中填写该工具 ID；必要工具同时写入 required_tool_ids。
+如果节点需要检索 available_knowledge_bases 中的知识库，在 knowledge_base_ids 中填写知识库 ID；必要知识库同时写入 required_knowledge_base_ids。
 required_info 和 expected_user_info 应使用稳定的 snake_case 字段名；如果要调用工具，字段名应尽量与工具 input_schema 参数一致。
 所有 instruction 都必须写成“目标导向、可自适应推进”的说明，不要写成固定话术脚本。模型执行时可以根据用户当前消息、历史 slots、路由意图和工具参数满足情况跳过已满足节点。
 如果用户已经明确表达触发意图、类型、分类、数量、身份标识、业务对象编号等信息，后续步骤必须允许模型直接落槽并继续推进，不得要求重复确认同一信息。

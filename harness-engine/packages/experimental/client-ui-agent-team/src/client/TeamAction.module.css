@@ -1,0 +1,239 @@
+.root {
+  position: relative;
+}
+
+.trigger,
+.iconButton,
+.smallButton,
+.taskActions button,
+.formActions button {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 7px;
+  font-size: 12px;
+}
+
+.trigger:hover,
+.iconButton:hover,
+.smallButton:hover,
+.taskActions button:hover,
+.formActions button:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.count {
+  min-width: 16px;
+  border-radius: 8px;
+  background: var(--dsw-alias-fill-l2);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.panel {
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 110;
+  box-sizing: border-box;
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(680px, calc(100vh - 120px));
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-specific-menu);
+  box-shadow: var(--dsw-shadow-lv3);
+}
+
+.toolbar,
+.sectionTitle,
+.taskTitle,
+.taskActions,
+.formActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar {
+  min-height: 28px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+}
+
+.panel h3 {
+  margin: 12px 0 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.roster {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.member {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.member:disabled {
+  cursor: default;
+}
+
+.memberText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.memberText small,
+.meta {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.diagnostic,
+.error,
+.warning {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.smallButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 4px 7px;
+  font-size: 11px;
+}
+
+.tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.task,
+.form {
+  padding: 9px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-base);
+}
+
+.taskTitle span {
+  margin-left: auto;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.task p {
+  margin: 5px 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.taskActions {
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.taskActions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.taskActions select,
+.form input,
+.form textarea {
+  box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+}
+
+.taskActions button,
+.formActions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.taskActions button:disabled,
+.formActions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.form {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.form input,
+.form textarea {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.form textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+
+.notice,
+.error {
+  padding: 9px;
+  font-size: 12px;
+}

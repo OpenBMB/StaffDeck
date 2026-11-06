@@ -12,6 +12,7 @@ import pytest
 
 from app.tools.mcp_client import (
     MCPClientError,
+    _MCPSession,
     _PipeReader,
     _read_response,
     _send_json,
@@ -22,9 +23,48 @@ from app.tools.mcp_client import (
 )
 
 
+class _PagedToolSession(_MCPSession):
+    def __init__(self, *, repeat_cursor: bool = False) -> None:
+        super().__init__({}, timeout_seconds=1)
+        self.repeat_cursor = repeat_cursor
+        self.requests: list[tuple[str, dict[str, object]]] = []
+
+    def _request(self, method: str, params: dict[str, object]):  # type: ignore[override]
+        self.requests.append((method, params))
+        if method == "initialize":
+            return {"capabilities": {"tools": {"listChanged": True}}}
+        if method != "tools/list":
+            raise AssertionError(f"unexpected method: {method}")
+        if params.get("cursor") is None:
+            return {"tools": [{"name": "existing"}], "nextCursor": "page-2"}
+        return {
+            "tools": [{"name": "newly_added"}],
+            "nextCursor": "page-2" if self.repeat_cursor else None,
+        }
+
+    def _notify(self, method: str, params: dict[str, object]) -> None:  # type: ignore[override]
+        self.requests.append((method, params))
+
+
 class _WindowsAnonymousPipe(io.StringIO):
     def fileno(self) -> int:
         raise OSError(10038, "在一个非套接字上尝试了一个操作")
+
+
+def test_tools_list_discovers_new_tools_from_all_cursor_pages() -> None:
+    session = _PagedToolSession()
+
+    tools, initialize_result = session.list_tools_with_capabilities()
+
+    assert [tool["name"] for tool in tools] == ["existing", "newly_added"]
+    assert initialize_result["capabilities"]["tools"]["listChanged"] is True
+    assert ("tools/list", {}) in session.requests
+    assert ("tools/list", {"cursor": "page-2"}) in session.requests
+
+
+def test_tools_list_rejects_repeated_cursor_instead_of_looping() -> None:
+    with pytest.raises(MCPClientError, match="重复分页游标"):
+        _PagedToolSession(repeat_cursor=True).list_tools_with_capabilities()
 
 
 class _FakeProcess:

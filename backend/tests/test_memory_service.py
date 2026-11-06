@@ -507,3 +507,37 @@ def _test_session() -> Session:
     )
     SQLModel.metadata.create_all(engine)
     return Session(engine)
+
+
+def test_memory_authorize_passes_request_staff_to_identity_source(monkeypatch) -> None:
+    """业务来源要求 tenant、Staff、actor 齐全；缺 Staff 会被判 PermissionDenied 冒成 500。"""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from staffdeck_harness.contracts.memory import MemoryCall
+    from staffdeck_harness.contracts.security import SecurityContext
+    from staffdeck_harness.memory import ProviderMemoryFacade
+
+    seen = {}
+
+    class FakeIdentitySource:
+        def resolve(self, context, identity_port):  # noqa: ANN001
+            seen["context"] = context
+            return SecurityContext("user_demo", "tenant_demo", actor_user_id="user_demo")
+
+    monkeypatch.setattr(
+        "staffdeck_harness.composition.sources.resolve_source", lambda registry, slot, db: FakeIdentitySource()
+    )
+    monkeypatch.setattr(
+        "staffdeck_harness.security.profile.Guard.require", lambda self, ctx, operation, resource: None
+    )
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(User(id="user_demo", tenant_id="tenant_demo", username="demo", password_hash="hash"))
+        db.commit()
+        facade = ProviderMemoryFacade(db, SimpleNamespace(invoke=lambda ctx, req: []), registry=SimpleNamespace(work_lease=nullcontext))
+
+        facade.call(MemoryCall("list", "tenant_demo", "user_demo", "agent_demo"), actor_id="user_demo", local=lambda: [])
+
+    assert (seen["context"].tenant_id, seen["context"].staff_id, seen["context"].user_id) == (
+        "tenant_demo", "agent_demo", "user_demo")

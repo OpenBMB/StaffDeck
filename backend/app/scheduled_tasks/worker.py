@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import signal
 import threading
 from time import sleep
@@ -9,11 +10,15 @@ from sqlmodel import Session
 
 from app.db import engine, init_db
 from app.db.seed import seed_demo_data
+from app.config import get_settings
 from app.scheduled_tasks.service import WORKER_SLEEP_SECONDS, due_scheduled_tasks, execute_scheduled_task
 
 
+logger = logging.getLogger(__name__)
+
 _stopped = False
 _background_thread: threading.Thread | None = None
+_scheduler_ready: bool | None = None
 
 
 def _handle_stop(_signum: int, _frame: object) -> None:
@@ -23,16 +28,49 @@ def _handle_stop(_signum: int, _frame: object) -> None:
 
 def run_worker(*, once: bool = False, poll_seconds: float = WORKER_SLEEP_SECONDS) -> None:
     init_db()
-    with Session(engine) as db:
-        seed_demo_data(db)
-    while not _stopped:
+    if get_settings().demo_seed_enabled:
         with Session(engine) as db:
-            due = due_scheduled_tasks(db)
-            for task in due:
-                execute_scheduled_task(db, task)
+            seed_demo_data(db)
+    while not _stopped:
+        try:
+            _run_due_tasks()
+        except Exception:  # noqa: BLE001 - a transient failure (e.g. "database is locked") must not end the worker
+            logger.exception("scheduled-task sweep failed; retrying after %.0fs", max(1.0, poll_seconds))
         if once:
             return
         sleep(max(1.0, poll_seconds))
+
+
+def _run_due_tasks() -> None:
+    global _scheduler_ready
+    from staffdeck_harness.modules.registry import peek_registry
+    from staffdeck_harness.contracts.manifest import SlotName
+    registry = peek_registry()
+    if registry is not None:
+        providers = [item for item in registry.providers(SlotName.STAFF_INGRESS)
+                     if item.manifest.metadata.get('ingress', item.manifest.module_id.removeprefix('ingress.')) == 'scheduler']
+        if len(providers) != 1:
+            if _scheduler_ready is not False:
+                logger.warning("scheduled-task dispatcher disabled; no due tasks will be claimed")
+            _scheduler_ready = False
+            return  # Disabled modules must not even claim tasks.
+        if _scheduler_ready is not True:
+            logger.info("scheduled-task dispatcher ready")
+        _scheduler_ready = True
+        from staffdeck_harness.runtime.services import maintenance_sessions
+        for db in maintenance_sessions():
+            for task in due_scheduled_tasks(db):
+                task_id = task.id
+                try:
+                    providers[0].provider.dispatch(db, task)
+                except Exception:  # One failed admission must not block other tasks.
+                    db.rollback()
+                    logger.exception("scheduled-task dispatch failed task_id=%s", task_id)
+        return
+    with Session(engine) as db:
+        due = due_scheduled_tasks(db)
+        for task in due:
+            execute_scheduled_task(db, task)
 
 
 def start_background_worker(*, poll_seconds: float = WORKER_SLEEP_SECONDS) -> None:

@@ -79,6 +79,20 @@ def test_exec_command_rejects_background_processes(
 @pytest.mark.parametrize(
     "command",
     [
+        "printf done 2>&1",
+        "curl 'https://example.com/search?a=1&b=2'",
+        "printf done >result.txt",
+    ],
+)
+def test_posix_validator_allows_foreground_redirection_and_quoted_ampersands(
+    command: str,
+) -> None:
+    command_module._validate_command(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "rm -rf ./generated-output",
         "curl https://example.com",
         "wget https://example.com/file",
@@ -152,6 +166,7 @@ def test_exec_command_builds_fixed_isolated_argv_and_structured_result(
     assert result.data["stdout"] == "done\n"
     assert result.data["cwd"] == "/workspace"
     assert result.data["sandbox"] == "bubblewrap"
+    assert result.data["process_isolation"] == {"mode": "unknown"}
     assert captured["cwd"] == workspace
     assert captured["timeout_seconds"] == 2
     assert captured["output_limit"] == 512
@@ -761,6 +776,8 @@ def test_bounded_subprocess_caps_output_and_terminates_timeout(tmp_path: Path) -
     assert output.stdout_bytes == 4096
     assert len(output.stdout) == 128
     assert output.output_truncated is True
+    assert output.isolation_mode == "posix_session"
+    assert output.isolation_details == {}
 
     timeout = command_module._run_bounded_process(
         [sys.executable, "-c", "import time; time.sleep(2)"],

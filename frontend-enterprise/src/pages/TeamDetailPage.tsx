@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Crown, MessageCircle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Crown, Download, Eye, FileJson, LoaderCircle, MessageCircle } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import {
@@ -27,6 +27,7 @@ import EmployeeAvatar from '../components/EmployeeAvatar';
 import { employeeDisplayName } from '../employee';
 import { EnterpriseRoute } from '../enums/routes';
 import { formatClientDateTime, parseBackendDateTime } from '../lib/timezone';
+import { MarkdownMessage } from './chat/chatHelpers';
 import type {
   AgentProfileRead,
   TeamBlackboardEntryRead,
@@ -63,6 +64,12 @@ const TEAM_EVENT_TYPE_LABELS: Record<string, string> = {
   review_override_rework: '人工改判退回',
   review_override_escalate: '人工改判升级',
   blackboard_written: '写入黑板',
+  wake_claimed: '任务唤醒已认领',
+  wake_completed: '任务唤醒已完成',
+  wake_failed: '任务唤醒失败',
+  wake_recovered: '恢复中断的任务唤醒',
+  member_execution_resumed: '恢复成员执行',
+  member_execution_skipped: '跳过重复成员执行',
 };
 
 export function teamEventTypeLabel(eventType: string): string {
@@ -84,6 +91,38 @@ const OVERRIDABLE_STATUSES = new Set(['review', 'escalated']);
 const AWARD_OVERRIDABLE_STATUSES = new Set(['bidding', 'pending']);
 
 const POOL_ASSIGNEE_VALUE = '__pool__';
+
+type TeamLogMessage = {
+  id?: string;
+  role?: string;
+  content?: string;
+  created_at?: string;
+};
+
+type TeamLogSession = {
+  session?: Record<string, unknown>;
+  messages?: TeamLogMessage[];
+  feedback?: Array<Record<string, unknown>>;
+  traces?: unknown[];
+  events?: Array<Record<string, unknown>>;
+  tool_invocations?: Array<Record<string, unknown>>;
+};
+
+type TeamLogPayload = {
+  schema_version?: string;
+  exported_at?: string;
+  team?: Record<string, unknown>;
+  summary?: {
+    task_count?: number;
+    wake_event_count?: number;
+    blackboard_entry_count?: number;
+    session_count?: number;
+  };
+  tasks?: unknown[];
+  wake_events?: unknown[];
+  blackboard_entries?: unknown[];
+  sessions?: TeamLogSession[];
+};
 
 export function taskPriorityLabel(priority: string): string {
   if (priority === 'high' || priority === 'urgent') return '高';
@@ -171,8 +210,75 @@ export default function TeamDetailPage({
   const [configBidRounds, setConfigBidRounds] = useState('1');
   const [savingConfig, setSavingConfig] = useState(false);
   const [startingChat, setStartingChat] = useState(false);
+  const [teamLogOpen, setTeamLogOpen] = useState(false);
+  const [teamLog, setTeamLog] = useState<TeamLogPayload | null>(null);
+  const [loadingTeamLog, setLoadingTeamLog] = useState(false);
   const [promotingEntryId, setPromotingEntryId] = useState<string | null>(null);
+  const [publicationEntry, setPublicationEntry] = useState<TeamBlackboardEntryRead | null>(null);
+  const [publicationTargets, setPublicationTargets] = useState<{ id: string; name: string }[]>([]);
+  const [publicationTarget, setPublicationTarget] = useState('');
+  const [publicationDefault, setPublicationDefault] = useState(false);
+  const [loadingPublicationTargets, setLoadingPublicationTargets] = useState(false);
+  const publicationRequest = useRef(0);
+  useEffect(() => {
+    setPublicationEntry(null);
+    setPromotingEntryId(null);
+    publicationRequest.current += 1;
+    return () => { publicationRequest.current += 1; };
+  }, [teamId]);
   const openedTaskParamRef = useRef<string | null>(null);
+  const memberScrollRef = useRef<HTMLDivElement | null>(null);
+  const [memberScrollEdges, setMemberScrollEdges] = useState({
+    overflow: false,
+    left: false,
+    right: false,
+  });
+
+  const teamMemberKey = useMemo(
+    () => (team?.members || []).map((member) => `${member.id}:${member.role}`).join('|'),
+    [team?.members],
+  );
+
+  const updateMemberScrollEdges = useCallback(() => {
+    const node = memberScrollRef.current;
+    if (!node) return;
+    const maxScrollLeft = Math.max(0, node.scrollWidth - node.clientWidth);
+    const overflow = maxScrollLeft > 1;
+    const nextEdges = {
+      overflow,
+      left: overflow && node.scrollLeft > 1,
+      right: overflow && node.scrollLeft < maxScrollLeft - 1,
+    };
+    setMemberScrollEdges((current) => (
+      current.overflow === nextEdges.overflow
+      && current.left === nextEdges.left
+      && current.right === nextEdges.right
+        ? current
+        : nextEdges
+    ));
+  }, []);
+
+  useEffect(() => {
+    const node = memberScrollRef.current;
+    if (!node) return;
+    node.scrollLeft = 0;
+    updateMemberScrollEdges();
+
+    node.addEventListener('scroll', updateMemberScrollEdges, { passive: true });
+    window.addEventListener('resize', updateMemberScrollEdges);
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(updateMemberScrollEdges);
+    resizeObserver?.observe(node);
+    if (node.firstElementChild instanceof HTMLElement) {
+      resizeObserver?.observe(node.firstElementChild);
+    }
+    return () => {
+      node.removeEventListener('scroll', updateMemberScrollEdges);
+      window.removeEventListener('resize', updateMemberScrollEdges);
+      resizeObserver?.disconnect();
+    };
+  }, [teamMemberKey, updateMemberScrollEdges]);
 
   const loadTeam = useCallback(async () => {
     try {
@@ -356,6 +462,38 @@ export default function TeamDetailPage({
     }
   }
 
+  async function openTeamLog() {
+    if (!teamId || loadingTeamLog) return;
+    setTeamLogOpen(true);
+    setLoadingTeamLog(true);
+    try {
+      const payload = await api.get<TeamLogPayload>(
+        `/api/enterprise/teams/${teamId}/export?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+      );
+      setTeamLog(payload);
+    } catch (error) {
+      setTeamLogOpen(false);
+      notify.error(error instanceof Error ? error.message : '加载完整日志失败');
+    } finally {
+      setLoadingTeamLog(false);
+    }
+  }
+
+  function downloadTeamLog() {
+    if (!teamLog) return;
+    const blob = new Blob([JSON.stringify(teamLog, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    const safeName = (team?.name || teamId).replace(/[^\w\-\u4e00-\u9fff]+/g, '-');
+    anchor.href = url;
+    anchor.download = `staffdeck-team-log-${safeName || teamId}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    notify.success('群聊完整日志已下载');
+  }
+
   async function addBoardEntry() {
     const content = boardContent.trim();
     if (!content) {
@@ -447,19 +585,46 @@ export default function TeamDetailPage({
     return '成员';
   }
 
-  async function promoteBoardEntry(entry: TeamBlackboardEntryRead) {
+  async function choosePublicationTarget(entry: TeamBlackboardEntryRead) {
+    const ticket = ++publicationRequest.current;
+    setPublicationEntry(entry);
+    setPublicationTargets([]);
+    setPublicationTarget('');
+    setPublicationDefault(false);
+    setLoadingPublicationTargets(true);
+    try {
+      const options = await api.get<{ targets: { id: string; name: string }[]; default_id?: string; can_use_default: boolean }>(
+        `/api/enterprise/teams/${teamId}/knowledge-targets?tenant_id=${TENANT_ID}`,
+      );
+      if (ticket !== publicationRequest.current) return;
+      setPublicationTargets(options.targets);
+      setPublicationDefault(options.can_use_default);
+      setPublicationTarget(options.targets.some((target) => target.id === options.default_id)
+        ? `resource:${options.default_id}` : options.can_use_default ? 'default' : '');
+    } catch (error) {
+      if (ticket === publicationRequest.current) notify.error(error instanceof Error ? error.message : '无法读取知识发布目标');
+    } finally {
+      if (ticket === publicationRequest.current) setLoadingPublicationTargets(false);
+    }
+  }
+
+  async function promoteBoardEntry(entry: TeamBlackboardEntryRead, targetId: string) {
     if (promotingEntryId) return;
+    const ticket = publicationRequest.current;
     setPromotingEntryId(entry.id);
     try {
       await api.post(`/api/enterprise/teams/${teamId}/blackboard/${entry.id}/promote`, {
         tenant_id: TENANT_ID,
+        ...(targetId !== 'default' ? { knowledge_base_id: targetId.slice('resource:'.length) } : {}),
       });
-      notify.success('已沉淀到知识库');
+      if (ticket !== publicationRequest.current) return;
+      notify.success('已提交入库');
+      setPublicationEntry(null);
       await loadBoard();
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '沉淀到知识库失败');
+      if (ticket === publicationRequest.current) notify.error(error instanceof Error ? error.message : '沉淀到知识库失败');
     } finally {
-      setPromotingEntryId(null);
+      if (ticket === publicationRequest.current) setPromotingEntryId(null);
     }
   }
 
@@ -684,15 +849,27 @@ export default function TeamDetailPage({
         >
           返回团队列表
         </Button>
-        <Button
-          type="button"
-          disabled={startingChat || !team}
-          onClick={() => void startTeamChat()}
-          className="h-[34px] gap-[6px] rounded-[10px] bg-[#18181a] px-[14px] text-[12px] font-normal text-white hover:bg-[#303030]"
-        >
-          <MessageCircle className="size-[14px]" />
-          {startingChat ? '进入中…' : '开始对话'}
-        </Button>
+        <div className="flex items-center gap-[8px]">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={loadingTeamLog || !team}
+            onClick={() => void openTeamLog()}
+            className="h-[34px] gap-[6px] rounded-[10px] border-[#e3e7f1] px-[14px] text-[12px] font-normal text-[#464c5e]"
+          >
+            {loadingTeamLog ? <LoaderCircle className="size-[14px] animate-spin" /> : <Eye className="size-[14px]" />}
+            {loadingTeamLog ? '加载中…' : '查看完整日志'}
+          </Button>
+          <Button
+            type="button"
+            disabled={startingChat || !team}
+            onClick={() => void startTeamChat()}
+            className="h-[34px] gap-[6px] rounded-[10px] bg-[#18181a] px-[14px] text-[12px] font-normal text-white hover:bg-[#303030]"
+          >
+            <MessageCircle className="size-[14px]" />
+            {startingChat ? '进入中…' : '开始对话'}
+          </Button>
+        </div>
       </div>
 
       <div className="mt-[16px] grid grid-cols-1 gap-[20px] lg:grid-cols-2">
@@ -764,31 +941,66 @@ export default function TeamDetailPage({
                   {leader && memberNode(leader, true)}
                   {leader && others.length > 0 && <div className="h-[14px] w-px bg-[#dbe1ec]" />}
                   {others.length > 0 && (
-                    <div className="flex max-w-full justify-center gap-[12px] overflow-x-auto">
-                      {others.map((member, index) => (
-                        <div key={member.id} className="flex flex-col items-center">
-                          {leader && (
-                            <>
-                              <div className="flex w-full">
-                                <div
-                                  className={cn(
-                                    '-mr-[6px] h-px w-[calc(50%+6px)]',
-                                    index > 0 && 'bg-[#dbe1ec]',
-                                  )}
-                                />
-                                <div
-                                  className={cn(
-                                    '-ml-[6px] h-px w-[calc(50%+6px)]',
-                                    index < others.length - 1 && 'bg-[#dbe1ec]',
-                                  )}
-                                />
-                              </div>
-                              <div className="h-[12px] w-px bg-[#dbe1ec]" />
-                            </>
-                          )}
-                          {memberNode(member, false)}
+                    <div className="relative w-full">
+                      {memberScrollEdges.left && (
+                        <div
+                          aria-hidden="true"
+                          data-scroll-edge="left"
+                          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-[44px] bg-gradient-to-r from-white via-white/85 to-transparent"
+                        />
+                      )}
+                      {memberScrollEdges.right && (
+                        <div
+                          aria-hidden="true"
+                          data-scroll-edge="right"
+                          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-[44px] bg-gradient-to-l from-white via-white/85 to-transparent"
+                        />
+                      )}
+                      <div
+                        ref={memberScrollRef}
+                        role="region"
+                        aria-label="团队成员列表"
+                        aria-describedby={memberScrollEdges.overflow ? 'team-member-scroll-hint' : undefined}
+                        tabIndex={0}
+                        className="max-w-full overflow-x-auto overscroll-x-contain pb-[8px] outline-none [scrollbar-color:#cfd5e2_transparent] [scrollbar-width:thin] focus-visible:ring-2 focus-visible:ring-[#a9c7ff] focus-visible:ring-offset-2 [&::-webkit-scrollbar]:h-[6px] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[#cfd5e2] [&::-webkit-scrollbar-track]:bg-transparent"
+                      >
+                        <div className="flex w-max min-w-full justify-center gap-[12px] px-[4px]">
+                          {others.map((member, index) => (
+                            <div key={member.id} className="flex flex-col items-center">
+                              {leader && (
+                                <>
+                                  <div className="flex w-full">
+                                    <div
+                                      className={cn(
+                                        '-mr-[6px] h-px w-[calc(50%+6px)]',
+                                        index > 0 && 'bg-[#dbe1ec]',
+                                      )}
+                                    />
+                                    <div
+                                      className={cn(
+                                        '-ml-[6px] h-px w-[calc(50%+6px)]',
+                                        index < others.length - 1 && 'bg-[#dbe1ec]',
+                                      )}
+                                    />
+                                  </div>
+                                  <div className="h-[12px] w-px bg-[#dbe1ec]" />
+                                </>
+                              )}
+                              {memberNode(member, false)}
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      </div>
+                      {memberScrollEdges.overflow && (
+                        <p
+                          id="team-member-scroll-hint"
+                          className="mt-[5px] flex items-center justify-center gap-[5px] text-[11px] text-[#858b9c]"
+                        >
+                          <ChevronLeft className="size-[12px]" aria-hidden="true" />
+                          横向滑动查看更多成员
+                          <ChevronRight className="size-[12px]" aria-hidden="true" />
+                        </p>
+                      )}
                     </div>
                   )}
                   {team && members.length === 0 && (
@@ -919,7 +1131,7 @@ export default function TeamDetailPage({
                     <button
                       type="button"
                       disabled={promoted || promotingEntryId === entry.id}
-                      onClick={() => void promoteBoardEntry(entry)}
+                      onClick={() => void choosePublicationTarget(entry)}
                       className="rounded-[8px] px-[8px] py-[4px] text-[12px] text-[#464c5e] transition-colors hover:bg-[#f6f6f6] disabled:cursor-not-allowed disabled:text-[#a7adbb]"
                     >
                       {promoted ? '已沉淀' : promotingEntryId === entry.id ? '沉淀中…' : '沉淀到知识库'}
@@ -1264,6 +1476,43 @@ export default function TeamDetailPage({
         </DialogContent>
       </Dialog>
 
+      <Dialog open={publicationEntry !== null} onOpenChange={(open) => {
+        if (!open && !promotingEntryId) { publicationRequest.current += 1; setPublicationEntry(null); }
+      }}>
+        <DialogContent className="w-[calc(100%-32px)] rounded-[16px] sm:max-w-[480px]">
+          <DialogTitle className="text-[16px] font-semibold text-foreground">沉淀到知识库</DialogTitle>
+          <p className="line-clamp-2 rounded-[10px] bg-muted px-[14px] py-[12px] text-[13px] leading-6 text-muted-foreground">
+            {publicationEntry?.content}
+          </p>
+          <div className="space-y-[8px]">
+            <label className="text-[13px] font-medium text-foreground" htmlFor="publication-target">目标知识库</label>
+            <Select value={publicationTarget} onValueChange={setPublicationTarget} disabled={loadingPublicationTargets || Boolean(promotingEntryId)}>
+              <SelectTrigger id="publication-target" aria-label="目标知识库"><SelectValue placeholder={loadingPublicationTargets ? '正在读取…' : '选择知识库'} /></SelectTrigger>
+              <SelectContent>
+                {publicationDefault && <SelectItem value="default">平台默认知识库</SelectItem>}
+                {publicationTargets.map((target) => <SelectItem key={target.id} value={`resource:${target.id}`}>{target.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-[12px] leading-5 text-muted-foreground">提交后由当前知识模块处理，可在知识库中查看入库进度。</p>
+            {!loadingPublicationTargets && !publicationDefault && publicationTargets.length === 0 && <p className="text-[12px] text-muted-foreground">暂无可写入的知识库，请先创建或获取写入权限。</p>}
+          </div>
+          <div className="flex justify-end gap-[8px] pt-[8px]">
+            <Button variant="outline" disabled={Boolean(promotingEntryId)} onClick={() => { publicationRequest.current += 1; setPublicationEntry(null); }}>取消</Button>
+            <Button disabled={!publicationTarget || loadingPublicationTargets || Boolean(promotingEntryId)} onClick={() => {
+              if (publicationEntry) void promoteBoardEntry(publicationEntry, publicationTarget);
+            }}>{promotingEntryId ? '提交中…' : '确认提交'}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <TeamLogDialog
+        open={teamLogOpen}
+        loading={loadingTeamLog}
+        log={teamLog}
+        onClose={() => setTeamLogOpen(false)}
+        onDownload={downloadTeamLog}
+      />
+
       <Dialog
         open={taskDialogOpen}
         onOpenChange={(open) => {
@@ -1381,5 +1630,202 @@ export default function TeamDetailPage({
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function TeamLogDialog({
+  open,
+  loading,
+  log,
+  onClose,
+  onDownload,
+}: {
+  open: boolean;
+  loading: boolean;
+  log: TeamLogPayload | null;
+  onClose: () => void;
+  onDownload: () => void;
+}) {
+  const sessions = log?.sessions || [];
+  const summary = log?.summary || {};
+  const teamName = String(log?.team?.name || '');
+  const [expandedSessionIds, setExpandedSessionIds] = useState<Set<string>>(() => new Set());
+
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+      <DialogContent
+        aria-describedby={undefined}
+        className="flex max-h-[calc(100dvh-3rem)] w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-[14px] p-0 sm:max-w-[1180px]"
+      >
+        <div className="flex shrink-0 items-center justify-between gap-[16px] border-b border-[#edf0f5] px-[24px] py-[18px] pr-[54px]">
+          <div className="flex min-w-0 items-center gap-[10px]">
+            <span className="flex size-[32px] shrink-0 items-center justify-center rounded-[10px] bg-[#eef4ff] text-[#1a71ff]">
+              <FileJson className="size-[16px]" />
+            </span>
+            <div className="min-w-0">
+              <DialogTitle className="truncate text-[15px] font-semibold text-[#18181a]">
+                团队完整日志
+              </DialogTitle>
+              <p className="mt-[2px] truncate text-[11px] text-[#858b9c]">
+                {teamName || '团队'} · 在线查看任务调度、成员会话、模型事件和工具调用
+              </p>
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!log || loading}
+            onClick={onDownload}
+            className="h-[32px] shrink-0 gap-[6px] rounded-[9px] border-[#e3e7f1] px-[12px] text-[12px] font-normal text-[#464c5e]"
+          >
+            <Download className="size-[13px]" />
+            下载 JSON
+          </Button>
+        </div>
+
+        {loading ? (
+          <div className="flex min-h-[360px] flex-1 items-center justify-center gap-[8px] text-[13px] text-[#858b9c]">
+            <LoaderCircle className="size-[18px] animate-spin text-[#1a71ff]" />
+            正在加载完整日志…
+          </div>
+        ) : log ? (
+          <div className="min-h-0 flex-1 overflow-y-auto bg-[#fafbfc] px-[24px] py-[20px]">
+            <div className="grid grid-cols-2 gap-[10px] sm:grid-cols-4">
+              {[
+                ['任务数', summary.task_count ?? log.tasks?.length ?? 0],
+                ['唤醒事件', summary.wake_event_count ?? log.wake_events?.length ?? 0],
+                ['黑板条目', summary.blackboard_entry_count ?? log.blackboard_entries?.length ?? 0],
+                ['成员会话', summary.session_count ?? sessions.length],
+              ].map(([label, value]) => (
+                <div key={String(label)} className="rounded-[12px] border border-[#e7eaf0] bg-white px-[14px] py-[12px]">
+                  <p className="text-[11px] text-[#858b9c]">{label}</p>
+                  <p className="mt-[3px] text-[20px] font-semibold tracking-[-0.02em] text-[#18181a]">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <section className="mt-[16px] rounded-[14px] border border-[#e3e7f1] bg-white p-[14px]">
+              <div className="mb-[10px] flex items-center justify-between gap-[8px]">
+                <div>
+                  <h3 className="text-[13px] font-semibold text-[#18181a]">成员会话</h3>
+                  <p className="mt-[2px] text-[11px] text-[#858b9c]">逐个查看成员消息、模型事件和工具调用</p>
+                </div>
+                <span className="rounded-full bg-[#eef4ff] px-[9px] py-[3px] text-[11px] text-[#1a71ff]">
+                  {sessions.length}
+                </span>
+              </div>
+
+              {sessions.length > 0 ? (
+                <div className="grid gap-[8px]">
+                  {sessions.map((sessionLog, index) => {
+                    const session = sessionLog.session || {};
+                    const messages = sessionLog.messages || [];
+                    const events = sessionLog.events || [];
+                    const invocations = sessionLog.tool_invocations || [];
+                    const sessionId = String(session.id || session.session_id || index);
+                    return (
+                      <details
+                        key={sessionId}
+                        className="group rounded-[10px] border border-[#e7eaf0] bg-[#fcfcfd] open:bg-white"
+                        onToggle={(event) => {
+                          const expanded = event.currentTarget.open;
+                          setExpandedSessionIds((current) => {
+                            const next = new Set(current);
+                            if (expanded) next.add(sessionId);
+                            else next.delete(sessionId);
+                            return next;
+                          });
+                        }}
+                      >
+                        <summary className="cursor-pointer list-none px-[13px] py-[11px] marker:hidden">
+                          <div className="flex items-center justify-between gap-[12px]">
+                            <div className="min-w-0">
+                              <p className="truncate text-[12px] font-medium text-[#303442]">
+                                {String(session.title || sessionId)}
+                              </p>
+                              <p className="mt-[2px] truncate text-[11px] text-[#858b9c]">
+                                {String(session.agent_name || session.agent_id || '未指定员工')}
+                                {session.status ? ` · ${String(session.status)}` : ''}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 flex-wrap justify-end gap-[5px] text-[10px] text-[#697086]">
+                              <span className="rounded-full bg-[#f1f3f7] px-[7px] py-[3px]">消息 {messages.length}</span>
+                              <span className="rounded-full bg-[#f1f3f7] px-[7px] py-[3px]">事件 {events.length}</span>
+                              <span className="rounded-full bg-[#f1f3f7] px-[7px] py-[3px]">工具调用 {invocations.length}</span>
+                            </div>
+                          </div>
+                        </summary>
+
+                        {expandedSessionIds.has(sessionId) && (
+                        <div className="border-t border-[#edf0f5] px-[13px] py-[12px]">
+                          <div className="grid gap-[8px]">
+                            {messages.map((message, messageIndex) => {
+                              const role = String(message.role || 'assistant');
+                              const content = String(message.content || '');
+                              return (
+                                <div
+                                  key={message.id || `${sessionId}-message-${messageIndex}`}
+                                  className={cn('flex', role === 'user' ? 'justify-end' : 'justify-start')}
+                                >
+                                  <div
+                                    className={cn(
+                                      'max-w-[88%] rounded-[10px] px-[12px] py-[9px] text-[12px] leading-[1.65]',
+                                      role === 'user'
+                                        ? 'bg-[#eef4ff] text-[#24456f]'
+                                        : 'border border-[#e7eaf0] bg-white text-[#303442]',
+                                    )}
+                                  >
+                                    <div className="mb-[4px] text-[10px] font-medium text-[#858b9c]">
+                                      {role === 'user' ? '用户' : role === 'assistant' ? '数字员工' : role}
+                                    </div>
+                                    {role === 'assistant'
+                                      ? <MarkdownMessage content={content} />
+                                      : <p className="whitespace-pre-wrap">{content}</p>}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {messages.length === 0 && (
+                              <p className="py-[12px] text-center text-[11px] text-[#a7adbb]">暂无消息</p>
+                            )}
+                          </div>
+
+                          {(events.length > 0 || invocations.length > 0) && (
+                            <details className="mt-[10px] rounded-[9px] border border-[#e7eaf0] bg-[#fafbfc] px-[11px] py-[8px]">
+                              <summary className="cursor-pointer text-[11px] font-medium text-[#60677a]">原始事件与工具调用</summary>
+                              <pre className="mt-[8px] max-h-[420px] overflow-auto rounded-[8px] bg-[#18181a] p-[11px] text-[10px] leading-[1.55] text-[#d8e2f0]">
+                                {JSON.stringify({
+                                  traces: sessionLog.traces || [],
+                                  events,
+                                  tool_invocations: invocations,
+                                }, null, 2)}
+                              </pre>
+                            </details>
+                          )}
+                        </div>
+                        )}
+                      </details>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="py-[24px] text-center text-[12px] text-[#a7adbb]">暂无成员会话</p>
+              )}
+            </section>
+
+            <details className="mt-[12px] rounded-[12px] border border-[#e3e7f1] bg-white px-[14px] py-[11px]">
+              <summary className="cursor-pointer text-[12px] font-medium text-[#464c5e]">查看调度、黑板与完整原始 JSON</summary>
+              <pre className="mt-[10px] max-h-[560px] overflow-auto rounded-[8px] bg-[#18181a] p-[12px] text-[10px] leading-[1.55] text-[#d8e2f0]">
+                {JSON.stringify(log, null, 2)}
+              </pre>
+            </details>
+
+            <p className="mt-[10px] text-right text-[10px] text-[#a7adbb]">
+              导出时间：{log.exported_at ? formatClientDateTime(log.exported_at) : '-'}
+            </p>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
   );
 }

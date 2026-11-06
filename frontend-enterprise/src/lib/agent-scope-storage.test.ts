@@ -50,3 +50,11 @@ describe('team agent-scope helpers', () => {
     expect(readEmployeeScope()).toBe('');
   });
 });
+
+it('persists only opaque digital-resource identifiers and rejects profiles or credentials', async () => {
+  const { persistSharedAgentScope } = await import('./agent-scope-storage');
+  persistSharedAgentScope('agent_existing-id');
+  expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe('agent_existing-id');
+  persistSharedAgentScope('{"name":"person","api_key":"value"}');
+  expect(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)).toBe('agent_existing-id');
+});

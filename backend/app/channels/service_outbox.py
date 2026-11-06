@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from app.channels.storage import channel_session
+
 import logging
 import threading
+import time
 from datetime import timedelta
 
 from sqlalchemy import func, or_, update
@@ -34,6 +37,7 @@ _REACTION_KINDS = {"reaction_add", "reaction_remove"}
 # 启动重置卡死投递的阈值:仅重置 sending_since 为空或早于此秒数的 sending 行,
 # 阈值内的视为仍被在飞 daemon 持有(避免交错启动重复投递)
 SENDING_STALE_SECONDS = 120
+STUCK_RESET_INTERVAL_SECONDS = 60
 _delivery_thread: threading.Thread | None = None
 _reaction_delivery_thread: threading.Thread | None = None
 _delivery_stop = threading.Event()
@@ -188,6 +192,9 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
             binding = _find_active_binding_for_agent(db, chat_session)
         if not binding:
             raise RuntimeError("渠道会话无法定位有效绑定")
+        from staffdeck_harness.channels.host import authorize_send
+
+        authorize_send(binding)
         if not binding_id:
             # 精确恢复成功后持久化归属，后续 staging/delivery 不再走 legacy 分支。
             conflicting_session = db.exec(
@@ -221,6 +228,8 @@ def stage_channel_delivery(db: Session, chat_session: ChatSession, message: Mess
             return
         if binding.channel == "feishu":
             valid_target = bool(target.get("message_id") or target.get("receive_id"))
+        elif binding.channel == "wechat_kf":
+            valid_target = bool(target.get("to_user_id") and target.get("open_kfid"))
         else:
             valid_target = bool(target.get("to_user_id") and target.get("context_token"))
         if not valid_target:
@@ -534,6 +543,9 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
             return
     try:
         adapter = get_channel_adapter(binding.channel)
+        from staffdeck_harness.channels.host import authorize_send
+
+        authorize_send(binding, cleanup=allow_inactive_reaction)
         target = dict(delivery.target_json or {})
         sent_message_id: str | None = None
         if delivery.kind == "reaction_add":
@@ -594,11 +606,13 @@ def _deliver_one_locked(db: Session, delivery: ChannelDelivery) -> None:
         )
         logger.warning("渠道投递失败(第 %s 次) delivery=%s: %s", delivery.attempts, delivery.id, exc)
         return
-    # handoff_notice 投递成功后,把飞书返回的 message_id 回写到 delivery 与关联的
-    # HumanHandoffRequest.notify_message_id,阶段 4 据此关联处理人的飞书回复。
-    if delivery.kind == "handoff_notice" and sent_message_id:
+    # handoff_notice/handoff_ack 投递成功后,把飞书返回的 message_id 回写到 delivery;
+    # handoff_notice 额外同步到 HumanHandoffRequest.notify_message_id。阶段 4 据此
+    # 关联处理人的飞书引用回复(含对确认消息的再次回复)。
+    if delivery.kind in {"handoff_notice", "handoff_ack"} and sent_message_id:
         delivery.message_id = sent_message_id
-        _write_handoff_notify_message_id(db, delivery, sent_message_id)
+        if delivery.kind == "handoff_notice":
+            _write_handoff_notify_message_id(db, delivery, sent_message_id)
     if channel_reaction_token(binding.channel) and delivery.kind not in _REACTION_KINDS:
         event = _reaction_event_for_delivery(db, delivery, binding.channel)
         target = delivery.target_json or {}
@@ -766,11 +780,17 @@ def _run_delivery_lane(
 ) -> None:
     use_engine = db_engine or engine
     interval = poll_seconds if poll_seconds is not None else get_settings().channel_delivery_poll_seconds
-    with Session(use_engine) as db:
+    with channel_session(use_engine) as db:
         _reset_stuck_deliveries(db, reaction_lane=reaction_lane)
+    last_reset = time.monotonic()
     while True:
         try:
-            with Session(use_engine) as db:
+            with channel_session(use_engine) as db:
+                # 本 lane 的投递都在这个线程里同步做完，两批之间没有在飞的行；
+                # 此时仍卡在 sending 的是崩溃或 connector 交接遗留的，定期重置而不只在启动时。
+                if time.monotonic() - last_reset >= STUCK_RESET_INTERVAL_SECONDS:
+                    last_reset = time.monotonic()
+                    _reset_stuck_deliveries(db, reaction_lane=reaction_lane)
                 _deliver_due(db, reaction_lane=reaction_lane)
         except Exception:
             logger.exception("渠道投递守护轮询失败")
@@ -911,6 +931,77 @@ def _resolve_assignee_feishu_open_id(
     return None
 
 
+def resolve_assignee_channel_identity(
+    db: Session,
+    binding: ChannelBinding,
+    assignee_user_id: str | None,
+) -> ChannelIdentity | None:
+    """按当前 binding 渠道与 scope 解析 assignee 的非群聊渠道身份。
+
+    与 _resolve_assignee_feishu_open_id 同一套 scope 隔离逻辑,
+    但渠道随 binding 走,供通用 handoff 通知投递使用(飞书/企微等)。
+    未命中返回 None(网页收件箱兜底)。
+    """
+    scope = external_account_scope(db, binding)
+    if not assignee_user_id:
+        return None
+    identity = db.exec(
+        select(ChannelIdentity).where(
+            ChannelIdentity.tenant_id == binding.tenant_id,
+            ChannelIdentity.channel == binding.channel,
+            ChannelIdentity.external_account_scope == scope,
+            ChannelIdentity.staffdeck_user_id == assignee_user_id,
+            ~ChannelIdentity.external_user_id.startswith("group:"),
+        )
+    ).first()
+    return identity or None
+
+
+# 支持 handoff 通知私聊投递的渠道:适配器具备"指定用户主动私聊"能力。
+# 钉钉/微信适配器只能回会话内消息(依赖 session_webhook/context_token),
+# 无法主动私聊处理人,故不在集合内。
+HANDOFF_NOTIFY_CHANNELS = frozenset({"feishu", "wecom"})
+# 用户重复触发同一个 pending handoff 时,避免短时间内刷屏,但允许长期未处理的
+# 请求重新通知处理人。
+HANDOFF_NOTIFY_RETRY_SECONDS = 300
+
+# 各渠道 handoff 通知的投递 target 构造。
+_HANDOFF_NOTIFY_TARGET_BUILDERS = {
+    "feishu": lambda external_user_id, handoff_id: {
+        "receive_id_type": "open_id",
+        "receive_id": external_user_id,
+        "handoff_id": handoff_id,
+    },
+    "wecom": lambda external_user_id, handoff_id: {
+        "to_user_id": external_user_id,
+        "handoff_id": handoff_id,
+    },
+}
+
+
+def resolve_handoff_notify_binding(
+    db: Session,
+    tenant_id: str,
+    notify_channel: str,
+) -> ChannelBinding | None:
+    """按通知渠道偏好解析可达的投递 binding。
+
+    notify_channel 为具体渠道(如 feishu)时,在租户内找该渠道的 active binding
+    (排除团队绑定与非交付渠道);找不到返回 None。
+    """
+    notify_channel = str(notify_channel or "").strip()
+    if not notify_channel or notify_channel == "web":
+        return None
+    bindings = db.exec(
+        select(ChannelBinding).where(
+            ChannelBinding.tenant_id == tenant_id,
+            ChannelBinding.channel == notify_channel,
+            ChannelBinding.status == "active",
+        )
+    ).all()
+    return next((row for row in bindings if not row.team_id), None)
+
+
 def _write_handoff_notify_message_id(
     db: Session,
     delivery: ChannelDelivery,
@@ -1003,7 +1094,9 @@ def _build_handoff_problem_description(
         if fallback:
             return fallback[:600]
         return "当前 SOP 需要人工确认后继续执行。"
-    return "\n".join(parts)
+    # 截断保证整条通知(含上下文摘要)不超过渠道单条消息上限:超限会拆分多条,
+    # 处理人引用回复时只有末条消息 id 可关联,拆分会破坏引用回复匹配。
+    return "\n".join(parts)[:600]
 
 
 def notify_handoff_assignee(
@@ -1013,37 +1106,55 @@ def notify_handoff_assignee(
     pending_question: str,
     context_summary: str,
 ) -> None:
-    """转人工时给 assignee 发飞书私聊通知(kind=handoff_notice)。
+    """转人工时给 assignee 发渠道私聊通知(kind=handoff_notice)。
 
-    主链路:assignee_user_id → 当前 binding scope 下的 ChannelIdentity → open_id。
-    无可用 open_id 时跳过(网页收件箱兜底)。任何异常仅记日志,不影响 handoff 主流程。
+    通用链路:assignee_user_id → 当前 binding scope 下的非群聊 ChannelIdentity
+    → 外部用户 id(open_id/chat_id)。按 binding.channel 构造各渠道投递 target,
+    经 outbox worker 用对应渠道 adapter 投递。无可用身份时跳过(网页收件箱兜底)。
+    任何异常仅记日志,不影响 handoff 主流程。
     """
     try:
+        from app.channels.adapters import get_channel_adapter
+
+        adapter = get_channel_adapter(binding.channel)
+        build_target = getattr(adapter, "handoff_target", None)
+        if not callable(build_target):
+            logger.info(
+                "handoff 通知跳过:渠道暂不支持私聊通知 handoff=%s binding=%s channel=%s",
+                handoff.id,
+                binding.id,
+                binding.channel,
+            )
+            return
         existing_notice = db.exec(
             select(ChannelDelivery).where(
                 ChannelDelivery.tenant_id == binding.tenant_id,
                 ChannelDelivery.binding_id == binding.id,
                 ChannelDelivery.kind == "handoff_notice",
                 ChannelDelivery.session_id == f"handoff:{handoff.id}",
-            )
+            ).order_by(ChannelDelivery.created_at.desc())
         ).first()
-        if existing_notice:
+        if existing_notice and (
+            existing_notice.status == "pending"
+            or (
+                existing_notice.status == "delivered"
+                and (utc_now() - existing_notice.created_at).total_seconds()
+                < HANDOFF_NOTIFY_RETRY_SECONDS
+            )
+        ):
             return
-        open_id = _resolve_assignee_feishu_open_id(
-            db, binding, handoff.assignee_user_id
-        )
-        if not open_id:
+        identity = resolve_assignee_channel_identity(db, binding, handoff.assignee_user_id)
+        external_user_id = identity.external_user_id if identity else None
+        if not external_user_id:
             logger.info(
-                "飞书 handoff 通知跳过:assignee 无可用 open_id handoff=%s binding=%s",
+                "handoff 通知跳过:assignee 在当前绑定作用域无可私聊身份 handoff=%s binding=%s assignee=%s",
                 handoff.id,
                 binding.id,
+                handoff.assignee_user_id,
             )
             return
-        # assignee 显示名:从 User 表取,无则空
-        assignee = db.get(User, handoff.assignee_user_id) if handoff.assignee_user_id else None
-        name = ""
-        if assignee:
-            name = str(assignee.display_name or assignee.username or "").strip()
+        from staffdeck_harness.runtime.identity_directory import user_names
+        name = user_names(db, binding.tenant_id, [handoff.assignee_user_id]).get(handoff.assignee_user_id, '') if handoff.assignee_user_id else ''
         problem_description = _build_handoff_problem_description(db, handoff, binding)
         text_parts = [
             f"【人工介入转接】{'已转接给真人员工 ' + name if name else '有一条人工介入待处理'}",
@@ -1055,13 +1166,10 @@ def notify_handoff_assignee(
             text_parts.append("上下文:")
             text_parts.append(context_summary[:800])
         text_parts.append("")
-        text_parts.append("如要回复本条消息，请在开头加上 /回复反馈 然后输入答复内容。")
+        text_parts.append(getattr(adapter, "handoff_reply_hint", None) or f"请发送 /回复反馈 {handoff.id} <答复内容> 精确回复此请求。")
         text = "\n".join(text_parts)
-        target = {
-            "receive_id_type": "open_id",
-            "receive_id": open_id,
-            "handoff_id": handoff.id,
-        }
+        target = build_target(external_user_id, handoff.id)
+        target["handoff_id"] = handoff.id
         db.add(
             ChannelDelivery(
                 tenant_id=binding.tenant_id,
@@ -1079,4 +1187,4 @@ def notify_handoff_assignee(
         db.commit()
     except Exception:
         db.rollback()
-        logger.exception("飞书 handoff 通知登记失败 handoff=%s binding=%s", handoff.id, binding.id)
+        logger.exception("handoff 通知登记失败 handoff=%s binding=%s", handoff.id, binding.id)

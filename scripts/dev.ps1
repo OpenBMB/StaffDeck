@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $candidates = @(
+  [pscustomobject]@{ File = (Join-Path $root "backend\.venv\Scripts\python.exe"); Prefix = @() },
   [pscustomobject]@{ File = $env:PYTHON; Prefix = @() },
   [pscustomobject]@{ File = "py"; Prefix = @("-3.11") },
   [pscustomobject]@{ File = "py"; Prefix = @("-3") },

@@ -1,0 +1,79 @@
+packages:
+  - vendor/*
+  - packages/*/*
+  # The Landlock launcher is developed with its harness consumers but keeps
+  # its native build and publication scripts under native/landlock-run.
+  - native/landlock-run
+  - native/landlock-run/packages/*
+  # Product assemblies over the package tier; apps/cli owns the `dsh` bin.
+  - apps/*
+  - website
+  # Deploy root of the single-exe build: a pure dependency manifest whose
+  # closure is what the exe bundles and what the Python runtime distributes.
+  - python/sdk-runtime
+
+# Vendored framework packages keep their upstream semver ranges, while local
+# builds must resolve those matching names to this workspace's pinned sources.
+linkWorkspacePackages: true
+
+overrides:
+  proxy-addr: 2.0.8
+  '@deepseek-ai/cosmokit': 'link:vendor/cosmokit'
+  '@deepseek-ai/schemastery': 'link:vendor/schemastery'
+
+peerDependencyRules:
+  allowedVersions:
+    typescript: '>=5 <7'
+
+# pnpm 10+ blocks any dependency shipping an install/build script until it is
+# explicitly reviewed here (strictDepBuilds defaults to true: an unlisted script
+# is a hard install error). Every such package MUST be listed; we deny by
+# default and only allow scripts we need. esbuild (native binary) and lefthook
+# (git hooks) genuinely need theirs.
+allowBuilds:
+  esbuild: true
+  lefthook: true
+  # Cross-platform boundary for the persistent PTY backend, including ConPTY on Windows.
+  node-pty: true
+  # Pulled in by @earendil-works/pi-ai (optional LLM API backend). pnpm lists
+  # them only because they ship lifecycle scripts, but those are no-ops we don't
+  # need, so we deny them — install still succeeds.
+  '@google/genai': false
+  protobufjs: false
+  node-addon-require-builtin: false
+  # JSONL durability calls MoveFileExW with write-through publication on Windows.
+  koffi: true
+  # The Python runtime deploy includes the reviewed workspace postinstall that
+  # restores the executable bit on node-pty's macOS spawn helper.
+  '@deepseek-ai/dsh-subprocess-local@file:packages/subprocess/subprocess-local': true
+
+minimumReleaseAgeExclude:
+  # Fresh pi-ai releases carry the model catalog updates that are the whole
+  # point of bumping it; waiting out the release age would defeat that.
+  - '@earendil-works/pi-ai@0.84.2'
+  - node-addon-native-custom-loader@0.1.4
+  - node-addon-require-builtin-darwin-arm64@0.1.4
+  - node-addon-require-builtin-darwin-x64@0.1.4
+  - node-addon-require-builtin-linux-arm64-gnu@0.1.4
+  - node-addon-require-builtin-linux-x64-gnu@0.1.4
+  - node-addon-require-builtin-win32-arm64-msvc@0.1.4
+  - node-addon-require-builtin-win32-ia32-msvc@0.1.4
+  - node-addon-require-builtin-win32-x64-msvc@0.1.4
+  - node-addon-require-builtin@0.1.4
+  # The active pnpm supply-chain policy blocks this reviewed runtime closure
+  # until its release-age window expires unless every exact package is exempt.
+  - '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.241'
+  - '@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.241'
+  - '@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.241'
+  - '@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.241'
+  - '@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.241'
+  - '@anthropic-ai/claude-agent-sdk-linux-x64@0.3.241'
+  - '@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.241'
+  - '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.241'
+  - '@anthropic-ai/claude-agent-sdk@0.3.241'
+  # All platform aliases resolve to the @openai/codex package name, so their
+  # reviewed exact versions must share one version-union policy entry.
+  - '@openai/codex@0.149.1||0.149.1-darwin-arm64||0.149.1-darwin-x64||0.149.1-linux-arm64||0.149.1-linux-x64||0.149.1-win32-arm64||0.149.1-win32-x64'
+
+patchedDependencies:
+  node-pty@1.2.0-beta.15: patches/node-pty@1.2.0-beta.15.patch

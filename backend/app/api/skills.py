@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from pydantic import ValidationError
+
 import base64
 import json
 import re
 import zipfile
 from collections.abc import Iterator
 from io import BytesIO
-from time import sleep
+from time import monotonic, sleep
 from xml.etree import ElementTree
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +23,7 @@ from app.agents.branching import (
     ensure_private_resource_binding,
     get_agent,
     hide_open_gallery_binding,
+    is_bound_resource_visible_for_agent,
     is_open_gallery_resource,
     mark_resource_open_gallery,
     project_skill_with_branch,
@@ -27,7 +31,9 @@ from app.agents.branching import (
     rollback_branch,
     update_branch_skill,
     user_creator_metadata,
+    visible_knowledge_base_versions,
     visible_skill_rows,
+    visible_tool_rows,
 )
 from app.async_jobs import enqueue_async_job
 from app.db import get_session
@@ -35,6 +41,9 @@ from app.db.models import (
     AgentEvent,
     AgentResourceBinding,
     AgentSkillBranchVersion,
+    ChannelBinding,
+    ChannelIdentity,
+    GeneralSkill,
     ModelConfig,
     Skill,
     SkillFeedback,
@@ -65,6 +74,7 @@ from app.skills.skill_schema import (
     SkillRewriteResponse,
     SkillVersionRead,
     SkillUpdateRequest,
+    skill_card_from_persisted,
 )
 from app.skills.stream_jobs import SkillStreamEvent, SkillStreamJob, stream_jobs
 from app.skills.step_ids import skill_card_with_unique_step_ids
@@ -75,11 +85,39 @@ from app.skills.nesting import (
     validate_sop_nesting,
 )
 
+_CHANNEL_LABELS = {"wechat": "微信", "wecom": "企业微信", "feishu": "飞书", "dingtalk": "钉钉"}
+
 router = APIRouter(
     prefix="/api/enterprise/skills",
     tags=["enterprise:skills"],
     dependencies=[Depends(get_current_user)],
 )
+
+
+def validate_published_sop(db: Session, tenant_id: str, agent_id: str | None, sop_id: str) -> None:
+    """Validate the published instance through the same module sources/compiler as runtime."""
+    from app.config import get_settings
+    from staffdeck_harness.composition.sources import validate_configuration
+    from staffdeck_harness.contracts.errors import ModuleSdkError
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.modules.registry import get_registry
+    db.flush()
+    try:
+        validate_configuration(get_registry(get_settings()), db, SourceContext(tenant_id, agent_id), sop_id=sop_id)
+    except (ModuleSdkError, ValueError, LookupError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"SOP 模块装配无效：{exc}") from exc
+
+
+def _read_persisted_skill_content(value):
+    """Keep malformed persisted drafts inspectable; writes and execution stay strict."""
+    try:
+        content, _warnings = skill_card_with_unique_step_ids(skill_card_from_persisted(value))
+        return content, []
+    except ValidationError as exc:
+        if not isinstance(value, dict):
+            raise
+        return deepcopy(value), [item["msg"] for item in exc.errors(include_input=False, include_url=False)]
 
 
 def skill_read(
@@ -91,7 +129,7 @@ def skill_read(
     skill_stats = _stats_for(all_stats, row.skill_id, row.version)
     total_stats = all_stats.get(row.skill_id, {})
     recent_skill_stats = (recent_stats or {}).get(row.skill_id, {})
-    content, _warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(row.content_json))
+    content, validation_errors = _read_persisted_skill_content(row.content_json)
     branch_meta = getattr(row, "agent_branch_meta", {}) or {}
     return SkillRead(
         id=row.id,
@@ -102,6 +140,7 @@ def skill_read(
         business_domain=row.business_domain,
         description=row.description,
         content=content,
+        validation_errors=validation_errors,
         status=row.status,
         call_count=int(skill_stats.get("call_count", 0)),
         positive_feedback_count=int(skill_stats.get("positive_feedback_count", 0)),
@@ -134,7 +173,7 @@ def skill_version_read(
     row: SkillVersion, stats: dict[str, dict[str, float | int]] | None = None
 ) -> SkillVersionRead:
     skill_stats = _stats_for(stats or {}, row.skill_id, row.version)
-    content, _warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(row.content_json))
+    content, validation_errors = _read_persisted_skill_content(row.content_json)
     return SkillVersionRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -144,6 +183,7 @@ def skill_version_read(
         business_domain=row.business_domain,
         description=row.description,
         content=content,
+        validation_errors=validation_errors,
         status=row.status,
         call_count=int(skill_stats.get("call_count", 0)),
         positive_feedback_count=int(skill_stats.get("positive_feedback_count", 0)),
@@ -156,16 +196,18 @@ def skill_version_read(
 
 
 def _branch_version_read(row: AgentSkillBranchVersion) -> SkillVersionRead:
-    content, _warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(row.content_json))
+    content, validation_errors = _read_persisted_skill_content(row.content_json)
+    data = content if isinstance(content, dict) else content.model_dump()
     return SkillVersionRead(
         id=row.id,
         tenant_id=row.tenant_id,
         skill_id=row.skill_id,
         version=row.version,
-        name=content.name,
-        business_domain=content.business_domain,
-        description=content.description,
+        name=data.get("name") or row.skill_id,
+        business_domain=data.get("business_domain"),
+        description=data.get("description"),
         content=content,
+        validation_errors=validation_errors,
         status=row.status,
         call_count=0,
         positive_feedback_count=0,
@@ -194,34 +236,86 @@ def list_skills(
 
 
 def _validate_handoff_assignees(db: Session, content: SkillCard, tenant_id: str) -> None:
-    """校验 SOP 人工节点的 assignee_user_id:必须存在、同租户、source='web'(内部成员)。"""
-    assignee_ids = {
-        node.assignee_user_id
+    """校验 SOP 人工节点的处理人:由当前身份目录确认存在、同租户且启用。
+
+    assignee_notify_channel 为 None 时按默认投递(网页收件箱,可达则渠道通知);
+    为 "web" 时仅网页端;为具体渠道时要求该渠道支持私聊通知(有可用适配器),
+    且该成员在租户内任一该渠道 active 员工绑定的作用域下绑定了非群聊渠道身份
+    (scope 级可达,跨企业绑定不互通),否则渠道转接不可达。
+    """
+    assignee_specs = {
+        (node.assignee_user_id.strip(), str(node.assignee_notify_channel or "").strip())
         for node in content.nodes
         if node.assignee_user_id and node.assignee_user_id.strip()
     }
-    if not assignee_ids:
+    if not assignee_specs:
         return
-    rows = db.exec(
-        select(User).where(
-            User.tenant_id == tenant_id,
-            User.id.in_(assignee_ids),
-        )
-    ).all()
-    found_ids = {row.id for row in rows}
-    internal_ids = {row.id for row in rows if row.source == "web"}
-    missing = assignee_ids - found_ids
-    if missing:
+    assignee_ids = {user_id for user_id, _ in assignee_specs}
+    from staffdeck_harness.runtime.identity_directory import require_internal_member, resolve_members
+    members = resolve_members(db, tenant_id, sorted(assignee_ids))
+    for user_id in sorted(assignee_ids):
+        require_internal_member(db, tenant_id, user_id, materialize=True, resolved=members)
+    channel_specs = {
+        (user_id, channel)
+        for user_id, channel in assignee_specs
+        if channel and channel != "web"
+    }
+    if not channel_specs:
+        return
+    # 渠道转接通知要求渠道支持主动私聊(飞书/企微);钉钉/微信适配器只能回
+    # 会话内消息,无法私聊处理人,其余渠道一律拒绝,避免"配置成功但收不到通知"。
+    from app.channels.service_outbox import HANDOFF_NOTIFY_CHANNELS
+
+    unsupported = sorted({channel for _, channel in channel_specs if channel not in HANDOFF_NOTIFY_CHANNELS})
+    if unsupported:
+        labels = {name: _CHANNEL_LABELS.get(name, name) for name in unsupported}
+        unsupported_text = ", ".join(f"{labels[name]}({name})" for name in unsupported)
         raise HTTPException(
             status_code=400,
-            detail=f"人工节点处理人不存在或不在当前租户: {', '.join(sorted(missing))}",
+            detail=f"人工节点处理人通知渠道暂不支持私聊通知(当前支持飞书/企业微信): {unsupported_text}",
         )
-    non_internal = assignee_ids - internal_ids
-    if non_internal:
-        raise HTTPException(
-            status_code=400,
-            detail=f"人工节点处理人必须是内部成员(web 账号),不可使用渠道客户或群聊虚拟账号: {', '.join(sorted(non_internal))}",
-        )
+    channel_user_ids = {user_id for user_id, _ in channel_specs}
+    # scope 级可达性:成员身份必须挂在租户内该渠道某个 active 员工绑定的
+    # external_account_scope 下(跨企业/跨应用绑定不互通,不能仅按"绑定过该渠道"判断)。
+    from app.channels.service_identity import external_account_scope as _binding_scope
+
+    reachable_by_user: dict[str, set[str]] = {}
+    for channel in {channel for _, channel in channel_specs}:
+        bindings = [
+            binding
+            for binding in db.exec(
+                select(ChannelBinding).where(
+                    ChannelBinding.tenant_id == tenant_id,
+                    ChannelBinding.channel == channel,
+                    ChannelBinding.status == "active",
+                )
+            ).all()
+            if not binding.team_id
+        ]
+        if not bindings:
+            continue
+        scopes = {_binding_scope(db, binding) for binding in bindings}
+        identities = db.exec(
+            select(ChannelIdentity).where(
+                ChannelIdentity.tenant_id == tenant_id,
+                ChannelIdentity.channel == channel,
+                ChannelIdentity.staffdeck_user_id.in_(channel_user_ids),
+                ~ChannelIdentity.external_user_id.startswith("group:"),
+            )
+        ).all()
+        for identity in identities:
+            if identity.external_account_scope in scopes:
+                reachable_by_user.setdefault(identity.staffdeck_user_id, set()).add(channel)
+    for user_id, channel in sorted(channel_specs):
+        if channel not in reachable_by_user.get(user_id, set()):
+            label = _CHANNEL_LABELS.get(channel, channel)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"人工节点处理人在租户内可用的{label}绑定作用域下未绑定渠道身份,"
+                    f"无法按该渠道转接: {user_id}"
+                ),
+            )
 
 
 @router.post("", response_model=SkillRead)
@@ -300,6 +394,8 @@ def create_skill(
             binding_status,
             metadata_json=creator_metadata,
         )
+    if request.status == "published":
+        validate_published_sop(db, request.tenant_id, agent_id, row.skill_id)
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)
@@ -376,24 +472,45 @@ def update_skill(
             row.skill_id,
             normalized_content.model_dump(),
         )
+        if branch.status == "active" and binding.status == "active":
+            validate_published_sop(db, request.tenant_id, agent.id, row.skill_id)
         db.commit()
         projected = project_skill_with_branch(row, branch, binding.status)
         stats = _skill_stats(db, request.tenant_id)
         return skill_read(projected, stats, _recent_skill_stats(db, request.tenant_id, stats))
     ensure_open_gallery_admin(request.tenant_id, current_user)
+    # A content edit preserves availability. Lifecycle changes use the explicit
+    # publish/archive/draft routes so existing employee bindings are not disabled.
+    if request.status is not None and request.status != row.status:
+        raise HTTPException(status_code=409, detail={
+            "code": "SOP_LIFECYCLE_ACTION_REQUIRED",
+            "message": "内容保存不能改变 SOP 可用状态，请使用独立的启用或停用操作",
+        })
+    db.exec(select(Skill).where(Skill.id == row.id).with_for_update()).one()
+    db.refresh(row)
+    history = db.exec(select(SkillVersion.version).where(
+        SkillVersion.tenant_id == row.tenant_id,
+        SkillVersion.skill_id == row.skill_id,
+    )).all()
+    floor = max([row.version, *history], key=_sop_version_key)
+    if _sop_version_key(normalized_content.version) <= _sop_version_key(floor):
+        major, minor, patch = _sop_version_key(floor)
+        normalized_content = normalized_content.model_copy(update={
+            "version": f"{major}.{minor}.{patch + 1}"
+        })
     row.version = normalized_content.version
     row.name = normalized_content.name
     row.business_domain = normalized_content.business_domain
     row.description = normalized_content.description
     row.content_json = normalized_content.model_dump()
     _sync_skill_tool_bindings(db, request.tenant_id, row.skill_id, row.content_json)
-    if request.status:
-        row.status = request.status
     row.updated_at = utc_now()
     db.add(row)
+    if row.status == "published":
+        validate_published_sop(db, request.tenant_id, agent_id, row.skill_id)
+    _upsert_skill_version(db, row, commit=False)
     db.commit()
     db.refresh(row)
-    _upsert_skill_version(db, row)
     stats = _skill_stats(db, request.tenant_id)
     return skill_read(row, stats, _recent_skill_stats(db, request.tenant_id, stats))
 
@@ -433,6 +550,7 @@ def publish_skill(
         db.add(branch)
         _sync_skill_tool_bindings(db, tenant_id, row.skill_id, branch.content_json)
         ensure_private_resource_binding(db, tenant_id, agent.id, "skill", row.id, "active")
+        validate_published_sop(db, tenant_id, agent.id, row.skill_id)
         db.commit()
         projected = project_skill_with_branch(row, branch, "active")
         stats = _skill_stats(db, tenant_id)
@@ -445,6 +563,7 @@ def publish_skill(
     db.add(row)
     db.flush()
     ensure_open_gallery_binding(db, tenant_id, "skill", row.id, "active")
+    validate_published_sop(db, tenant_id, agent_id, row.skill_id)
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)
@@ -680,7 +799,7 @@ def rollback_skill_version(
     row = _get_skill(db, tenant_id, skill_id)
     version_row = _get_skill_version(db, tenant_id, skill_id, version)
     normalized_content, _warnings = skill_card_with_unique_step_ids(
-        SkillCard.model_validate(version_row.content_json)
+        skill_card_from_persisted(version_row.content_json)
     )
     normalized_content = normalized_content.model_copy(
         update={
@@ -725,8 +844,9 @@ def distill_skill(
 ) -> SkillDistillResponse:
     ensure_current_user_tenant(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
+    _ensure_distill_agent_scope(db, request, current_user)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-    request = _with_available_tools(db, request)
+    request = _with_available_context_for_distill(db, request)
     try:
         return SkillDistiller().distill(request, model_config)
     except LLMError as exc:
@@ -736,9 +856,12 @@ def distill_skill(
 @router.post("/distill/stream")
 def distill_skill_stream(
     request: SkillDistillRequest,
+    db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> StreamingResponse:
     ensure_current_user_tenant(request.tenant_id, current_user)
+    ensure_tenant(db, request.tenant_id)
+    _ensure_distill_agent_scope(db, request, current_user)
     job_id = _start_distill_stream_job(request, current_user)
     return StreamingResponse(_stream_skill_job(job_id), media_type="text/event-stream")
 
@@ -765,9 +888,12 @@ def rewrite_skill_stream(
 @router.post("/distill/jobs")
 def create_distill_job(
     request: SkillDistillRequest,
+    db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
     ensure_current_user_tenant(request.tenant_id, current_user)
+    ensure_tenant(db, request.tenant_id)
+    _ensure_distill_agent_scope(db, request, current_user)
     return {"job_id": _start_distill_stream_job(request, current_user)}
 
 
@@ -894,7 +1020,7 @@ def _run_distill_stream_job(job_id: str, request_data: dict[str, object]) -> Non
         with Session(get_session_engine()) as db:
             ensure_tenant(db, request.tenant_id)
             model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-            enriched_request = _with_available_tools(db, request)
+            enriched_request = _with_available_context_for_distill(db, request)
             stream_jobs.append(job_id, "status", {"text": "正在调用模型生成新技能"})
             for item in SkillDistiller().stream_text(enriched_request, model_config):
                 if stream_jobs.is_cancelled(job_id):
@@ -931,6 +1057,7 @@ def _run_rewrite_stream_job(job_id: str, skill_id: str, request_data: dict[str, 
 def _stream_skill_job(job_id: str, after_seq: int = 0) -> Iterator[str]:
     last_seq = max(0, after_seq)
     yield _sse("job_attached", {"job_id": job_id, "after_seq": after_seq})
+    last_sent = monotonic()
     while True:
         job, events = stream_jobs.snapshot(job_id, last_seq)
         if not job:
@@ -939,9 +1066,13 @@ def _stream_skill_job(job_id: str, after_seq: int = 0) -> Iterator[str]:
         for event in events:
             last_seq = event.seq
             yield _sse_event(event, job_id)
+            last_sent = monotonic()
         if job.status in {"succeeded", "failed"} and not events:
             yield _sse("job_complete", {"job_id": job_id, "status": job.status, "error": job.error})
             return
+        if monotonic() - last_sent >= 15:
+            yield ": keepalive\n\n"
+            last_sent = monotonic()
         sleep(0.15)
 
 
@@ -1030,28 +1161,143 @@ def _sync_skill_tool_bindings(
         db.add(row)
 
 
-def _with_available_tools(db: Session, request: SkillDistillRequest) -> SkillDistillRequest:
-    tools = db.exec(
-        select(Tool).where(Tool.tenant_id == request.tenant_id, Tool.enabled == True)  # noqa: E712
+def _ensure_distill_agent_scope(
+    db: Session,
+    request: SkillDistillRequest,
+    current_user: User,
+) -> None:
+    if request.agent_id:
+        ensure_agent_scope_manager(db, request.tenant_id, request.agent_id, current_user)
+
+
+def _visible_general_skill_rows_for_distill(
+    db: Session,
+    tenant_id: str,
+    agent_id: str | None,
+) -> list[GeneralSkill]:
+    agent = get_agent(db, tenant_id, agent_id)
+    rows = db.exec(
+        select(GeneralSkill).where(
+            GeneralSkill.tenant_id == tenant_id,
+            GeneralSkill.status == "published",
+        )
     ).all()
-    available_tools = [
-        *request.available_tools,
-        *[
-            {
-                "id": tool.id,
-                "name": tool.name,
-                "display_name": tool.display_name,
-                "description": tool.description,
-                "bucket": tool.bucket or "未分桶",
-                "method": tool.method,
-                "url": tool.url,
-                "input_schema": tool.input_schema,
-                "output_schema": tool.output_schema,
-            }
-            for tool in tools
-        ],
+    if agent_id and not agent:
+        return []
+    if not agent or agent.is_overall:
+        return [
+            row
+            for row in rows
+            if is_open_gallery_resource(db, tenant_id, "general_skill", row)
+        ]
+    bindings = db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == agent.id,
+            AgentResourceBinding.resource_type == "general_skill",
+            AgentResourceBinding.status == "active",
+        )
+    ).all()
+    rows_by_id = {row.id: row for row in rows}
+    return [
+        row
+        for binding in bindings
+        if (row := rows_by_id.get(binding.resource_id)) is not None
+        and is_bound_resource_visible_for_agent(
+            db,
+            tenant_id,
+            "general_skill",
+            row,
+            binding,
+        )
     ]
-    return request.model_copy(update={"available_tools": available_tools})
+
+
+def _with_available_context_for_distill(
+    db: Session,
+    request: SkillDistillRequest,
+) -> SkillDistillRequest:
+    tools = visible_tool_rows(
+        db,
+        request.tenant_id,
+        request.agent_id,
+        include_inactive=False,
+    )
+    available_tools = _dedupe_capability_catalog(
+        [
+            *request.available_tools,
+            *[
+                {
+                    "id": tool.id,
+                    "name": tool.name,
+                    "display_name": tool.display_name,
+                    "description": tool.description,
+                    "bucket": tool.bucket or "未分桶",
+                    "method": tool.method,
+                    "url": tool.url,
+                    "input_schema": tool.input_schema,
+                    "output_schema": tool.output_schema,
+                }
+                for tool in tools
+            ],
+        ],
+        ("id", "name"),
+    )
+    general_skills = _visible_general_skill_rows_for_distill(
+        db,
+        request.tenant_id,
+        request.agent_id,
+    )
+    available_general_skills = _dedupe_capability_catalog(
+        [
+            *request.available_general_skills,
+            *[
+                {
+                    "id": skill.id,
+                    "slug": skill.slug,
+                    "name": skill.name,
+                    "description": skill.description or "",
+                    "capability_scope": skill.capability_scope,
+                }
+                for skill in general_skills
+            ],
+        ],
+        ("id", "slug"),
+    )
+    visible_knowledge = visible_knowledge_base_versions(
+        db,
+        request.tenant_id,
+        request.agent_id,
+        include_inactive=False,
+    )
+    available_knowledge_bases = _dedupe_capability_catalog(
+        [
+            *request.available_knowledge_bases,
+            *[
+                {
+                    "id": knowledge_base_id,
+                    "name": version.name,
+                    "description": version.description or "",
+                    "capability_scope": version.capability_scope,
+                }
+                for knowledge_base_id, version in visible_knowledge.items()
+            ],
+        ],
+        ("id", "name"),
+    )
+    return request.model_copy(
+        update={
+            "available_tools": available_tools,
+            "available_general_skills": available_general_skills,
+            "available_knowledge_bases": available_knowledge_bases,
+        }
+    )
+
+
+def _with_available_tools(db: Session, request: SkillDistillRequest) -> SkillDistillRequest:
+    """Backward-compatible alias for public API callers."""
+
+    return _with_available_context_for_distill(db, request)
 
 
 def _with_available_context_for_rewrite(
@@ -1322,7 +1568,12 @@ def _recent_skill_stats(
     return recent_stats
 
 
-def _upsert_skill_version(db: Session, row: Skill) -> SkillVersion:
+def _sop_version_key(version: str) -> tuple[int, int, int]:
+    match = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?", version.strip())
+    return tuple(int(part or 0) for part in match.groups()) if match else (0, 0, 0)
+
+
+def _upsert_skill_version(db: Session, row: Skill, *, commit: bool = True) -> SkillVersion:
     existing = db.exec(
         select(SkillVersion).where(
             SkillVersion.tenant_id == row.tenant_id,
@@ -1338,7 +1589,10 @@ def _upsert_skill_version(db: Session, row: Skill) -> SkillVersion:
         existing.status = row.status
         existing.updated_at = utc_now()
         db.add(existing)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         db.refresh(existing)
         return existing
     version_row = SkillVersion(
@@ -1352,7 +1606,10 @@ def _upsert_skill_version(db: Session, row: Skill) -> SkillVersion:
         status=row.status,
     )
     db.add(version_row)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(version_row)
     return version_row
 

@@ -52,6 +52,7 @@ class HarnessToolContext:
     sandbox_enabled: bool = True
     sandbox_network_mode: Literal["all", "allowlist", "deny"] = "all"
     sandbox_allowed_domains: tuple[str, ...] = ()
+    chat_session_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_id, str) or not self.run_id.strip():

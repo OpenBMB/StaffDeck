@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.channels.storage import channel_session
+
 import json
 from dataclasses import asdict
 from typing import Any
@@ -75,7 +77,7 @@ def stage_wecom_inbound(
         return StageResult(StageDisposition.SECURITY_DROP, error_code="event_payload_too_large")
 
     try:
-        with Session(db_engine) as db:
+        with channel_session(db_engine) as db:
             binding = db.get(ChannelBinding, binding_id)
             from app.channels.service_identity import external_account_scope
 
@@ -95,6 +97,15 @@ def stage_wecom_inbound(
                 "to_user_id": inbound.conv_key if inbound.is_group else inbound.from_user_id,
                 "context_token": inbound.context_token,
             }
+            if inbound.is_group:
+                # Preserve the sender so later asynchronous replies can mention
+                # the user who asked the question in the group.
+                target["reply_to_user_id"] = inbound.from_user_id
+                target["is_group"] = True
+                target["reply_quote"] = {
+                    "sender_name": inbound.sender_name or inbound.from_user_id,
+                    "text": inbound.text,
+                }
             event = ChannelInboundEvent(
                 id=new_id("chevt"),
                 tenant_id=binding.tenant_id,

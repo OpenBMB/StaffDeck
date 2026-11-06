@@ -50,3 +50,12 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 packaging/assets/staffdeck.iconset/
+
+# OSS product build outputs and isolated acceptance data
+edge-dist/
+.legacy-checkout/
+oss-source-output/
+harness-engine/**/lib/
+harness-engine/**/lib-client/
+harness-engine/tsconfig.distribution-*.json
+harness-engine/**/.cache/

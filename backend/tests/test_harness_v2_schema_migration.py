@@ -65,6 +65,7 @@ def test_harness_v2_schema_migration_is_complete_and_idempotent(
     }
     assert {
         "decision",
+        "agent_loop_id",
         "attempt_no",
         "lease_owner",
         "lease_expires_at",
@@ -72,7 +73,12 @@ def test_harness_v2_schema_migration_is_complete_and_idempotent(
     run_columns = {
         column["name"] for column in inspector.get_columns("harness_runs")
     }
-    assert {"attempt_no", "lease_owner", "lease_expires_at"} <= run_columns
+    assert {
+        "agent_loop_id",
+        "attempt_no",
+        "lease_owner",
+        "lease_expires_at",
+    } <= run_columns
     invocation_columns = {
         column["name"] for column in inspector.get_columns("harness_invocations")
     }

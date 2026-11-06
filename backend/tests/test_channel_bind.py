@@ -564,6 +564,8 @@ def test_bind_success_migrates_history_and_marks_code_used() -> None:
     with Session(engine) as db:
         identity = db.exec(select(ChannelIdentity)).one()
         assert identity.staffdeck_user_id == "user_web"
+        # 显示名同步为码主账号名,不残留懒建期占位名
+        assert identity.display_name == "张三"
         assert db.get(ChatSession, "s_p2p").user_id == "user_web"
         memory = db.get(MemoryRecord, "mem_1")
         assert memory.user_id == "user_web"
@@ -663,6 +665,8 @@ def test_unbind_moves_history_back_to_lazy_account() -> None:
     with Session(engine) as db:
         identity = db.exec(select(ChannelIdentity)).one()
         assert identity.staffdeck_user_id == "user_lazy"
+        # 解绑后显示名同步回懒建账号
+        assert identity.display_name == "微信用户 ab12cd34"
         assert db.get(ChatSession, "s_p2p").user_id == "user_lazy"
         memory = db.get(MemoryRecord, "mem_1")
         assert memory.user_id == "user_lazy"
@@ -1057,6 +1061,7 @@ def test_wecom_unbind_moves_history_back() -> None:
     with Session(engine) as db:
         identity = db.exec(select(ChannelIdentity)).one()
         assert identity.staffdeck_user_id == "user_wecom_lazy"
+        assert identity.display_name == "企微用户 zhangsan"
         assert db.get(ChatSession, "s_wecom_p2p").user_id == "user_wecom_lazy"
         memory = db.get(MemoryRecord, "mem_wecom_1")
         assert memory.user_id == "user_wecom_lazy"
@@ -1315,6 +1320,38 @@ def test_my_identity_bindings_returns_external_account_scope() -> None:
     rows = {row["channel"]: row for row in response.json()}
     assert rows["wechat"]["external_account_scope"] == ""
     assert rows["wecom"]["external_account_scope"] == "corpA"
+
+
+def test_my_identity_bindings_heals_stale_display_name() -> None:
+    """绑定行残留懒建期占位名时,读取接口按当前账号名返回并回写自愈。"""
+    engine = _test_engine()
+    users = _seed_web_users(engine)
+    with Session(engine) as db:
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="feishu",
+                external_account_scope="app:20:cli_aaf3d15c5138dbe5:tenant:16:1a0aaaa3801ddcbc",
+                external_user_id="ou_admin",
+                staffdeck_user_id=users["web"].id,
+                display_name="飞书用户 609115",
+            )
+        )
+        db.commit()
+
+    client = _make_api_client(engine)
+    response = client.get(
+        "/api/enterprise/channels/my-identity-bindings?tenant_id=tenant_demo",
+        headers=_auth(users["web"]),
+    )
+    assert response.status_code == 200
+    rows = response.json()
+    assert len(rows) == 1
+    assert rows[0]["display_name"] == "张三"
+
+    with Session(engine) as db:
+        identity = db.exec(select(ChannelIdentity)).one()
+        assert identity.display_name == "张三"
 
 
 def _seed_wecom_bound_identity(engine, user, external_id: str, scope: str) -> None:

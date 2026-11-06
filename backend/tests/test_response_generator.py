@@ -78,6 +78,7 @@ def test_multi_task_payload_projects_all_results_for_one_final_reply() -> None:
             {
                 "task": "查询额度",
                 "slots": {"employee_id": "E-1"},
+                "structured_result": {"remaining_quota": 1000},
                 "step_result": {
                     "action": "reply",
                     "reply": "剩余额度 1000 元",
@@ -105,6 +106,7 @@ def test_multi_task_payload_projects_all_results_for_one_final_reply() -> None:
     assert set(payload) == {"user_message", "conversation_context", "task_results"}
     assert [item["task"] for item in payload["task_results"]] == ["查询额度", "提交报销"]
     assert payload["task_results"][0]["step_summary"]["reply"] == "剩余额度 1000 元"
+    assert payload["task_results"][0]["structured_result"] == {"remaining_quota": 1000}
     assert payload["task_results"][1]["step_summary"]["reply"] == "请补充发票"
 
 
@@ -706,3 +708,22 @@ def test_response_prompt_preserves_previous_reply_for_format_followup() -> None:
     instructions = prompt["_agent_stage"]["instructions"]
     assert "最近一条 assistant 回复作为待处理内容" in instructions
     assert "[label](https://example.com)" in instructions
+
+
+def test_response_prompt_requires_readable_markdown_without_report_template() -> None:
+    prompt = ResponseGenerator()._stage_payload(
+        {
+            "user_message": "查询请假制度和办公用品制度",
+            "conversation_context": {"messages": []},
+        },
+        None,
+    )
+
+    stage = prompt["_agent_stage"]
+    instructions = stage["instructions"]
+    assert "两个及以上主题" in instructions
+    assert "必须用 `##` 或 `###` 小标题分组" in instructions
+    assert "禁止把“一、……1.……2.……二、……”连续塞进一个长段落" in instructions
+    assert "不添加“结构化完成报告”" in instructions
+    assert "必须以 structured_result 为准" in instructions
+    assert "Markdown 正文" in stage["output_contract"]

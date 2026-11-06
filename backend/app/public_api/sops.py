@@ -40,6 +40,7 @@ from app.skills.skill_schema import (
     SkillDistillRequest,
     SkillRewriteRequest,
     SkillUpdateRequest,
+    skill_card_from_persisted,
 )
 from app.skills.nesting import SopNestingError, validate_sop_nesting
 
@@ -192,7 +193,7 @@ def _validate_capability_refs(db: Session, row: APISOPDraft, card: SkillCard) ->
 
 def validate_draft(db: Session, row: APISOPDraft) -> dict[str, Any]:
     try:
-        card = SkillCard.model_validate(row.content_json)
+        card = skill_card_from_persisted(row.content_json)
         field_errors: list[dict[str, str]] = _validate_capability_refs(db, row, card)
         try:
             validate_sop_nesting(
@@ -325,6 +326,7 @@ def execute_sop_generate(db: Session, job: APIJob) -> dict[str, Any]:
     update_job(db, job, stage="learning", progress=0.15, event_type="sop.generate.learning")
     request = SkillDistillRequest(
         tenant_id=job.tenant_id,
+        agent_id=str(job.agent_id),
         title=str(payload["title"]),
         raw_content=str(payload["raw_content"]),
         business_domain=payload.get("business_domain"),
@@ -529,7 +531,7 @@ def publish_sop(
     validation = validate_draft(db, row)
     if not validation["valid"]:
         raise PublicAPIError(422, "SOP_VALIDATION_FAILED", "The SOP cannot be published.", errors=validation["errors"])
-    card = SkillCard.model_validate(row.content_json)
+    card = skill_card_from_persisted(row.content_json)
     runtime = _runtime_skill(db, principal.tenant_id, sop_id)
     if runtime:
         internal_skills.update_skill(

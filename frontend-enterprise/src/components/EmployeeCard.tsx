@@ -17,7 +17,7 @@ import IconPlay from '../assets/icons/play.svg?react';
 import IconTrash from '../assets/icons/trash.svg?react';
 import { KeyRound } from 'lucide-react';
 import { isGalleryEmployee } from '../auth';
-import { employeeDisplayNameWithCreator, employeeProfile, resourceCount } from '../employee';
+import { employeeDisplayNameWithCreator, employeeProfile, agentResourceCount } from '../employee';
 import type { AgentProfileRead } from '../types';
 import EmployeeAvatar from './EmployeeAvatar';
 
@@ -62,9 +62,9 @@ export default function EmployeeCard({
   onApiKeys,
 }: EmployeeCardProps) {
   const profile = employeeProfile(employee);
-  const sopCount = resourceCount(employee.resources, 'skill');
-  const skillCount = resourceCount(employee.resources, 'general_skill');
-  const kbCount = resourceCount(employee.resources, 'knowledge_base');
+  const sopCount = agentResourceCount(employee, 'skill');
+  const skillCount = agentResourceCount(employee, 'general_skill');
+  const kbCount = agentResourceCount(employee, 'knowledge_base');
   const galleryPublished = isGalleryEmployee(employee);
   const online = employee.status === 'active';
 

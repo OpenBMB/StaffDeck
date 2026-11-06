@@ -5,11 +5,23 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    lark_cli_enabled: bool = True
+    lark_cli_auto_install: bool = True
+    lark_cli_binary_path: str = ""
+    package_source_root: str = ''
+    package_engine_root: str = ''
+    package_state_dir: str = ''
+    package_module_sources: dict[str, str] = {}
+    package_config_files: dict[str, str] = {}
+    package_worker_token: str = ''
+    demo_seed_enabled: bool = True
+    startup_orphan_cleanup_enabled: bool = True
     app_name: str = "Skill Agent Loop Service"
     database_url: str = "sqlite:///./skill_agent_loop.db"
-    app_secret: str = "change-me-in-development"
-    # 应用时区(Postgres 日分桶等按此换算;留空=服务器本地固定偏移;SQLite 恒为服务器本地)
+    # 应用时区(如 Asia/Shanghai):仅 PostgreSQL 日分桶换算使用;留空=服务器本地固定偏移。
+    # SQLite 恒为服务器本地时区,配置了也不生效(启动时会告警)。
     app_timezone: str = ""
+    app_secret: str = "change-me-in-development"
     demo_model_base_url: str = "http://localhost:52010/v1"
     demo_model_name: str = "qwen3.6-27b"
     demo_model_api_key: str = ""
@@ -17,6 +29,8 @@ class Settings(BaseSettings):
     model_thinking_mode: str = ""
     model_thinking_models: str = ""
     tool_timeout_seconds: float = 8.0
+    external_task_poll_seconds: float = 2.0
+    external_task_callback_base_url: str = ""
     a2a_task_timeout_seconds: float = 600.0
     a2a_poll_interval_seconds: float = 0.5
     codex_a2a_enabled: bool = False
@@ -38,6 +52,11 @@ class Settings(BaseSettings):
     general_skill_network_install: bool = True
     channel_secret: str = ""
     staffdeck_role: str = "all"
+
+    # Which SPA single_port_app serves at its web routes. Both SPAs are built with
+    # the same base path, so the choice is a serving decision, not a build one.
+    # "releases" = frontend-enterprise, "business" = staffdeck business SPA.
+    staffdeck_ui_variant: str = "releases"
     wechat_ilink_base_url: str = "https://ilinkai.weixin.qq.com"
     channel_delivery_poll_seconds: float = 1.0
     channel_delivery_max_attempts: int = 8
@@ -57,6 +76,60 @@ class Settings(BaseSettings):
     # 一张独立卡片展示智能体每一步（SOP/工具/知识检索），与正文回复互不影响。
     # 仅影响飞书渠道；关闭时退化为仅发最终回复。
     channel_feishu_trace_enabled: bool = True
+    # 飞书 trace 卡片 SOP 紧凑展示开关：开启后匹配 SOP（判断意图/进入流程）之后的
+    # 中间步骤不再逐行展示，仅显示"翻书动画 + 正在推进SOP"，等待用户补充信息时
+    # 定格为"📖 流程已暂停"，SOP 结束时定格为"✅ 流程已结束"。设为 False 可整体
+    # 回滚为逐行展示的旧样式；binding 的 config_json.compact_trace=false 可对单个
+    # 绑定回滚。
+    channel_feishu_trace_compact_sop: bool = True
+    # Legacy configuration fields are read for migration, not engine selection.
+    # Runtime assembly always enables the registered v3 engine.
+    harness_v3_enabled: bool = True
+    # Exposes /api/enterprise/harness (module registry, snapshot preview, ledger
+    # reconciliation, per-staff engine) even when turns still run on legacy, so
+    # operators can inspect the pluggable tree before switching engines.
+    harness_admin_api_enabled: bool = True
+    # Comma-separated module ids to disable, and extra "pkg.mod:register" specs.
+    harness_disabled_modules: str = ""
+    harness_modules: str = ""
+    # Admin-editable overrides (engine / security profile / disabled / extra modules);
+    # defaults to <harness_v3_home or cwd>/staffdeck-runtime.json.
+    harness_runtime_config_path: str = ""
+    # Where the admin page may point the enterprise permission centre. Comma-separated host[:port]
+    # patterns (fnmatch, e.g. "*.corp.example,10.0.*"); empty = loopback / private ranges only.
+    # Set to "*" to allow any host. https is required for public hosts.
+    base_url_allowlist: str = ""
+    harness_v3_root: str = ""
+    harness_v3_home: str = ""
+    harness_v3_node_bin: str = "node"
+    harness_v3_permission_mode: str = "danger-full-access"
+    harness_v3_staff_allowlist: str = ""
+    harness_v3_fallback_to_v2: bool = False  # deprecated; no execution path reads this switch
+    # Comma-separated tenant ids whose *admins* may mutate process-global runtime state
+    # (assembly config, restart, module placement/install, permission-centre test). Empty means
+    # the deployment is treated as single-operator: the tenant of the acting admin may change the
+    # runtime. Set this when multiple tenants share one process; without it, each tenant's admin
+    # would be able to change the engine/profile for everyone.
+    harness_operator_tenants: str = ""
+    harness_v3_initialize_timeout_seconds: float = 90.0
+    harness_v3_request_timeout_seconds: float = 600.0
+    # OSS_LOCAL or BUSINESS_BASE; one per deployment.
+    security_profile: str = "OSS_LOCAL"
+    harness_module_selections: dict[str, str] = {}
+    harness_enabled_modules: str = ""
+    harness_module_configs: dict[str, dict[str, object]] = {}
+    harness_presets_dir: str = ""
+    # Deployment-only; never changed by runtime presets or module enable/disable.
+    harness_control_auth_provider: str = ""
+    base_authz_url: str = ""
+    base_authz_decision_token: str = ""
+    base_authz_control_token: str = ""
+    base_authz_timeout_seconds: float = 3.0
+    base_authz_pending_timeout_seconds: float = 3.0
+    base_identity_internal_url: str = ""
+    base_identity_runtime_client_id: str = "agent-platform-runtime"
+    base_identity_runtime_client_secret: str = ""
+    base_workload_identity_audience: str = "staffdeck-gateway"
 
     model_config = SettingsConfigDict(
         env_file=_os.environ.get("ULTRARAG_DOTENV", ".env"),

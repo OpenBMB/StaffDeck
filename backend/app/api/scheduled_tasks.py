@@ -73,14 +73,19 @@ def list_enterprise_scheduled_task_runs_for_agent(
         conditions.append(ScheduledTaskRun.status == status)
     if not _is_admin_user(current_user):
         conditions.append(ScheduledTaskRun.user_id == current_user.id)
-    rows = db.exec(
-        select(ScheduledTaskRun, ScheduledTask)
-        .join(ScheduledTask, ScheduledTaskRun.scheduled_task_id == ScheduledTask.id)
+    runs = db.exec(
+        select(ScheduledTaskRun)
         .where(*conditions)
         .order_by(ScheduledTaskRun.created_at.desc())
         .limit(limit)
     ).all()
-    return [scheduled_task_run_read(run, task) for run, task in rows]
+    # Definitions and execution history can be bound to different databases.
+    # Let each model use its registered bind; never JOIN across those stores.
+    task_ids = {run.scheduled_task_id for run in runs}
+    tasks = {task.id: task for task in db.exec(select(ScheduledTask).where(
+        ScheduledTask.tenant_id == tenant_id, ScheduledTask.id.in_(task_ids)
+    )).all()} if task_ids else {}
+    return [scheduled_task_run_read(run, tasks.get(run.scheduled_task_id)) for run in runs]
 
 
 @enterprise_router.get("/{task_id}", response_model=ScheduledTaskRead)

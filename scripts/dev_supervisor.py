@@ -223,12 +223,20 @@ class Service:
     def healthy(self) -> bool:
         if not self.health_url:
             return True
+        response = None
         try:
-            with urllib.request.urlopen(self.health_url, timeout=2) as response:
-                response.read()
-                return 200 <= response.status < 500
+            response = urllib.request.urlopen(self.health_url, timeout=2)
+            return 200 <= response.status < 500
         except Exception:
             return False
+        finally:
+            if response is not None:
+                try:
+                    close = getattr(response, "close", None)
+                    if close:
+                        close()
+                except OSError:
+                    pass
 
 
 def build_services() -> list[Service]:
@@ -242,7 +250,7 @@ def build_services() -> list[Service]:
                     str(backend_python),
                     "-m",
                     "uvicorn",
-                    "single_port_app:app",
+                    "staffdeck_harness.distribution.asgi:app" if (ROOT_DIR / "distribution/manifest.json").is_file() else "single_port_app:app",
                     "--host",
                     APP_HOST,
                     "--port",

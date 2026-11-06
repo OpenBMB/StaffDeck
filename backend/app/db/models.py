@@ -5,8 +5,17 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import Column, DDL, Index, Integer, JSON, Text, TypeDecorator, UniqueConstraint, event
-from sqlalchemy.dialects.mysql import MEDIUMTEXT
+from sqlalchemy import (
+    JSON,
+    Column,
+    DDL,
+    Index,
+    Integer,
+    Text,
+    TypeDecorator,
+    UniqueConstraint,
+    event,
+)
 from sqlmodel import Field, SQLModel
 
 
@@ -41,11 +50,6 @@ class PortableJSON(TypeDecorator):
         return value
 
 
-# 超过 TEXT(64KB)上限的大字段(如 base64 头像 ~2.8MB):MySQL 用 MEDIUMTEXT,
-# 其它方言 TEXT 本身无界(SQLite/PG)或映射 CLOB(Oracle/达梦)
-HugeText = Text().with_variant(MEDIUMTEXT(), "mysql")
-
-
 class Tenant(SQLModel, table=True):
     __tablename__ = "tenants"
 
@@ -74,6 +78,14 @@ class User(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class DistributionInstallRecord(SQLModel, table=True):
+    __tablename__ = 'distribution_install_records'
+    tenant_id: str = Field(primary_key=True)
+    package_id: str
+    status: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class UserAvatar(SQLModel, table=True):
     """用户头像:小图以 data_url 直接存库(与聊天附件内联方式一致),
 
@@ -83,7 +95,7 @@ class UserAvatar(SQLModel, table=True):
     __tablename__ = "user_avatars"
 
     user_id: str = Field(primary_key=True)
-    data_url: str = Field(sa_column=Column(HugeText))
+    data_url: str = Field(sa_column=Column(Text))
     updated_at: datetime = Field(default_factory=utc_now)
 
 
@@ -247,6 +259,65 @@ class A2ATaskEvent(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ExternalBusinessTask(SQLModel, table=True):
+    """Durable state for an HTTP tool whose business work finishes asynchronously."""
+
+    __tablename__ = "external_business_tasks"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "user_id",
+            "tool_id",
+            "external_task_id",
+            name="uq_external_business_task",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("exttask"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    agent_id: Optional[str] = Field(default=None, index=True)
+    session_id: Optional[str] = Field(default=None, index=True)
+    task_frame_id: Optional[str] = Field(default=None, index=True)
+    resume_step_id: Optional[str] = None
+    invocation_id: Optional[str] = Field(default=None, index=True)
+    tool_id: str = Field(index=True)
+    external_task_id: Optional[str] = Field(default=None, index=True)
+    idempotency_key: Optional[str] = Field(default=None, unique=True, index=True)
+    status: str = Field(default="submitting", index=True)
+    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    callback_token_hash: str
+    status_url: Optional[str] = None
+    status_config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    poll_interval_seconds: float = 5.0
+    next_poll_at: Optional[datetime] = Field(default=None, index=True)
+    poll_attempts: int = 0
+    lease_owner: Optional[str] = Field(default=None, index=True)
+    lease_expires_at: Optional[datetime] = Field(default=None, index=True)
+    expires_at: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    accepted_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ExternalBusinessTaskEvent(SQLModel, table=True):
+    __tablename__ = "external_business_task_events"
+    __table_args__ = (
+        UniqueConstraint("task_id", "event_id", name="uq_external_business_task_event"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("exttaskevt"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    task_id: str = Field(index=True)
+    event_id: str = Field(index=True)
+    event_type: str = Field(index=True)
+    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class WebhookEndpoint(SQLModel, table=True):
     __tablename__ = "webhook_endpoints"
 
@@ -254,7 +325,7 @@ class WebhookEndpoint(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     client_id: str = Field(index=True)
     name: str
-    url: str
+    url: str = Field(sa_column=Column(Text))
     secret_encrypted: str
     events_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     status: str = Field(default="active", index=True)
@@ -691,6 +762,17 @@ class UIConfig(SQLModel, table=True):
     show_tool_trace: bool = True
     reflection_max_rounds: int = 1
     agent_loop_max_actions: int = 32
+    context_token_budget: int = 32_000
+    context_compaction_trigger_ratio: float = 0.70
+    context_recent_round_limit: int = 6
+    context_long_summary_token_budget: int = 4_000
+    context_medium_summary_token_budget: int = 4_000
+    context_allowed_roles: list[str] = Field(
+        default_factory=lambda: ["user", "assistant"],
+        sa_column=Column(PortableJSON),
+    )
+    context_long_summary_prefix: str = "历史的信息可以被总结为："
+    context_medium_summary_prefix: str = "近期的历史信息总结为："
     sandbox_enabled: bool = False
     sandbox_network_mode: str = Field(default="all")
     sandbox_allowed_domains: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
@@ -897,6 +979,8 @@ class ChannelBinding(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     agent_id: str = Field(index=True)
     channel: str = Field(default="wechat", index=True)
+    # 用户可编辑的接入显示名;为空时前端回退展示渠道类型名
+    name: Optional[str] = Field(default=None)
     # 团队绑定:非空表示该渠道接入某团队(与员工挂载互斥),入站消息直路由团队 TL;
     # 存 team_id 不存 leader,换帅自动跟随
     team_id: Optional[str] = Field(default=None, index=True)
@@ -921,6 +1005,30 @@ class ChannelBinding(SQLModel, table=True):
     # 最近一次成功连上渠道的时间(企微断开超时告警的时间基准)
     last_connected_at: Optional[datetime] = None
     created_by_user_id: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class WeChatKfAccount(SQLModel, table=True):
+    """客服账号到 StaffDeck 路由的映射；一个 API binding 可管理多个账号。"""
+
+    __tablename__ = "wechat_kf_accounts"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "open_kfid", name="uq_wechat_kf_account_binding_kfid"),
+        UniqueConstraint("tenant_id", "open_kfid", name="uq_wechat_kf_account_tenant_kfid"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("wka"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    binding_id: str = Field(index=True)
+    open_kfid: str = Field(index=True)
+    name: str = ""
+    agent_id: Optional[str] = Field(default=None, index=True)
+    team_id: Optional[str] = Field(default=None, index=True)
+    status: str = Field(default="active", index=True)
+    sync_cursor: str = ""
+    last_error: Optional[str] = None
+    last_sync_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1184,6 +1292,33 @@ class ScheduledTaskRun(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class HarnessAgentLoopRecord(SQLModel, table=True):
+    """Durable logical AgentLoop shared across Harness activations."""
+
+    __tablename__ = "harness_agent_loops"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "loop_key", name="uq_harness_agent_loop_session_key"
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("hloop"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    session_id: str = Field(index=True)
+    loop_key: str = Field(index=True)
+    kind: str = Field(default="general", index=True)
+    status: str = Field(default="active", index=True)
+    owner_task_frame_record_id: Optional[str] = Field(default=None, index=True)
+    skill_id: Optional[str] = Field(default=None, index=True)
+    workspace_scope_id: Optional[str] = Field(default=None, index=True)
+    checkpoint_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    last_run_id: Optional[str] = Field(default=None, index=True)
+    state_version: int = 1
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    finished_at: Optional[datetime] = None
+
+
 class HarnessTaskFrameRecord(SQLModel, table=True):
     """Durable TaskFrame state for the isolated Harness v2 execution path."""
 
@@ -1199,6 +1334,7 @@ class HarnessTaskFrameRecord(SQLModel, table=True):
     session_id: str = Field(index=True)
     source_turn_id: str = Field(index=True)
     task_id: str = Field(index=True)
+    agent_loop_id: Optional[str] = Field(default=None, index=True)
     kind: str = Field(default="conversation", index=True)
     decision: str = Field(default="answer_only", index=True)
     status: str = Field(default="queued", index=True)
@@ -1229,6 +1365,7 @@ class HarnessRunRecord(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     session_id: str = Field(index=True)
     task_frame_record_id: str = Field(index=True)
+    agent_loop_id: Optional[str] = Field(default=None, index=True)
     task_id: str = Field(index=True)
     source_turn_id: str = Field(index=True)
     status: str = Field(default="running", index=True)
@@ -1482,6 +1619,34 @@ class TeamMember(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class TeamRun(SQLModel, table=True):
+    """One durable TL plan from delegation through final team synthesis."""
+
+    __tablename__ = "team_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "tl_session_id",
+            "source_turn_id",
+            name="uq_team_run_tl_session_source_turn",
+        ),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("team_run"), primary_key=True)
+    team_id: str = Field(index=True)
+    tenant_id: str = Field(index=True)
+    tl_session_id: str = Field(index=True)
+    source_turn_id: str = Field(index=True)
+    created_by_user_id: Optional[str] = Field(default=None, index=True)
+    # planning -> running/awaiting_input -> synthesizing -> completed/failed
+    status: str = Field(default="planning", index=True)
+    synthesis_session_id: Optional[str] = Field(default=None, index=True)
+    final_message_id: Optional[str] = Field(default=None, index=True)
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    completed_at: Optional[datetime] = None
+
+
 class TeamTask(SQLModel, table=True):
     """团队任务:blocked -> pending -> in_progress -> review -> done/rework/escalated;
 
@@ -1493,6 +1658,8 @@ class TeamTask(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("team_task"), primary_key=True)
     team_id: str = Field(index=True)
     tenant_id: str = Field(index=True)
+    team_run_id: Optional[str] = Field(default=None, index=True)
+    source_turn_id: Optional[str] = Field(default=None, index=True)
     parent_task_id: Optional[str] = Field(default=None, index=True)
     title: str = Field(sa_column=Column(Text))
     description: Optional[str] = Field(default=None, sa_column=Column(Text))

@@ -16,6 +16,7 @@ from app.db.models import (
     AgentEvent,
     AgentProfile,
     ChatSession,
+    HarnessTurnRecord,
     Message,
     Skill,
     Tenant,
@@ -258,7 +259,7 @@ def test_streaming_run_endpoint_emits_reply_deltas(monkeypatch) -> None:
     monkeypatch.setattr("app.public_api.runs.AgentLoop", FakeStreamingLoop)
     monkeypatch.setattr(
         "app.public_api.jobs.enqueue_async_job",
-        lambda _name, func, job_id: func(job_id),
+        lambda _name, func, **_kwargs: func(),
     )
     response = client.post(
         "/agents/agent_api/runs:stream",
@@ -1086,3 +1087,53 @@ def test_internal_job_remains_durably_queued_when_executor_is_stopping(monkeypat
     assert persisted is not None
     assert persisted.status == "queued"
     assert persisted.credential_id == "internal"
+
+
+def test_run_artifact_list_and_download_use_run_identity(monkeypatch, tmp_path):
+    client, engine, admin_token = _client(monkeypatch)
+    key = _tenant_key(client, admin_token, ['runs:create', 'runs:read'])
+    headers = {'Authorization': f'Bearer {key}'}
+    created = client.post('/agents/agent_api/runs', headers=headers, json={'input': '核算'})
+    assert created.status_code == 202, created.text
+    run_id = created.json()['id']
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    artifact_path = '核算 #1&2.json'
+    content = '{"total":720,"proof":"真实执行"}'.encode()
+    (workspace / artifact_path).write_bytes(content)
+    selected = {'type': 'workspace_file', 'task_frame_id': 'artifact_frame',
+                'path': artifact_path, 'content_type': 'application/json'}
+    other = {**selected, 'path': 'other-run.json'}
+    with Session(engine) as db:
+        job = db.get(APIJob, run_id)
+        job.session_id = 'artifact_session'
+        db.add(job)
+        db.add(ChatSession(id=job.session_id, tenant_id=job.tenant_id, agent_id='agent_api'))
+        db.add(HarnessTurnRecord(
+            tenant_id=job.tenant_id, session_id=job.session_id, client_turn_id=run_id,
+            request_digest='artifact-test', lease_owner='test', lease_expires_at=utc_now(),
+            user_message_id='artifact_user_message',
+        ))
+        db.add(Message(tenant_id=job.tenant_id, session_id=job.session_id, role='assistant',
+                       content='核算完成', metadata_json={
+                           'turn_id': 'artifact_user_message', 'harness_artifacts': [selected],
+                       }))
+        db.add(Message(tenant_id=job.tenant_id, session_id=job.session_id, role='assistant',
+                       content='另一次运行', metadata_json={
+                           'client_turn_id': 'other-run', 'harness_artifacts': [other],
+                       }))
+        db.commit()
+    monkeypatch.setattr('app.public_api.runs.harness_task_workspace_path',
+                        lambda **_kwargs: workspace)
+    listed = client.get(f'/runs/{run_id}/artifacts', headers=headers)
+    assert listed.status_code == 200, listed.text
+    assert listed.json() == {'data': [selected]}
+    downloaded = client.get(f'/runs/{run_id}/artifacts/artifact_frame', headers=headers,
+                            params={'path': artifact_path})
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.content == content
+    assert downloaded.headers['content-type'].startswith('application/json')
+    for path in ('other-run.json', '../outside.json'):
+        denied = client.get(f'/runs/{run_id}/artifacts/artifact_frame', headers=headers,
+                            params={'path': path})
+        assert denied.status_code == 404

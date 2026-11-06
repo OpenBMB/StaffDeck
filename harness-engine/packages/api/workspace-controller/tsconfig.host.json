@@ -1,0 +1,26 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo"
+  },
+  "files": [
+    "src/index.ts",
+    "src/invariant.ts",
+    "src/types.ts",
+    "src/commands.ts",
+    "src/directory-picker.ts",
+    "src/feed.ts"
+  ],
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../core/session" },
+    { "path": "../../host/directory-picker" },
+    { "path": "../../runtime-diagnostics/invariants" },
+    { "path": "../../storage/storage-domain" },
+    { "path": "../../typert/protocol" },
+    { "path": "../../util/deque" },
+    { "path": "../../workspace/workspace" }
+  ]
+}

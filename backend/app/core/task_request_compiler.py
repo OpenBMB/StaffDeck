@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field
 
 from app.db.models import ChatSession, Skill
 from app.session.session_schema import PlannedTaskFrame
-
+from staffdeck_harness.sop.fields import slot_field_names
 
 CapabilityKind = Literal[
     "general_skill",
@@ -56,7 +58,13 @@ class TaskRequirement(BaseModel):
     task_frame_id: str
     kind: Literal["sop", "conversation"]
     goal: str
+    execution_loop_id: str = ""
+    current_user_message: str = ""
+    current_time: str = ""
+    expected_slots: list[str] = Field(default_factory=list)
+    default_result_status: Literal["completed", "awaiting_user", "handoff"] = "completed"
     source_user_message: str = ""
+    out_of_scope_task_intents: list[str] = Field(default_factory=list)
     requirements: list[str] = Field(default_factory=list)
     sop_context: dict[str, Any] = Field(default_factory=dict)
     required_slots: list[str] = Field(default_factory=list)
@@ -68,6 +76,7 @@ class TaskRequirement(BaseModel):
     memory_projection: list[dict[str, str]] = Field(default_factory=list)
     prior_task_results: list[dict[str, Any]] = Field(default_factory=list)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    published_deliverables: list[dict[str, Any]] = Field(default_factory=list)
     capability_manifest: CapabilityManifest = Field(default_factory=CapabilityManifest)
 
 
@@ -75,6 +84,7 @@ class TaskExecutionResult(BaseModel):
     task_frame_id: str
     status: Literal[
         "completed",
+        "waiting_external_task",
         "awaiting_user",
         "handoff",
         "failed",
@@ -92,6 +102,10 @@ class TaskExecutionResult(BaseModel):
     action_count: int = 0
     error: dict[str, Any] | None = None
     structured_result: Any | None = None
+    loop_checkpoint: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    # Assistant text the engine already streamed to the client while this frame ran. The turn
+    # skeleton compares it with the final reply to avoid emitting the same text twice.
+    streamed_reply: str = Field(default="", exclude=True)
 
 
 class TaskRequestCompiler:
@@ -106,10 +120,13 @@ class TaskRequestCompiler:
         memory_context: list[dict[str, object]] | None = None,
         prior_task_results: list[dict[str, Any]] | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        published_deliverables: list[dict[str, Any]] | None = None,
         source_user_message: str | None = None,
+        out_of_scope_task_intents: list[str] | None = None,
+        client_timezone: str | None = None,
     ) -> TaskRequirement:
         current_node = _current_node(skill, frame.target_step_id or session.active_step_id)
-        expected_fields = _text_list((current_node or {}).get("expected_user_info"))
+        expected_fields = slot_field_names((current_node or {}).get("expected_user_info"))
         known_slots = (
             {
                 str(key): value
@@ -164,7 +181,13 @@ class TaskRequestCompiler:
             task_frame_id=str(frame.task_id or ""),
             kind=frame.kind,
             goal=goal,
+            current_time=_current_time_text(client_timezone),
+            expected_slots=expected_fields,
+            default_result_status="handoff" if frame.decision == "handoff_human" else "awaiting_user" if frame.decision == "clarify" else "completed",
             source_user_message=str(source_user_message or "").strip()[:4_000],
+            out_of_scope_task_intents=_unique(
+                [str(item or "") for item in out_of_scope_task_intents or []]
+            ),
             requirements=requirements or [goal],
             sop_context=_sop_context(skill, current_node),
             required_slots=required_slots,
@@ -176,6 +199,7 @@ class TaskRequestCompiler:
             memory_projection=_memory_projection(memory_context),
             prior_task_results=list(prior_task_results or []),
             attachments=list(attachments or []),
+            published_deliverables=list(published_deliverables or []),
             capability_manifest=manifest,
         )
 
@@ -204,6 +228,33 @@ def current_step_capability_refs(skill: Skill | None, step_id: str | None) -> di
             if kb_id not in result["knowledge_base_ids"]:
                 result["knowledge_base_ids"].append(kb_id)
     return result
+
+
+def current_step_authorization_skill_ids(
+    skill: Skill | None,
+    step_id: str | None,
+) -> set[str]:
+    """Return every SOP identity that authorizes the current expanded node.
+
+    Nested SOP nodes execute inside the parent's persisted task frame, so the
+    runtime ``Skill`` keeps the parent ``skill_id``.  The expansion metadata is
+    the authoritative source for the child call path.  Keeping both identities
+    preserves parent-level tool grants while allowing a child-only grant to
+    remain valid after expansion.
+    """
+    if skill is None:
+        return set()
+    authorized = {str(skill.skill_id or "").strip()}
+    node = _current_node(skill, step_id)
+    metadata = (node or {}).get("metadata")
+    if isinstance(metadata, dict):
+        nested_path = metadata.get("nested_sop_path")
+        if isinstance(nested_path, list):
+            authorized.update(_text_list(nested_path))
+        source_sop_id = str(metadata.get("source_sop_id") or "").strip()
+        if source_sop_id:
+            authorized.add(source_sop_id)
+    return {value for value in authorized if value}
 
 
 def _current_node(skill: Skill | None, step_id: str | None) -> dict[str, Any] | None:
@@ -332,4 +383,15 @@ def _unique(values: list[str]) -> list[str]:
 
 
 def _slot_satisfied(value: object) -> bool:
-    return value not in (None, "", [], {})
+    from app.session.slot_policy import slot_is_filled
+
+    return slot_is_filled(value)
+
+
+def _current_time_text(client_timezone: str | None = None) -> str:
+    try:
+        zone = ZoneInfo(client_timezone.strip()) if client_timezone and client_timezone.strip() else None
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = None
+    now = datetime.now(zone) if zone else datetime.now().astimezone()
+    return f"{now.isoformat(timespec='minutes')}（周{'一二三四五六日'[now.weekday()]}）"

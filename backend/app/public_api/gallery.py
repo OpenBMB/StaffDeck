@@ -38,14 +38,9 @@ def _gallery_agents(db: Session, principal: PublicPrincipal) -> list[AgentProfil
         principal.tenant_id,
         db,
         principal.actor_user,
+        scope='gallery',
     )
-    return [
-        row
-        for row in rows
-        if not row.is_overall
-        and row.status == "active"
-        and (row.metadata or {}).get("published_to_gallery") is True
-    ]
+    return rows
 
 
 @router.get("", response_model=dict)

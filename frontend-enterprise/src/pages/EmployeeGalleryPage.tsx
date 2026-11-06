@@ -3,7 +3,7 @@ import { notify } from '@/components/ui/app-toast';
 
 import IconSearch from '../assets/icons/search.svg?react';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { api, TENANT_ID } from '../api/client';
@@ -20,14 +20,12 @@ import {
   employeeDisplayName,
   employeeDisplayNameWithCreator,
   employeeProfile,
-  isMyEmployeeAgent,
-  visibleEmployeeAgents,
 } from '../employee';
 import type { AgentProfileRead, TeamRead } from '../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
-type GalleryScope = 'all' | 'mine' | 'teams' | 'gallery';
+type GalleryScope = 'all' | 'mine' | 'teams' | 'gallery' | 'shared';
 
 export default function EmployeeGalleryPage({
   currentUser,
@@ -42,7 +40,9 @@ export default function EmployeeGalleryPage({
 }) {
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [teams, setTeams] = useState<TeamRead[]>([]);
+  const [teamsLoadFailed, setTeamsLoadFailed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [avatarAgent, setAvatarAgent] = useState<AgentProfileRead | null>(null);
   const [profileAgent, setProfileAgent] = useState<AgentProfileRead | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentProfileRead | null>(null);
@@ -51,17 +51,27 @@ export default function EmployeeGalleryPage({
   const [startingTeamId, setStartingTeamId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [scope, setScope] = useState<GalleryScope>('all');
+  const loadGeneration = useRef(0);
   const navigate = useNavigate();
 
   async function load() {
+    const generation = ++loadGeneration.current;
     setLoading(true);
+    setAgents([]);
+    setLoadError('');
     try {
-      const rows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
+      const queryScope = scope === 'all' || scope === 'teams' ? 'available' : scope;
+      const rows = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}&scope=${queryScope}&view=summary`);
+      if (generation !== loadGeneration.current) return;
       setAgents(rows);
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '加载员工失败');
+      if (generation === loadGeneration.current) {
+        const message = error instanceof Error ? error.message : '加载员工失败';
+        setLoadError(message);
+        notify.error(message);
+      }
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
   }
 
@@ -69,39 +79,31 @@ export default function EmployeeGalleryPage({
     try {
       const rows = await api.get<TeamRead[]>(`/api/enterprise/teams?tenant_id=${TENANT_ID}`);
       setTeams(rows);
+      setTeamsLoadFailed(false);
     } catch (error) {
+      setTeamsLoadFailed(true);
       notify.error(error instanceof Error ? error.message : '加载团队失败');
     }
   }
 
   useEffect(() => {
     void load();
+    return () => { loadGeneration.current += 1; };
+  }, [scope]);
+
+  useEffect(() => {
     void loadTeams();
   }, []);
 
   // Keep these tabs aligned with the rest of the app:
   // - 所有员工: employees the current user can access and chat with
   // - 我的数字员工: employees the current user can manage/edit
-  // - 我的团队: teams owned by the current user
-  // - 数字员工广场: public employees not already listed as mine
-  const availableAgents = useMemo(
-    () => visibleEmployeeAgents(agents, currentUser, { activeOnly: true }),
-    [agents, currentUser],
-  );
-  const myEmployees = useMemo(
-    () => availableAgents.filter((item) => isMyEmployeeAgent(item, currentUser)),
-    [availableAgents, currentUser],
-  );
-  const galleryEmployees = useMemo(() => {
-    const myIds = new Set(myEmployees.map((item) => item.id));
-    return availableAgents.filter((item) => isGalleryEmployee(item) && !myIds.has(item.id));
-  }, [availableAgents, myEmployees]);
-
-  const scopedEmployees = scope === 'mine'
-    ? myEmployees
-    : scope === 'gallery'
-      ? galleryEmployees
-      : availableAgents;
+  // - 团队对话: teams the backend has authorized for the current tenant
+  // - 数字员工广场: the authoritative public directory, including my public employees
+  // Directory membership is decided by the shared server contract, not inferred
+  // from owner/public flags in a partial list. Public owners remain in the gallery.
+  const availableAgents = agents;
+  const scopedEmployees = loading ? [] : agents;
 
   const filteredEmployees = scopedEmployees.filter((item) => {
     const profile = employeeProfile(item);
@@ -117,13 +119,7 @@ export default function EmployeeGalleryPage({
     ].some((value) => value.toLowerCase().includes(keyword));
   });
 
-  // 与「我的数字员工」语义对齐：优先展示当前用户拥有的团队；
-  // 没有用户信息时（如未登录预览）回退为全部团队。
-  const myTeams = useMemo(
-    () => (currentUser ? teams.filter((team) => team.owner_user_id === currentUser.id) : teams),
-    [teams, currentUser],
-  );
-  const filteredTeams = myTeams.filter((team) => {
+  const filteredTeams = teams.filter((team) => {
     const keyword = searchTerm.trim().toLowerCase();
     if (!keyword) return true;
     return [
@@ -171,7 +167,6 @@ export default function EmployeeGalleryPage({
       await api.put<AgentProfileRead>(`/api/enterprise/agents/${row.id}`, {
         tenant_id: TENANT_ID,
         status,
-        metadata: row.metadata || {},
       });
       notify.success(status === 'active' ? '员工已上线' : '员工已下线');
       await load();
@@ -183,8 +178,11 @@ export default function EmployeeGalleryPage({
 
   async function updateGalleryState(row: AgentProfileRead, published: boolean) {
     try {
+      const detail = row.metadata?.directory_summary
+        ? await api.get<AgentProfileRead>(`/api/enterprise/agents/${encodeURIComponent(row.id)}?tenant_id=${encodeURIComponent(row.tenant_id)}`)
+        : row;
       const metadata: Record<string, unknown> = {
-        ...(row.metadata || {}),
+        ...(detail.metadata || {}),
         published_to_gallery: published,
         gallery_published_at: published ? new Date().toISOString() : undefined,
         gallery_published_by: published ? currentUser?.username : undefined,
@@ -235,6 +233,7 @@ export default function EmployeeGalleryPage({
 
   function updateAgentInList(row: AgentProfileRead) {
     setAgents((current) => current.map((item) => (item.id === row.id ? row : item)));
+    void load();
   }
 
   const galleryTabs: UnderlineTabItem<GalleryScope>[] = [
@@ -242,7 +241,15 @@ export default function EmployeeGalleryPage({
     { value: 'mine', label: '我的数字员工' },
     { value: 'teams', label: '团队对话' },
     { value: 'gallery', label: '数字员工广场' },
+    { value: 'shared', label: '共享给我' },
   ];
+
+  function changeScope(nextScope: GalleryScope) {
+    setScope(nextScope);
+    if (nextScope === 'teams' && teamsLoadFailed) {
+      void loadTeams();
+    }
+  }
 
   const hasSearchTerm = Boolean(searchTerm.trim());
   const emptyText = hasSearchTerm ? '没有匹配的数字员工' : '暂无数字员工';
@@ -281,7 +288,7 @@ export default function EmployeeGalleryPage({
         className="mt-[36px] mb-[16px] max-[560px]:w-full"
         aria-label="数字员工分类"
         value={scope}
-        onChange={setScope}
+        onChange={changeScope}
         items={galleryTabs}
         tabClassName="max-[560px]:min-h-[54px] max-[560px]:w-auto max-[560px]:flex-1 max-[560px]:px-[6px] max-[560px]:text-[12px] max-[560px]:leading-[16px]"
       />
@@ -322,7 +329,7 @@ export default function EmployeeGalleryPage({
             />
           ))}
           {!filteredEmployees.length && (
-            <EmployeeGalleryEmptyState title={emptyText} description={emptyDescription} />
+            <EmployeeGalleryEmptyState title={loadError ? '员工目录暂不可用' : emptyText} description={loadError || emptyDescription} />
           )}
         </div>
       )}

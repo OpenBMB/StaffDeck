@@ -91,6 +91,21 @@ class HarnessTurnStore:
             },
         )
 
+    def renew(self, record: HarnessTurnRecord | None) -> None:
+        """Keep the durable turn receipt alive while its executor is healthy."""
+
+        if record is None or record.status not in {"started", "finalizing"}:
+            return
+        now = utc_now()
+        self._fenced_update(
+            record,
+            expected_statuses=("started", "finalizing"),
+            values={
+                "lease_expires_at": now + timedelta(seconds=TURN_LEASE_SECONDS),
+                "updated_at": now,
+            },
+        )
+
     def complete(
         self,
         record: HarnessTurnRecord | None,

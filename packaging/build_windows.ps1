@@ -81,12 +81,16 @@ $PY = Get-PythonCommand
 Write-Host "Using Python: $($PY.Command) $($PY.PrefixArgs -join ' ')"
 
 Write-Host "==> [1/6] Build frontend"
-if (-not (Test-Path frontend-enterprise\node_modules)) {
-  npm ci --prefix frontend-enterprise --no-audit --no-fund
-  Assert-NativeCommandSucceeded "npm ci"
+if ($env:SKIP_FRONTEND -eq "1") {
+  if (-not (Test-Path frontend-enterprise\dist\index.html)) { throw "Prepared frontend is missing" }
+} else {
+  if (-not (Test-Path frontend-enterprise\node_modules)) {
+    npm ci --prefix frontend-enterprise --no-audit --no-fund
+    Assert-NativeCommandSucceeded "npm ci"
+  }
+  npm --prefix frontend-enterprise run build
+  Assert-NativeCommandSucceeded "Frontend build"
 }
-npm --prefix frontend-enterprise run build
-Assert-NativeCommandSucceeded "Frontend build"
 
 Write-Host "==> [2/6] Create backend venv and install packaging dependencies"
 & $PY.Command @($PY.PrefixArgs) -m venv backend\.venv
@@ -105,11 +109,19 @@ backend\.venv\Scripts\python -m pip install "pyinstaller>=6.6.0" "certifi>=2024.
 Assert-NativeCommandSucceeded "Packaging dependency installation"
 
 Write-Host "==> [3/6] Build PyInstaller application"
+backend\.venv\Scripts\python packaging\distribution\install_dependencies.py
+Assert-NativeCommandSucceeded "Distribution dependency installation"
 Push-Location backend
 .\.venv\Scripts\pyinstaller ..\packaging\ultrarag.spec --noconfirm --distpath ..\packaging\out --workpath ..\packaging\build
 Assert-NativeCommandSucceeded "PyInstaller build"
 Pop-Location
+& $PY.Command @($PY.PrefixArgs) packaging\bundle_engine.py packaging\out\staffdeck\harness-engine
+Assert-NativeCommandSucceeded "Harness runtime staging"
 & packaging\out\staffdeck\staffdeck.exe --packaging-smoke
+& packaging\out\staffdeck\staffdeck-cli.exe --version
+if ($LASTEXITCODE -ne 0) { throw "CLI smoke check failed" }
+& packaging\out\staffdeck\staffdeck-cli.exe guide | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "CLI guide is missing" }
 Assert-NativeCommandSucceeded "Packaged Lark SDK smoke test"
 
 $signingConfigured = Test-SigningConfigured

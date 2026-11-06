@@ -130,6 +130,34 @@ class ChannelAdapter(Protocol):
 
     def stop_ingress(self, binding_id: str) -> None: ...
 
+    def pause_binding(self, binding_id: str) -> None: ...
+
+    def resume_binding(self, binding_id: str, *, start: bool = True) -> None: ...
+
+    def wait_binding_stopped(self, binding_id: str, timeout_seconds: float = 5.0) -> bool: ...
+
+
+class ManagedIngressLifecycle:
+    """Reuse native managers behind the same lifecycle contract as third-party adapters."""
+
+    def ingress_manager(self) -> Any:
+        raise NotImplementedError
+
+    def start_ingress(self, binding_id: str) -> None:
+        self.ingress_manager().ensure_binding(binding_id)
+
+    def stop_ingress(self, binding_id: str) -> None:
+        self.ingress_manager().stop_binding(binding_id)
+
+    def pause_binding(self, binding_id: str) -> None:
+        self.ingress_manager().pause_binding(binding_id)
+
+    def resume_binding(self, binding_id: str, *, start: bool = True) -> None:
+        self.ingress_manager().resume_binding(binding_id, start=start)
+
+    def wait_binding_stopped(self, binding_id: str, timeout_seconds: float = 5.0) -> bool:
+        return self.ingress_manager().wait_binding_stopped(binding_id, timeout_seconds)
+
 
 class ChannelReactionAdapter(Protocol):
     """可选能力:给入站消息挂"处理中"标记,最终回复送达后撤回。
@@ -167,11 +195,26 @@ def register_channel_adapter(channel: str, adapter: ChannelAdapter) -> None:
     _adapters[channel] = adapter
 
 
-def get_channel_adapter(channel: str) -> ChannelAdapter:
+def get_builtin_channel_adapter(channel: str) -> ChannelAdapter:
     adapter = _adapters.get(channel)
     if adapter is None:
         raise ValueError(f"未注册的渠道适配器: {channel}")
     return adapter
+
+
+def get_channel_adapter(channel: str) -> ChannelAdapter:
+    from staffdeck_harness.contracts.manifest import SlotName
+    from staffdeck_harness.modules.registry import peek_registry
+
+    registry = peek_registry()
+    if registry is None:
+        return get_builtin_channel_adapter(channel)
+    candidates = [item for item in registry.providers(SlotName.STAFF_CHANNEL)
+                  if item.manifest.metadata.get("channel", item.manifest.module_id.removeprefix("channel.")) == channel
+                  and callable(getattr(item.provider, "send", None))]
+    if len(candidates) != 1:
+        raise ValueError(f"渠道 {channel} 需要一个已启用的适配模块，当前为 {len(candidates)} 个")
+    return candidates[0].provider
 
 
 def channel_reaction_token(channel: str) -> str | None:
@@ -179,8 +222,9 @@ def channel_reaction_token(channel: str) -> str | None:
 
     intake 与 outbox 都以此作为能力门禁,不再按渠道名字判断。
     """
-    adapter = _adapters.get(channel)
-    if adapter is None:
+    try:
+        adapter = get_channel_adapter(channel)
+    except ValueError:
         return None
     if not callable(getattr(adapter, "add_reaction", None)) or not callable(
         getattr(adapter, "remove_reaction", None)
@@ -188,6 +232,14 @@ def channel_reaction_token(channel: str) -> str | None:
         return None
     token = str(getattr(adapter, "reaction_token", "") or "").strip()
     return token or None
+
+
+def builtin_channel_enabled(channel: str) -> bool:
+    """Builtin pollers must not reconnect a channel whose adapter was disabled/replaced."""
+    try:
+        return get_channel_adapter(channel) is get_builtin_channel_adapter(channel)
+    except ValueError:
+        return False
 
 
 def split_channel_text(text: str, limit: int = CHANNEL_TEXT_LIMIT) -> list[str]:

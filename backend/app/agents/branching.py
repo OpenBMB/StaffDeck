@@ -94,6 +94,24 @@ def metadata_preserving_creator(
     return metadata
 
 
+def binding_metadata_preserving_provenance(
+    existing: dict[str, Any] | None,
+    replacement: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Replace editable binding options while retaining server-recorded origin.
+
+    A private SOP may have a draft base row and an active employee branch. Its
+    binding's origin is what makes that branch visible to execution; omitting
+    metadata in a resource PUT must not silently remove that visibility.
+    """
+    current = dict(existing or {})
+    metadata = metadata_preserving_creator(current, replacement)
+    for key in ("scope", "visibility", "owner_agent_id", "created_from_agent", "created_from_upload"):
+        if key in current:
+            metadata[key] = current[key]
+    return metadata
+
+
 def get_overall_agent(db: Session, tenant_id: str) -> AgentProfile | None:
     return db.exec(
         select(AgentProfile).where(
@@ -313,6 +331,7 @@ def is_bound_resource_visible_for_agent(
     resource_type: str,
     resource: object,
     binding: AgentResourceBinding,
+    *, gallery_visibility: bool | None = None,
 ) -> bool:
     if binding.status == "deleted":
         return False
@@ -320,6 +339,8 @@ def is_bound_resource_visible_for_agent(
         return False
     if _binding_is_private(binding) or _metadata_is_private(_resource_metadata(resource)):
         return True
+    if gallery_visibility is not None:
+        return gallery_visibility
     return is_open_gallery_resource(db, tenant_id, resource_type, resource)
 
 

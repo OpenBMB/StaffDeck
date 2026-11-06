@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+import logging
+
+from fastapi import Depends, FastAPI
+from app.security.api_policy import install_response_filters, module_policy
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
@@ -26,11 +29,17 @@ from app.api import (
     tools,
     traces,
     ui_config,
+    wechat_kf,
 )
 from app.async_jobs import shutdown_async_jobs, start_async_jobs
 from app.a2a import recover_codex_a2a_tasks, router as a2a_router, stop_codex_a2a_tasks
 from app.channels import start_channel_services, stop_channel_services
 from app.config import get_settings
+from app.core.harness_recovery import (
+    recover_orphan_harness_runs,
+    start_harness_recovery_sweeper,
+    stop_harness_recovery_sweeper,
+)
 from app.db import engine, init_db
 from app.db.seed import seed_demo_data
 from app.public_api import create_public_api_app
@@ -43,6 +52,8 @@ from app.tools.a2a_recovery import recover_a2a_client_tasks
 from app.teams.sweeper import start_timeout_sweeper, stop_timeout_sweeper
 from app.version import app_version
 
+logger = logging.getLogger(__name__)
+
 settings = get_settings()
 
 app = FastAPI(
@@ -52,6 +63,8 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+from staffdeck_harness.runtime.management import ModuleManagementMiddleware
+app.add_middleware(ModuleManagementMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -66,15 +79,29 @@ app.add_middleware(
 def on_startup() -> None:
     acquire_runtime_instance_lock()
     try:
+        from staffdeck_harness.distribution.runtime_bundle import ensure_runtime_archive
+        ensure_runtime_archive()
         start_async_jobs()
         init_db()
+        from staffdeck_harness.distribution.bootstrap import initialize_defaults
         with Session(engine) as db:
-            seed_demo_data(db)
+            distribution_initialized = initialize_defaults(db)
+            if settings.demo_seed_enabled and not distribution_initialized:
+                seed_demo_data(db)
+        from staffdeck_harness.runtime import start_harness_runtime
+
+        # Assemble the deployment PEP before background workers admit work.
+        start_harness_runtime(settings)
+        from staffdeck_harness.runtime.services import recover_runtime_runs
+        recover_runtime_runs(startup=True)
         recover_codex_a2a_tasks()
         recover_a2a_client_tasks()
         start_background_worker()
         start_channel_services()
         start_timeout_sweeper()
+        start_harness_recovery_sweeper()
+        from app.tools.external_task_worker import start_external_task_worker
+        start_external_task_worker()
         # Internal durable jobs (for example feedback analysis) use the same
         # recovery table even when the externally exposed API is disabled.
         recover_public_jobs()
@@ -95,7 +122,13 @@ def on_shutdown() -> None:
         stop_channel_services()
         stop_background_worker()
         stop_timeout_sweeper()
+        stop_harness_recovery_sweeper()
+        from app.tools.external_task_worker import stop_external_task_worker
+        stop_external_task_worker()
         shutdown_async_jobs()
+        if settings.harness_v3_enabled or settings.harness_admin_api_enabled:
+            from staffdeck_harness.runtime import stop_harness_runtime
+            stop_harness_runtime()
     finally:
         release_runtime_instance_lock()
 
@@ -106,17 +139,25 @@ def health() -> dict[str, str]:
 
 
 app.include_router(app_updates.router)
+from staffdeck_harness.product_features import FRAMEWORK_MANAGEMENT_INCLUDED
+if FRAMEWORK_MANAGEMENT_INCLUDED and settings.harness_admin_api_enabled:
+    from staffdeck_harness.distribution.api import router as packages_router, builders as package_builders_router
+    app.include_router(packages_router)
+    app.include_router(package_builders_router)
+from app.api.external_business_tasks import enterprise_router as external_task_router, callback_router as external_callback_router
+app.include_router(external_task_router)
+app.include_router(external_callback_router)
 app.include_router(chat.router)
 app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)
 app.include_router(auth.router)
 app.include_router(agents.scope_router)
-app.include_router(agents.enterprise_router)
-app.include_router(general_skills.router)
-app.include_router(knowledge_bases.router)
-app.include_router(knowledge.router)
-app.include_router(skills.router)
-app.include_router(model_configs.router)
+app.include_router(agents.enterprise_router, dependencies=[Depends(module_policy("agent"))])
+app.include_router(general_skills.router, dependencies=[Depends(module_policy("general_skill"))])
+app.include_router(knowledge_bases.router, dependencies=[Depends(module_policy("knowledge_base"))])
+app.include_router(knowledge.router, dependencies=[Depends(module_policy("knowledge_base", use_endpoints=("search_knowledge",)))])
+app.include_router(skills.router, dependencies=[Depends(module_policy("sop"))])
+app.include_router(model_configs.router, dependencies=[Depends(module_policy("model_config"))])
 app.include_router(memories.router)
 app.include_router(evolution.router)
 app.include_router(feedback.router)
@@ -126,14 +167,32 @@ app.include_router(scheduled_tasks.chat_router)
 app.include_router(scheduled_tasks.chat_draft_router)
 app.include_router(ui_config.enterprise_router)
 app.include_router(channels.router)
-app.include_router(teams.router)
+from app.channels.execution_scope import router as channel_scope_router
+app.include_router(channel_scope_router)
+app.include_router(wechat_kf.router)
+app.include_router(teams.router, dependencies=[Depends(module_policy("team", use_endpoints=("tl_chat_endpoint", "create_team_task_endpoint")))])
 app.include_router(teams.threads_router)
-app.include_router(tools.router)
-app.include_router(tools.mcp_router)
+app.include_router(tools.router, dependencies=[Depends(module_policy("tool", use_endpoints=("test_tool", "probe_tool")))])
+app.include_router(tools.mcp_router, dependencies=[Depends(module_policy("mcp_server"))])
 app.include_router(sessions.router)
 app.include_router(traces.router)
 app.include_router(mock.router)
 app.include_router(a2a_router)
 
+# Business frontend compatibility layer (transparent to releases/direct clients).
+from app.api_enterprise import register_business_compat
+
+register_business_compat(app)
+if FRAMEWORK_MANAGEMENT_INCLUDED and settings.harness_admin_api_enabled:
+    try:
+        from staffdeck_harness.runtime import mount_admin_api
+    except ImportError:
+        if settings.harness_v3_enabled:
+            raise
+    else:
+        mount_admin_api(app)
+
 if settings.public_api_enabled:
     app.mount("/api/v1", create_public_api_app())
+
+install_response_filters(app)

@@ -1,6 +1,8 @@
 name: release
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     tags: ["v*", "[0-9]*"]
   workflow_dispatch:
@@ -8,10 +10,22 @@ on:
       version:
         description: "Version used for manual packaging runs"
         required: true
-        default: "0.1.0"
+        default: "0.6.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oss-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  checks:
+    uses: ./.github/workflows/oss-checks.yml
+
   build:
+    needs: checks
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
@@ -30,26 +44,35 @@ jobs:
           - os: windows-latest
             script: pwsh packaging/build_windows.ps1
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22.19.0"
 
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
-      - name: Install frontend deps
-        run: npm --prefix frontend-enterprise ci || npm --prefix frontend-enterprise install
+      - name: Resolve release version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: python packaging/stamp_release.py "$RELEASE_VERSION" >> "$GITHUB_ENV"
+
+      - name: Prepare OSS frontend and Harness runtime
+        run: |
+          npm install --global pnpm@11.7.0
+          python prepare.py --without-backend
 
       - name: macOS tools
         if: startsWith(matrix.os, 'macos')
         run: brew install create-dmg
 
       - name: Configure macOS signing
-        if: startsWith(matrix.os, 'macos')
+        if: startsWith(matrix.os, 'macos') && github.event_name != 'pull_request'
         env:
           MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
           MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
@@ -119,9 +142,21 @@ jobs:
 
       - name: Build
         env:
-          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
           STAFFDECK_MACOS_ARCH: ${{ matrix.macos_arch }}
+          SKIP_FRONTEND: "1"
         run: ${{ matrix.script }}
+
+      - name: Native OSS login and CLI acceptance
+        timeout-minutes: 18
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            python packaging/smoke_oss.py --server packaging/out/StaffDeck.app/Contents/MacOS/staffdeck --cli packaging/out/StaffDeck.app/Contents/MacOS/staffdeck-cli --restart-with-cli
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            python packaging/smoke_oss.py --server packaging/out/staffdeck/staffdeck.exe --cli packaging/out/staffdeck/staffdeck-cli.exe --restart-with-cli
+          else
+            python packaging/smoke_oss.py --server packaging/out/staffdeck/staffdeck --cli packaging/out/staffdeck/staffdeck-cli --restart-with-cli
+          fi
 
       - name: Windows general-skill smoke (python runtime)
         if: runner.os == 'Windows'
@@ -170,6 +205,10 @@ jobs:
               Stop-Process -Id $p.Id -Force
             }
           }
+
+      - name: Package public OSS source
+        if: runner.os == 'Linux'
+        run: python packaging/source_release.py --version "$VERSION" --output packaging/out
 
       - uses: actions/upload-artifact@v7
         with:

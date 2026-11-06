@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import (
+    agent_private_metadata,
     ensure_open_gallery_binding,
     ensure_private_resource_binding,
     model_for_agent,
@@ -914,6 +915,161 @@ def test_private_general_skill_edit_does_not_mutate_open_gallery_skill() -> None
             )
         assert rename_error.value.status_code == 400
         assert rename_error.value.detail == "General skill slug cannot be modified"
+
+
+def test_copy_agent_deep_copies_private_general_skill_package() -> None:
+    with _test_session() as db:
+        _owner, _other, admin = _seed_users(db)
+        source = AgentProfile(
+            id="agent_general_skill_source",
+            tenant_id="tenant_demo",
+            name="源企业微信员工",
+            is_overall=False,
+            metadata_json={"owner_user_id": admin.id, "owner_username": admin.username},
+        )
+        skill = GeneralSkill(
+            id="genskill_private_wecom",
+            tenant_id="tenant_demo",
+            slug="wecom-unified",
+            name="企业微信",
+            skill_markdown=(
+                "# 企业微信\n\n读取 references/wecomcli-calendar-meeting-room.md。\n"
+            ),
+            skill_files_json=[
+                {
+                    "path": "SKILL.md",
+                    "content": (
+                        "# 企业微信\n\n读取 references/wecomcli-calendar-meeting-room.md。\n"
+                    ),
+                },
+                {
+                    "path": "references/wecomcli-calendar-meeting-room.md",
+                    "content": "# 日程查询\n",
+                },
+            ],
+            metadata_json=agent_private_metadata(source.id),
+            status="published",
+        )
+        db.add(source)
+        db.add(skill)
+        db.flush()
+        ensure_private_resource_binding(
+            db,
+            "tenant_demo",
+            source.id,
+            "general_skill",
+            skill.id,
+            "active",
+        )
+        db.commit()
+
+        copied_agent = create_agent(
+            AgentProfileCreateRequest(
+                tenant_id="tenant_demo",
+                name="复制企业微信员工",
+                source_mode="copy",
+                copy_from_agent_id=source.id,
+            ),
+            db=db,
+            current_user=admin,
+        )
+
+        copied_binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == "tenant_demo",
+                AgentResourceBinding.agent_id == copied_agent.id,
+                AgentResourceBinding.resource_type == "general_skill",
+                AgentResourceBinding.status == "active",
+            )
+        ).one()
+        copied_skill = db.get(GeneralSkill, copied_binding.resource_id)
+        assert copied_skill is not None
+        assert copied_skill.id != skill.id
+        assert copied_skill.slug == "wecom-unified-copy"
+        assert copied_skill.skill_files_json == skill.skill_files_json
+        assert copied_skill.metadata_json["owner_agent_id"] == copied_agent.id
+        assert copied_skill.metadata_json["copied_from_general_skill_id"] == skill.id
+
+
+def test_editing_shared_private_general_skill_forks_instead_of_mutating_source() -> None:
+    with _test_session() as db:
+        _owner, _other, admin = _seed_users(db)
+        source = AgentProfile(
+            id="agent_shared_skill_source",
+            tenant_id="tenant_demo",
+            name="共享技能源员工",
+            is_overall=False,
+        )
+        target = AgentProfile(
+            id="agent_shared_skill_target",
+            tenant_id="tenant_demo",
+            name="共享技能复制员工",
+            is_overall=False,
+        )
+        original = GeneralSkill(
+            id="genskill_shared_private",
+            tenant_id="tenant_demo",
+            slug="wecom-shared-private",
+            name="企业微信共享技能",
+            skill_markdown="# 原始技能\n",
+            skill_files_json=[{"path": "SKILL.md", "content": "# 原始技能\n"}],
+            metadata_json=agent_private_metadata(source.id),
+            status="published",
+        )
+        db.add(source)
+        db.add(target)
+        db.add(original)
+        db.flush()
+        source_binding_metadata = agent_private_metadata(source.id)
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id=source.id,
+                resource_type="general_skill",
+                resource_id=original.id,
+                status="active",
+                metadata_json=source_binding_metadata,
+            )
+        )
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id=target.id,
+                resource_type="general_skill",
+                resource_id=original.id,
+                status="active",
+                metadata_json=source_binding_metadata,
+            )
+        )
+        db.commit()
+
+        forked = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                agent_id=target.id,
+                original_slug=original.slug,
+                slug=original.slug,
+                name="复制员工版本",
+                markdown="# 复制员工修改后的技能\n",
+            ),
+            db=db,
+            current_user=admin,
+        )
+
+        db.refresh(original)
+        assert forked.id != original.id
+        assert forked.slug == "wecom-shared-private-2"
+        assert original.skill_markdown == "# 原始技能\n"
+        assert forked.skill_markdown == "# 复制员工修改后的技能\n"
+        assert forked.metadata["owner_agent_id"] == target.id
+        original_target_binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.agent_id == target.id,
+                AgentResourceBinding.resource_type == "general_skill",
+                AgentResourceBinding.resource_id == original.id,
+            )
+        ).one()
+        assert original_target_binding.status == "deleted"
 
 
 def _seed_users(db: Session) -> tuple[User, User, User]:

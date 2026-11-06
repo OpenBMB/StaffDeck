@@ -10,6 +10,7 @@ from app.agents.branching import (
     ensure_knowledge_base_version,
     ensure_open_gallery_binding,
     ensure_private_resource_binding,
+    mark_resource_private_for_agent,
 )
 from app.api.general_skills import general_skill_read, import_general_skill
 from app.api.knowledge_bases import (
@@ -17,6 +18,7 @@ from app.api.knowledge_bases import (
     knowledge_base_read,
     update_knowledge_base,
 )
+from app.api.skills import _with_available_context_for_distill
 from app.api.tools import (
     _update_inherited_mcp_tool_scopes,
     create_tool,
@@ -39,6 +41,7 @@ from app.db.models import (
 )
 from app.general_skills.schema import GeneralSkillImportRequest
 from app.knowledge.schema import KnowledgeBaseCreateRequest, KnowledgeBaseUpdateRequest
+from app.skills.skill_schema import SkillDistillRequest
 from app.tools.tool_schema import (
     MCPServerCreateRequest,
     MCPSyncRequest,
@@ -65,6 +68,86 @@ def _admin_user() -> User:
         role="admin",
         password_hash="test",
     )
+
+
+def test_distill_catalog_uses_capabilities_visible_to_selected_agent() -> None:
+    with _test_session() as db:
+        tenant = Tenant(id="tenant_demo", name="Demo")
+        agent = AgentProfile(id="agent_writer", tenant_id=tenant.id, name="Writer")
+        other_agent = AgentProfile(id="agent_other", tenant_id=tenant.id, name="Other")
+        visible_tool = Tool(
+            id="tool_excel",
+            tenant_id=tenant.id,
+            name="excel.write",
+            display_name="写入 Excel",
+            description="把结构化数据写入工作簿",
+            method="POST",
+            url="https://example.test/excel",
+        )
+        hidden_tool = Tool(
+            id="tool_news",
+            tenant_id=tenant.id,
+            name="news.search",
+            display_name="新闻检索",
+            method="POST",
+            url="https://example.test/news",
+        )
+        visible_skill = GeneralSkill(
+            id="genskill_table",
+            tenant_id=tenant.id,
+            slug="table-cleanup",
+            name="表格清洗",
+            skill_markdown="# 表格清洗",
+            status="published",
+        )
+        hidden_skill = GeneralSkill(
+            id="genskill_news",
+            tenant_id=tenant.id,
+            slug="news-digest",
+            name="新闻摘要",
+            skill_markdown="# 新闻摘要",
+            status="published",
+        )
+        mark_resource_private_for_agent(visible_tool, agent.id)
+        mark_resource_private_for_agent(hidden_tool, other_agent.id)
+        mark_resource_private_for_agent(visible_skill, agent.id)
+        mark_resource_private_for_agent(hidden_skill, other_agent.id)
+        db.add_all(
+            [
+                tenant,
+                agent,
+                other_agent,
+                visible_tool,
+                hidden_tool,
+                visible_skill,
+                hidden_skill,
+            ]
+        )
+        db.flush()
+        ensure_private_resource_binding(db, tenant.id, agent.id, "tool", visible_tool.id)
+        ensure_private_resource_binding(
+            db,
+            tenant.id,
+            agent.id,
+            "general_skill",
+            visible_skill.id,
+        )
+        db.commit()
+
+        enriched = _with_available_context_for_distill(
+            db,
+            SkillDistillRequest(
+                tenant_id=tenant.id,
+                agent_id=agent.id,
+                title="日报生成",
+                raw_content="获取数据并写入 Excel",
+            ),
+        )
+
+        assert {item["id"] for item in enriched.available_tools} == {visible_tool.id}
+        assert {item["id"] for item in enriched.available_general_skills} == {
+            visible_skill.id
+        }
 
 
 def test_capability_scope_request_defaults_and_update_compatibility() -> None:

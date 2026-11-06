@@ -67,6 +67,14 @@ def _api_key_principal(token: str, db: Session) -> PublicPrincipal:
         credential.key_digest, _credential_digest(token)
     ):
         raise PublicAPIError(401, "INVALID_API_KEY", "The API key is invalid.")
+    return principal_for_credential(db, credential.id)
+
+
+def principal_for_credential(db: Session, credential_id: str) -> PublicPrincipal:
+    """Revalidate the same stored grant for admission AND deferred execution."""
+    credential = db.get(APICredential, credential_id)
+    if credential is None:
+        raise PublicAPIError(401, "INVALID_API_KEY", "The API credential is unavailable.")
     now = utc_now()
     if credential.status != "active" or credential.revoked_at is not None:
         raise PublicAPIError(401, "API_KEY_REVOKED", "The API key has been revoked.")
@@ -78,6 +86,9 @@ def _api_key_principal(token: str, db: Session) -> PublicPrincipal:
     actor = db.get(User, client.created_by_user_id or "")
     if not actor or actor.tenant_id != client.tenant_id:
         raise PublicAPIError(401, "API_CLIENT_OWNER_MISSING", "The API client owner is unavailable.")
+    from app.public_api.runtime import bind_actor, check_client
+    actor = bind_actor(db, actor)
+    check_client(db, client)
     credential.last_used_at = now
     credential.updated_at = now
     db.add(credential)
@@ -118,12 +129,18 @@ def _agent_access_sets(
     db: Session,
     tenant_id: str,
     actor: User,
-) -> tuple[frozenset[str], frozenset[str]]:
+) -> tuple[frozenset[str] | None, frozenset[str] | None]:
     """Resolve account visibility on every API-key request.
 
     Account master keys therefore follow later ownership, gallery-publishing,
     hiding, and role changes without issuing a new credential.
     """
+    from staffdeck_harness.modules.registry import peek_registry
+    from staffdeck_harness.contracts.manifest import SlotName
+    registry = peek_registry()
+    if registry and registry.provider(SlotName.STAFF_SOURCE).manifest.module_id != "source.staff.local":
+        # The selected Staff source and PEP authorize the specific target, not local shadow rows.
+        return None, None
     rows = db.exec(select(AgentProfile).where(AgentProfile.tenant_id == tenant_id)).all()
     visible: set[str] = set()
     manageable: set[str] = set()
@@ -144,10 +161,17 @@ def _agent_access_sets(
 
 
 def _bootstrap_principal(token: str, db: Session) -> PublicPrincipal:
-    payload = _decode_token(token)
-    user = db.get(User, str(payload.get("user_id") or ""))
-    if not user or user.tenant_id != payload.get("tenant_id"):
-        raise PublicAPIError(401, "INVALID_USER_TOKEN", "The user token is invalid.")
+    from staffdeck_harness.runtime.control_auth import provider, project_subject
+    from staffdeck_harness.runtime.services import bind_authenticated_session
+    control = provider()
+    if control is not None:
+        user = project_subject(db, control.current(token))
+    else:
+        payload = _decode_token(token)
+        user = db.get(User, str(payload.get("user_id") or ""))
+        if not user or user.tenant_id != payload.get("tenant_id"):
+            raise PublicAPIError(401, "INVALID_USER_TOKEN", "The user token is invalid.")
+    bind_authenticated_session(db)
     if not is_admin_user(user):
         raise PublicAPIError(403, "ADMIN_REQUIRED", "Tenant administrator access is required.")
     return PublicPrincipal(

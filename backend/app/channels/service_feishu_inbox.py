@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.channels.storage import channel_session
+
 import json
 from dataclasses import asdict
 from typing import Any
@@ -105,7 +107,7 @@ def stage_feishu_inbound(
     expected_account_key = feishu_account_key(event_app_id)
     expected_scope = feishu_identity_scope(event_app_id, tenant_key)
     try:
-        with Session(db_engine) as db:
+        with channel_session(db_engine) as db:
             binding = db.get(ChannelBinding, binding_id)
             if (
                 not binding

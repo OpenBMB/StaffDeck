@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import base64
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, Request
 from sqlmodel import Session, select
 
-from app.async_jobs import enqueue_async_job
+from app.api.sessions import (
+    _json_download_response,
+    _safe_filename_part,
+    _session_details_payload,
+)
 from app.core import AgentLoop
+from staffdeck_harness.runtime.staff_directory import optional_staff_profile, staff_names, staff_profiles
 from app.db import get_session
 from app.db.models import (
     AgentEvent,
-    AgentProfile,
     ChatSession,
     Message,
     Team,
@@ -18,11 +23,11 @@ from app.db.models import (
     TeamTask,
     TeamTaskBid,
     TeamTaskEvent,
+    TeamWakeEvent,
     User,
     new_id,
     utc_now,
 )
-from app.knowledge.service import IngestPayload, KnowledgeService
 from app.security.auth import get_current_user
 from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
@@ -89,8 +94,9 @@ from app.teams.wakeup import (
     start_bidding,
     start_wakeup_async,
 )
-
 router = APIRouter(prefix="/api/enterprise/teams", tags=["enterprise:teams"])
+
+TEAM_LOG_EXPORT_SCHEMA = "staffdeck.team-conversation-log.v1"
 
 # 可被人改判的任务状态:TL 验收后(review)或已升级(escalated)
 OVERRIDABLE_STATUSES = {"review", "escalated"}
@@ -110,8 +116,12 @@ def _ensure_team_manager(team: Team, user: User) -> None:
         raise HTTPException(status_code=403, detail="Only team owner or administrator can manage this team")
 
 
-def _member_read(db: Session, member) -> TeamMemberRead:
-    agent = db.get(AgentProfile, member.agent_id)
+def _member_read(db: Session, member, profiles=None) -> TeamMemberRead:
+    if profiles is None:
+        team = db.get(Team, member.team_id)
+        agent = optional_staff_profile(db, team.tenant_id, member.agent_id) if team else None
+    else:
+        agent = profiles.get(member.agent_id)
     return TeamMemberRead(
         id=member.id,
         team_id=member.team_id,
@@ -122,8 +132,11 @@ def _member_read(db: Session, member) -> TeamMemberRead:
     )
 
 
-def _team_read(db: Session, team: Team) -> TeamRead:
-    members = [_member_read(db, item) for item in list_team_members(db, team.id)]
+def _team_read(db: Session, team: Team, profiles=None) -> TeamRead:
+    memberships = list_team_members(db, team.id)
+    if profiles is None:
+        profiles = staff_profiles(db, team.tenant_id, [item.agent_id for item in memberships])
+    members = [_member_read(db, item, profiles) for item in memberships]
     return TeamRead(
         id=team.id,
         tenant_id=team.tenant_id,
@@ -170,7 +183,7 @@ def _task_read(db: Session, task: TeamTask, *, with_events: bool = False) -> Tea
                 id=row.id,
                 task_id=row.task_id,
                 agent_id=row.agent_id,
-                agent_name=(agent.name if (agent := db.get(AgentProfile, row.agent_id)) else None),
+                agent_name=(agent.name if (agent := optional_staff_profile(db, task.tenant_id, row.agent_id)) else None),
                 round=row.round,
                 kind=row.kind,
                 content=row.content,
@@ -184,6 +197,8 @@ def _task_read(db: Session, task: TeamTask, *, with_events: bool = False) -> Tea
         id=task.id,
         team_id=task.team_id,
         tenant_id=task.tenant_id,
+        team_run_id=task.team_run_id,
+        source_turn_id=task.source_turn_id,
         parent_task_id=task.parent_task_id,
         title=task.title,
         description=task.description,
@@ -242,7 +257,10 @@ def list_teams(
     rows = db.exec(
         select(Team).where(Team.tenant_id == tenant_id).order_by(Team.updated_at.desc())
     ).all()
-    return [_team_read(db, row) for row in rows]
+    from app.db.models import TeamMember
+    memberships = db.exec(select(TeamMember).where(TeamMember.team_id.in_([row.id for row in rows]))).all() if rows else []
+    profiles = staff_profiles(db, tenant_id, [item.agent_id for item in memberships])
+    return [_team_read(db, row, profiles) for row in rows]
 
 
 @router.get("/{team_id}", response_model=TeamRead)
@@ -369,7 +387,7 @@ def tl_chat_endpoint(
     leader = get_team_leader(db, team.id)
     if leader is None:
         raise HTTPException(status_code=400, detail="Team has no leader (TL) yet")
-    tl_agent = db.get(AgentProfile, leader.agent_id)
+    tl_agent = optional_staff_profile(db, team.tenant_id, leader.agent_id)
     if tl_agent is None or tl_agent.tenant_id != team.tenant_id or tl_agent.status != "active":
         raise HTTPException(status_code=400, detail="Team leader agent is unavailable")
     if request.session_id:
@@ -394,6 +412,8 @@ def tl_chat_endpoint(
             status="active",
             team_id=team.id,
         )
+        from staffdeck_harness.runtime.session_binding import bind_session
+        bind_session(db, session, created=True)
         db.add(session)
         db.commit()
         db.refresh(session)
@@ -441,7 +461,7 @@ def tl_session_endpoint(
     leader = get_team_leader(db, team.id)
     if leader is None:
         raise HTTPException(status_code=400, detail="Team has no leader (TL) yet")
-    tl_agent = db.get(AgentProfile, leader.agent_id)
+    tl_agent = optional_staff_profile(db, team.tenant_id, leader.agent_id)
     if tl_agent is None or tl_agent.tenant_id != team.tenant_id or tl_agent.status != "active":
         raise HTTPException(status_code=400, detail="Team leader agent is unavailable")
     # 每个团队只有一个人类群聊。项目领导变更时沿用同一会话并更新承接 Agent，
@@ -465,6 +485,8 @@ def tl_session_endpoint(
             status="active",
             team_id=team.id,
         )
+        from staffdeck_harness.runtime.session_binding import bind_session
+        bind_session(db, session, created=True)
         db.add(session)
         db.commit()
         db.refresh(session)
@@ -525,7 +547,7 @@ def list_team_conversations(
     leader = get_team_leader(db, team.id)
     tl: TeamConversationTLRead | None = None
     if leader is not None:
-        tl_agent = db.get(AgentProfile, leader.agent_id)
+        tl_agent = optional_staff_profile(db, team.tenant_id, leader.agent_id)
         tl_session = _tl_conversation_session(db, team)
         tl = TeamConversationTLRead(
             agent_id=leader.agent_id,
@@ -562,10 +584,7 @@ def list_team_conversations(
         ).all()
     } if sessions else {}
     agent_ids = {item.agent_id for item in sessions if item.agent_id}
-    agent_names = {
-        agent.id: agent.name
-        for agent in db.exec(select(AgentProfile).where(AgentProfile.id.in_(agent_ids))).all()
-    } if agent_ids else {}
+    agent_names = staff_names(db, team.tenant_id, list(agent_ids))
     conversations: list[TeamConversationRead] = []
     for item in sessions:
         kind = _conversation_kind(item)
@@ -789,10 +808,78 @@ def create_team_task_endpoint(
     db.commit()
     db.refresh(task)
     if wake_id is not None:
-        start_wakeup_async(wake_id)
+        start_wakeup_async(wake_id, db=db)
     else:
         start_bidding(db, team, task)
     return _task_read(db, task, with_events=True)
+
+
+@router.get("/{team_id}/export")
+def export_team_conversation_log(
+    team_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    """下载团队完整审计日志，包含任务调度与全部关联成员会话的原始执行记录。"""
+    ensure_tenant(db, tenant_id)
+    _ensure_request_tenant(tenant_id, current_user)
+    team = get_team(db, tenant_id, team_id)
+    _ensure_team_manager(team, current_user)
+
+    task_rows = db.exec(
+        select(TeamTask)
+        .where(TeamTask.team_id == team.id)
+        .order_by(TeamTask.created_at)
+    ).all()
+    wake_rows = db.exec(
+        select(TeamWakeEvent)
+        .where(TeamWakeEvent.team_id == team.id)
+        .order_by(TeamWakeEvent.created_at)
+    ).all()
+    blackboard_rows = db.exec(
+        select(TeamBlackboardEntry)
+        .where(TeamBlackboardEntry.team_id == team.id)
+        .order_by(TeamBlackboardEntry.created_at)
+    ).all()
+
+    # 兼容旧数据：早期成员执行会话没有 team_id，只通过 TeamTask.session_id 关联。
+    session_rows = db.exec(
+        select(ChatSession)
+        .where(ChatSession.tenant_id == tenant_id, ChatSession.team_id == team.id)
+        .order_by(ChatSession.created_at)
+    ).all()
+    session_by_id = {row.id: row for row in session_rows}
+    for task in task_rows:
+        if task.session_id and task.session_id not in session_by_id:
+            row = db.get(ChatSession, task.session_id)
+            if row is not None and row.tenant_id == tenant_id:
+                session_by_id[row.id] = row
+    ordered_sessions = sorted(session_by_id.values(), key=lambda row: row.created_at)
+
+    payload = {
+        "schema_version": TEAM_LOG_EXPORT_SCHEMA,
+        "exported_at": datetime.now(UTC).isoformat(),
+        "team": _team_read(db, team).model_dump(mode="json"),
+        "summary": {
+            "task_count": len(task_rows),
+            "wake_event_count": len(wake_rows),
+            "blackboard_entry_count": len(blackboard_rows),
+            "session_count": len(ordered_sessions),
+        },
+        "tasks": [
+            _task_read(db, task, with_events=True).model_dump(mode="json")
+            for task in task_rows
+        ],
+        "wake_events": [row.model_dump(mode="json") for row in wake_rows],
+        "blackboard_entries": [row.model_dump(mode="json") for row in blackboard_rows],
+        # 与普通对话日志完全复用同一构建链路：消息、反馈、公开 Trace、原始 AgentEvent、
+        # 模型输入/输出/reasoning 以及工具参数/结果均由 session detail 统一导出。
+        "sessions": _session_details_payload(db, tenant_id, ordered_sessions),
+    }
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    filename = f"staffdeck-team-log-{_safe_filename_part(team.id)}-{timestamp}.json"
+    return _json_download_response(payload, filename)
 
 
 @router.get("/{team_id}/events", response_model=list[TeamEventRead])
@@ -915,7 +1002,7 @@ def override_task_award(
         payload={"task_id": task.id},
     )
     db.commit()
-    start_wakeup_async(wake.id)
+    start_wakeup_async(wake.id, db=db)
     return _task_read(db, task, with_events=True)
 
 
@@ -987,7 +1074,7 @@ def override_task_review(
             payload={"task_id": task.id},
         )
         db.commit()
-        start_wakeup_async(wake.id)
+        start_wakeup_async(wake.id, db=db)
     return _task_read(db, task, with_events=True)
 
 
@@ -1050,7 +1137,7 @@ def resume_team_task(
     )
     db.commit()
     db.refresh(task)
-    start_wakeup_async(wake.id)
+    start_wakeup_async(wake.id, db=db)
     return _task_read(db, task, with_events=True)
 
 
@@ -1177,6 +1264,18 @@ def archive_blackboard_entry(
     return _blackboard_entry_read(entry)
 
 
+@router.get("/{team_id}/knowledge-targets")
+def team_knowledge_targets(team_id: str, http_request: Request, tenant_id: str = Query(...),
+                           db: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
+    _ensure_request_tenant(tenant_id, current_user)
+    team = get_team(db, tenant_id, team_id)
+    _ensure_team_manager(team, current_user)
+    from staffdeck_harness.runtime.knowledge_write import KnowledgePublicationContext, publication_targets
+    result = publication_targets(KnowledgePublicationContext(db, current_user, http_request.headers.get("authorization", ""),
+        (team.config_json or {}).get("knowledge_module_id")))
+    return {**result, "default_id": (team.config_json or {}).get("knowledge_base_id")}
+
+
 @router.post(
     "/{team_id}/blackboard/{entry_id}/promote",
     response_model=TeamBlackboardPromoteResponse,
@@ -1187,6 +1286,7 @@ def promote_blackboard_entry(
     request: TeamBlackboardPromoteRequest,
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    http_request: Request = None,
 ) -> TeamBlackboardPromoteResponse:
     """黑板条目沉淀到知识库:拼成 markdown 作为原始资料建 ingest job,异步执行。
 
@@ -1206,8 +1306,6 @@ def promote_blackboard_entry(
             ingest_job_id=existing_job_id,
             already_promoted=True,
         )
-    service = KnowledgeService(db)
-    knowledge_base = service.ensure_default_knowledge_base(team.tenant_id)
     source_task_title = ""
     if entry.source_task_id:
         source_task = db.get(TeamTask, entry.source_task_id)
@@ -1222,40 +1320,51 @@ def promote_blackboard_entry(
     lines.extend(["", entry.content, ""])
     markdown = "\n".join(lines)
     filename = f"team-blackboard-{entry.id}.md"
-    job = service.create_ingest_job(
-        IngestPayload(
-            tenant_id=team.tenant_id,
-            knowledge_base_id=knowledge_base.id,
-            filename=filename,
-            content_base64=base64.b64encode(markdown.encode("utf-8")).decode("ascii"),
-            title=f"团队黑板:{entry.content[:30]}",
-            metadata={
-                "source": "team_blackboard",
-                "team_id": team.id,
-                "blackboard_entry_id": entry.id,
-            },
-        )
-    )
+    from staffdeck_harness.runtime.knowledge_write import KnowledgePublicationContext, publish_document
+    if citation.get("publication_state") in {"pending", "outcome_unknown"}:
+        raise HTTPException(409, "本条知识发布尚未确认结果，请先核验原回执，不能重复上传")
+    from sqlalchemy import update
+    reserved = {**citation, "publication_state": "pending"}
+    claimed = db.exec(update(TeamBlackboardEntry).where(
+        TeamBlackboardEntry.id == entry.id, TeamBlackboardEntry.updated_at == entry.updated_at
+    ).values(citation_json=reserved, updated_at=utc_now()))
+    db.commit()
+    if claimed.rowcount != 1:
+        raise HTTPException(409, "该条目已被其他请求更新，请刷新后查看发布结果")
+    try:
+        receipt = publish_document(KnowledgePublicationContext(db, current_user,
+            http_request.headers.get("authorization", "") if http_request else "",
+            (team.config_json or {}).get("knowledge_module_id")), {
+                "tenant_id": team.tenant_id,
+                "knowledge_base_id": request.knowledge_base_id or (team.config_json or {}).get("knowledge_base_id"),
+                "filename": filename,
+                "content_base64": base64.b64encode(markdown.encode("utf-8")).decode("ascii"),
+                "title": f"团队黑板:{entry.content[:30]}",
+                "metadata": {"source": "team_blackboard", "team_id": team.id, "blackboard_entry_id": entry.id},
+            })
+    except Exception as exc:
+        db.rollback()
+        db.refresh(entry)
+        # Deterministic validation failures have no upload to retry; ambiguous transport does.
+        state = "rejected" if isinstance(exc, HTTPException) and exc.status_code in {400, 401, 403, 404, 409, 422} else "outcome_unknown"
+        entry.citation_json = {**citation, "publication_state": state}
+        db.add(entry)
+        db.commit()
+        raise
     entry.citation_json = {
         **citation,
-        "knowledge_base_id": knowledge_base.id,
-        "ingest_job_id": job.id,
+        "publication_state": "submitted",
+        "knowledge_base_id": receipt["knowledge_base_id"],
+        "ingest_job_id": receipt["id"],
     }
     entry.updated_at = utc_now()
     db.add(entry)
     db.commit()
     db.refresh(entry)
-    # 异步执行与知识库文档上传同款:进程内 AsyncJob 队列
-    enqueue_async_job(
-        "knowledge_ingest",
-        service.run_ingest_job,
-        job.id,
-        metadata={"tenant_id": team.tenant_id, "filename": filename},
-    )
     return TeamBlackboardPromoteResponse(
         entry=_blackboard_entry_read(entry),
-        knowledge_base_id=knowledge_base.id,
-        ingest_job_id=job.id,
+        knowledge_base_id=receipt["knowledge_base_id"],
+        ingest_job_id=receipt["id"],
         already_promoted=False,
     )
 

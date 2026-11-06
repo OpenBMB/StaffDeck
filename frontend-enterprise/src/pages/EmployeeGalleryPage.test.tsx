@@ -6,6 +6,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '@/i18n';
+import type { EnterpriseAuthUser } from '@/auth';
 import type { TeamRead } from '@/types';
 
 import EmployeeGalleryPage from './EmployeeGalleryPage';
@@ -56,12 +57,12 @@ function LocationEcho() {
   return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
 }
 
-function renderGallery() {
+function renderGallery(currentUser?: EnterpriseAuthUser) {
   return render(
     <I18nProvider>
       <MemoryRouter initialEntries={['/workspace/gallery']}>
         <Routes>
-          <Route path="/workspace/gallery" element={<EmployeeGalleryPage />} />
+          <Route path="/workspace/gallery" element={<EmployeeGalleryPage currentUser={currentUser} />} />
           <Route path="/workspace/chat/:sessionId" element={<LocationEcho />} />
           <Route path="/enterprise/teams/:teamId" element={<LocationEcho />} />
         </Routes>
@@ -76,6 +77,31 @@ afterEach(() => {
 });
 
 describe('EmployeeGalleryPage teams tab', () => {
+  it('requests explicit server scopes and keeps my public employee in the gallery', async () => {
+    const user = userEvent.setup();
+    const urls: string[] = [];
+    const row = (id: string, name: string, owned: boolean) => ({ id, name, tenant_id: 'tenant_demo',
+      is_overall: false, status: 'active', created_at: '2026-01-01', updated_at: '2026-01-01', resources: [],
+      metadata: { owner_user_id: owned ? 'user-1' : 'other', published_to_gallery: true,
+        directory_access: { owned, public: true, shared: false, can_view: true, can_use: true, can_manage: owned } } });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input); urls.push(url);
+      if (url.includes('/api/enterprise/teams')) return jsonResponse([]);
+      if (url.includes('scope=gallery')) return jsonResponse([row('own', '我的公开员工', true), row('other', '其他公开员工', false)]);
+      if (url.includes('scope=mine')) return jsonResponse([row('own', '我的公开员工', true)]);
+      if (url.includes('scope=shared')) return jsonResponse([]);
+      return jsonResponse([row('own', '我的公开员工', true)]);
+    }));
+    renderGallery({ id: 'user-1', tenant_id: 'tenant_demo', username: 'demo', role: 'admin' });
+    await waitFor(() => expect(urls.some((url) => url.includes('scope=available'))).toBe(true));
+    await user.click(screen.getByRole('tab', { name: '数字员工广场' }));
+    expect(await screen.findByText(/其他公开员工/)).toBeTruthy();
+    expect(screen.getByText(/我的公开员工/)).toBeTruthy();
+    await user.click(screen.getByRole('tab', { name: '我的数字员工' }));
+    await waitFor(() => expect(urls.some((url) => url.includes('scope=mine'))).toBe(true));
+    await user.click(screen.getByRole('tab', { name: '共享给我' }));
+    await waitFor(() => expect(urls.some((url) => url.includes('scope=shared'))).toBe(true));
+  });
   it('renders team chat cards with member count, project leader and avatar stack', async () => {
     const user = userEvent.setup();
     stubGalleryFetch([team]);
@@ -90,6 +116,53 @@ describe('EmployeeGalleryPage teams tab', () => {
     expect(within(section).getByText('项目领导：小艾')).toBeTruthy();
     // 前 3 个成员头像叠放，其余折叠为 +N
     expect(within(section).getByText('+1')).toBeTruthy();
+  });
+
+  it('renders tenant teams even when the current user is not the team owner', async () => {
+    const user = userEvent.setup();
+    stubGalleryFetch([team]);
+    renderGallery({
+      id: 'user-2',
+      username: 'member',
+      tenant_id: 'tenant_demo',
+      role: 'member',
+    });
+
+    await user.click(await screen.findByRole('tab', { name: '团队对话' }));
+
+    const section = await screen.findByRole('region', { name: '团队' });
+    expect(within(section).getByText('增长团队')).toBeTruthy();
+  });
+
+  it('retries a failed team request when the teams tab is opened', async () => {
+    const user = userEvent.setup();
+    let teamRequestCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/enterprise/teams')) {
+        teamRequestCount += 1;
+        if (teamRequestCount === 1) {
+          return {
+            ok: false,
+            status: 502,
+            statusText: 'Bad Gateway',
+            text: async () => 'Bad Gateway',
+          } as Response;
+        }
+        return jsonResponse([team]);
+      }
+      if (url.includes('/api/enterprise/agents')) return jsonResponse([]);
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderGallery();
+
+    await waitFor(() => expect(teamRequestCount).toBe(1));
+    await user.click(await screen.findByRole('tab', { name: '团队对话' }));
+
+    const section = await screen.findByRole('region', { name: '团队' });
+    expect(await within(section).findByText('增长团队')).toBeTruthy();
+    expect(teamRequestCount).toBe(2);
   });
 
   it('opens the persistent team group in the chat app', async () => {

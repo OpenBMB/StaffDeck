@@ -1,0 +1,14 @@
+services:
+  staffdeck:
+    build:
+      context: .
+      target: app
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:5173:5173"
+    volumes:
+      - staffdeck-data:/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  staffdeck-data:

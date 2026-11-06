@@ -1,0 +1,1 @@
+export const FRAMEWORK_MANAGEMENT_INCLUDED = false;

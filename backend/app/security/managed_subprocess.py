@@ -4,12 +4,53 @@ import os
 import signal
 import subprocess
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 
 class ManagedProcessError(RuntimeError):
     pass
+
+
+class _WindowsJobAssignmentError(OSError):
+    """Assignment failure enriched with the process' existing Job state."""
+
+    def __init__(
+        self,
+        winerror: int,
+        message: str,
+        *,
+        parent_in_job: bool | None,
+        child_in_job: bool | None,
+    ) -> None:
+        super().__init__(winerror, message)
+        self.winerror = winerror
+        self.parent_in_job = parent_in_job
+        self.child_in_job = child_in_job
+
+
+def _is_process_in_windows_job(kernel32: Any, process_handle: Any) -> bool | None:
+    """Return Job membership, or None when Windows cannot inspect the handle."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    in_job = wintypes.BOOL()
+    if not kernel32.IsProcessInJob(process_handle, None, ctypes.byref(in_job)):
+        return None
+    return bool(in_job.value)
+
+
+def _resume_windows_process(proc: subprocess.Popen[Any]) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    status = ntdll.NtResumeProcess(wintypes.HANDLE(proc._handle))
+    if status < 0:
+        raise OSError(f"NtResumeProcess failed with NTSTATUS 0x{status & 0xFFFFFFFF:08x}")
 
 
 class _WindowsJob:
@@ -69,6 +110,14 @@ class _WindowsJob:
         kernel32.SetInformationJobObject.restype = wintypes.BOOL
         kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
         kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.IsProcessInJob.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        kernel32.IsProcessInJob.restype = wintypes.BOOL
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
         kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
         kernel32.TerminateJobObject.restype = wintypes.BOOL
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -89,22 +138,26 @@ class _WindowsJob:
             error = ctypes.get_last_error()
             kernel32.CloseHandle(handle)
             raise ctypes.WinError(error)
-        if not kernel32.AssignProcessToJobObject(handle, wintypes.HANDLE(proc._handle)):
+        parent_in_job = _is_process_in_windows_job(
+            kernel32,
+            kernel32.GetCurrentProcess(),
+        )
+        child_handle = wintypes.HANDLE(proc._handle)
+        child_in_job = _is_process_in_windows_job(kernel32, child_handle)
+        if not kernel32.AssignProcessToJobObject(handle, child_handle):
             error = ctypes.get_last_error()
             kernel32.CloseHandle(handle)
-            raise ctypes.WinError(error)
+            native_error = ctypes.WinError(error)
+            raise _WindowsJobAssignmentError(
+                error,
+                str(native_error),
+                parent_in_job=parent_in_job,
+                child_in_job=child_in_job,
+            ) from native_error
         return cls(handle, kernel32)
 
     def resume(self, proc: subprocess.Popen[Any]) -> None:
-        import ctypes
-        from ctypes import wintypes
-
-        ntdll = ctypes.WinDLL("ntdll")
-        ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
-        ntdll.NtResumeProcess.restype = ctypes.c_long
-        status = ntdll.NtResumeProcess(wintypes.HANDLE(proc._handle))
-        if status < 0:
-            raise OSError(f"NtResumeProcess failed with NTSTATUS 0x{status & 0xFFFFFFFF:08x}")
+        _resume_windows_process(proc)
 
     def close(self) -> None:
         if not self._handle:
@@ -130,6 +183,8 @@ def _popen_platform_options(platform_name: str) -> dict[str, Any]:
 class ManagedProcess:
     process: subprocess.Popen[Any]
     platform_name: str
+    isolation_mode: str = "posix_session"
+    isolation_details: dict[str, Any] = field(default_factory=dict)
     _windows_job: _WindowsJob | None = None
     _closed: bool = False
 
@@ -148,10 +203,38 @@ class ManagedProcess:
             **_popen_platform_options(platform),
         )
         job: _WindowsJob | None = None
+        isolation_mode = "posix_session"
+        isolation_details: dict[str, Any] = {}
         if platform == "nt":
             try:
                 job = _WindowsJob.assign(proc)
                 job.resume(proc)
+                isolation_mode = "windows_job"
+            except _WindowsJobAssignmentError as exc:
+                nested_job_conflict = (
+                    exc.winerror in {5, 50}
+                    and (exc.parent_in_job is True or exc.child_in_job is True)
+                )
+                if not nested_job_conflict:
+                    _terminate_process_tree(proc, platform)
+                    raise ManagedProcessError(
+                        f"Windows 进程隔离初始化失败，子进程未启动：{exc}"
+                    ) from exc
+                try:
+                    _resume_windows_process(proc)
+                except OSError as resume_exc:
+                    _terminate_process_tree(proc, platform)
+                    raise ManagedProcessError(
+                        f"Windows 进程隔离降级后恢复子进程失败：{resume_exc}"
+                    ) from resume_exc
+                isolation_mode = "windows_process_group_fallback"
+                isolation_details = {
+                    "fallback_reason": "nested_job_assignment_rejected",
+                    "windows_error_code": exc.winerror,
+                    "parent_in_job": exc.parent_in_job,
+                    "child_in_job": exc.child_in_job,
+                    "cleanup": "taskkill_tree",
+                }
             except OSError as exc:
                 if job is not None:
                     job.close()
@@ -159,7 +242,13 @@ class ManagedProcess:
                 raise ManagedProcessError(
                     f"Windows 进程隔离初始化失败，子进程未启动：{exc}"
                 ) from exc
-        return cls(process=proc, platform_name=platform, _windows_job=job)
+        return cls(
+            process=proc,
+            platform_name=platform,
+            isolation_mode=isolation_mode,
+            isolation_details=isolation_details,
+            _windows_job=job,
+        )
 
     def close(self) -> None:
         if self._closed:

@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "package_id": "7aeae0eeaeb3490f99c464214c0648cb",
+  "name": "StaffDeck",
+  "version": "0.6.0",
+  "kind": "source",
+  "platform": null,
+  "configuration": "applied",
+  "created_at": "2026-10-21T00:00:00+08:00",
+  "assembly": {
+    "engine": "harness_v3",
+    "security_profile": "OSS_LOCAL",
+    "disabled_modules": [],
+    "enabled_modules": [],
+    "extra_modules": [],
+    "placements": {},
+    "selections": {},
+    "module_configs": {},
+    "ui_variant": "releases",
+    "base": {
+      "authz_url": "",
+      "decision_token": "",
+      "control_token": "",
+      "timeout_seconds": null,
+      "pending_timeout_seconds": null,
+      "identity_internal_url": "",
+      "runtime_client_id": "",
+      "runtime_client_secret": "",
+      "workload_audience": ""
+    }
+  },
+  "product_features": {
+    "framework_management": false,
+    "enterprise_admin": true
+  },
+  "installation": {
+    "tenant_id": "tenant_demo",
+    "control_auth_provider": "",
+    "default_staff": [
+      {
+        "key": "it",
+        "name": "IT",
+        "description": "处理账号权限、设备申领、常见故障排查等 IT 服务请求，能按 SOP 分流工单、调用内部系统接口开通权限，复杂问题转交人工工程师。",
+        "persona_prompt": "",
+        "harness_max_actions": 32
+      },
+      {
+        "key": "hr",
+        "name": "人事",
+        "description": "面向全体在职员工的 HR 服务窗口，解答假期、社保公积金、薪酬福利、考勤等高频制度问题，可发起请假 / 开具在职证明等事务申请，遇到超出制度规定或需要人工判断的情形交还给 HR 负责人。",
+        "persona_prompt": "",
+        "harness_max_actions": 32
+      },
+      {
+        "key": "administration",
+        "name": "行政",
+        "description": "统筹会议室预订、办公用品申领、用章申请等行政事务，把琐碎的事务性沟通标准化，让行政团队从重复问答中解放出来。",
+        "persona_prompt": "",
+        "harness_max_actions": 32
+      },
+      {
+        "key": "finance",
+        "name": "财务",
+        "description": "熟悉公司报销、差旅、预算与发票全流程，能解答报销政策、核对单据合规性、发起报销与额度查询，遇到超标或特殊情形时把问题带上下文交还给财务负责人。",
+        "persona_prompt": "",
+        "harness_max_actions": 32
+      },
+      {
+        "key": "legal",
+        "name": "法务",
+        "description": "覆盖合同审查、条款风险识别与合规咨询，依据企业合规制度和历史判例给出审查意见，遇到高风险或无先例的条款自动升级给法务专员。",
+        "persona_prompt": "",
+        "harness_max_actions": 32
+      }
+    ]
+  },
+  "employee_ids": [],
+  "deployment": {
+    "nodes": [],
+    "services": []
+  },
+  "required_configuration": [],
+  "exclusions": [
+    "credentials",
+    "databases",
+    "chat_history",
+    "runtime_workspaces",
+    "model_weights",
+    "framework_management"
+  ],
+  "module_packages": []
+}

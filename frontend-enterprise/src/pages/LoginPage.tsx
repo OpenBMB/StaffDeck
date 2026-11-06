@@ -101,7 +101,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 <input
                   value={username}
                   autoComplete="username"
-                  placeholder="请输入账号（首次使用请输入admin）"
+                  placeholder="请输入账号"
                   aria-label="账号"
                   onChange={(event) => {
                     setUsername(event.target.value);
@@ -132,7 +132,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                   value={password}
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="current-password"
-                  placeholder="请输入密码（首次使用请输入admin）"
+                  placeholder="请输入密码"
                   aria-label="密码"
                   onChange={(event) => {
                     setPassword(event.target.value);

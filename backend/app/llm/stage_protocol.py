@@ -81,6 +81,9 @@ TURN_PLANNER_OUTPUT_SCHEMA: dict[str, Any] = {
             "requirements": ["string"],
             "slot_hints": "object (use {} when empty; never null)",
             "depends_on_task_ids": ["string"],
+            "execution_target": "self | team_member",
+            "assignee_agent_id": "exact agent_id from stage_data.team_context.members?",
+            "activation_condition": "object (use {} when empty; never null)",
         }
     ],
     "task_updates": [

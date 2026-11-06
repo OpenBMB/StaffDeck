@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterator
 from time import sleep
 from typing import Any, Literal
@@ -8,23 +9,20 @@ from sqlmodel import Session, select
 
 from app.agents.branching import (
     model_for_agent,
-    visible_published_skills,
-    visible_skill,
 )
 from app.channels.service_outbox import stage_channel_delivery
+from app.config import get_settings
 from app.core.agent_identity_prompt import AgentIdentityPrompt
 from app.core.cancellation import clear_chat_turn_cancelled
-from app.core.conversation_context import build_conversation_context
+from app.core.conversation_context import (
+    ConversationContextSettings,
+    build_conversation_context,
+)
 from app.core.conversation_projection import ConversationProjection
 from app.core.graph_rules import GraphRules
 from app.core.harness_agent import HarnessExecutionCancelled
 from app.core.harness_session_lock import HarnessSessionBusy
 from app.core.harness_turn_store import HarnessTurnConflict
-from app.core.harness_v2_engine import (
-    HarnessV2Engine,
-    _with_recoverable_first_session,
-    get_or_create_harness_session,
-)
 from app.core.human_handoff_service import HumanHandoffService
 from app.core.response_generator import (
     ResponseGenerator,
@@ -33,7 +31,11 @@ from app.core.response_generator import (
 )
 from app.core.skill_runtime import SkillRuntime
 from app.core.slash_commands import SlashCommandError
-from app.core.turn_finalizer import TurnFinalizer
+from app.core.turn_coordinator import (
+    TurnCoordinator,
+    _with_recoverable_first_session,
+    get_or_create_harness_session,
+)
 from app.db.models import (
     AgentProfile,
     ChannelBinding,
@@ -71,6 +73,9 @@ from app.session.session_schema import (
     StepAgentResult,
 )
 from app.tools.tool_schema import ToolResult
+from staffdeck_harness.contracts.errors import EngineStoragePermissionDenied
+
+logger = logging.getLogger(__name__)
 
 STREAM_CHUNK_INTERVAL_SECONDS = 0.045
 MAX_TOOL_ACTIONS_PER_TURN = 32
@@ -140,12 +145,24 @@ class AgentLoop:
         db: Session,
         *,
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+        stream_sink: Any | None = None,
     ) -> None:
         self.db = db
         self.events = EventLog(db, event_sink=event_sink)
+        self.stream_sink = stream_sink
+        self.stream_delivery_succeeded = False
         self.runtime = SkillRuntime()
         self.response_generator = ResponseGenerator()
         self.memory = MemoryService(db)
+
+    def _sop_service(self):
+        """Compatibility callers delegate into the module, never the reverse."""
+        from staffdeck_harness.sop.lifecycle import SopRuntime
+
+        return SopRuntime(
+            getattr(self, "db", None), getattr(self, "events", None),
+            create_handoff=self._create_human_handoff_request
+        )
 
     def _turn_payload(self, payload: dict[str, Any], user_message_id: str | None) -> dict[str, Any]:
         data = dict(payload)
@@ -154,11 +171,38 @@ class AgentLoop:
             data.setdefault("turn_id", user_message_id)
         return data
 
+    def _label_engine_for(self, request: ChatTurnRequest, chat_session: ChatSession | None) -> None:
+        """Decide up front which engine this turn will run on so the very first events are labelled right."""
+
+        label = "harness_v3"
+        if hasattr(self.events, "execution_engine"):
+            self.events.execution_engine = label
+
+    @staticmethod
+    def _harness_v3_reachable(settings: Any) -> bool:
+        """All autonomous execution uses the registered v3 runtime."""
+
+        return True
+
+    def _open_engine(self, request: ChatTurnRequest) -> TurnCoordinator:
+        # Fail closed if the runtime is missing; never open an older executor.
+        settings = get_settings()
+        from staffdeck_harness.bridge.engine_host import EngineHost
+
+        agent_id = request.agent_id
+        if not agent_id and request.session_id and hasattr(self.db, "get"):
+            row = self.db.get(ChatSession, request.session_id)
+            agent_id = row.agent_id if row is not None else None
+        return EngineHost(settings).open(self, request, agent_id)
+
     def handle_turn(self, request: ChatTurnRequest) -> ChatTurnResponse:
-        engine = HarnessV2Engine(self)
+        request._control_subject = getattr(self.db, "info", {}).get("staffdeck_control_subject")
+        request._runtime_namespace = getattr(self.db, "info", {}).get("staffdeck_namespace", "oss-local")
+        engine = self._open_engine(request)
         chat_session: ChatSession | None = None
         user_message_id: str | None = None
         step_result = StepAgentResult(action="reply")
+        runtime_error_code: str | None = None
         try:
             return engine.run(request)
         except (HarnessTurnConflict, HarnessSessionBusy) as exc:
@@ -221,6 +265,7 @@ class AgentLoop:
             chat_session = chat_session or self._get_or_create_session(request)
             return self._finish_with_error(chat_session, exc.code, exc.message)
         except LLMError as exc:
+            runtime_error_code = "LLM_ERROR"
             chat_session = engine.session
             user_message_id = engine.user_message_id
             engine.mark_interrupted("LLM_ERROR", str(exc))
@@ -231,25 +276,29 @@ class AgentLoop:
                 "error_occurred",
                 {"code": "LLM_ERROR", "message": str(exc)},
             )
+            self.db.commit()  # close() rolls back its caller transaction before releasing the lease
             reply = format_runtime_failure_reply(
                 "模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc)
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - report any runtime failure through the turn boundary
+            storage_error = isinstance(exc, EngineStoragePermissionDenied)
+            runtime_error_code = exc.code if storage_error else "HARNESS_V3_ERROR"
             chat_session = engine.session
             user_message_id = engine.user_message_id
-            engine.mark_interrupted("HARNESS_V2_ERROR", str(exc))
+            engine.mark_interrupted(runtime_error_code, str(exc))
             chat_session = chat_session or self._get_or_create_session(request)
             self.events.record(
                 request.tenant_id,
                 chat_session.id,
                 "error_occurred",
-                {"code": "HARNESS_V2_ERROR", "message": str(exc)},
+                {"code": runtime_error_code, "message": str(exc)},
             )
+            self.db.commit()
             reply = format_runtime_failure_reply(
-                "Harness v2 执行出错",
+                "引擎存储不可访问" if storage_error else "Harness v3 执行出错",
                 exc,
-                "HARNESS_V2_ERROR",
-                "请查看执行记录或服务日志定位具体原因。",
+                runtime_error_code,
+                "请管理员修复引擎目录权限后重试。" if storage_error else "请查看执行记录或服务日志定位具体原因。",
             )
         finally:
             terminal_record = getattr(engine, "turn_record", None)
@@ -272,9 +321,9 @@ class AgentLoop:
             request.message,
             user_message_id=user_message_id,
             assistant_metadata_override=(
-                {"message_visibility": request.message_visibility}
-                if request.message_visibility != "visible"
-                else None
+                {"runtime_error_code": runtime_error_code, "execution_engine": "harness_v3",
+                 **({"message_visibility": request.message_visibility}
+                    if request.message_visibility != "visible" else {})}
             ),
         )
         self.db.commit()
@@ -282,11 +331,14 @@ class AgentLoop:
         return ChatTurnResponse(
             reply=reply,
             session_id=chat_session.id,
+            runtime_error_code=runtime_error_code,
             step_result=step_result,
             session_state=public_session(chat_session),
         )
 
     def handle_turn_stream(self, request: ChatTurnRequest) -> Iterator[dict[str, object]]:
+        request._control_subject = getattr(self.db, "info", {}).get("staffdeck_control_subject")
+        request._runtime_namespace = getattr(self.db, "info", {}).get("staffdeck_namespace", "oss-local")
         yield from self._handle_turn_stream_v2(request)
 
     def _handle_turn_stream_v2(self, request: ChatTurnRequest) -> Iterator[dict[str, object]]:
@@ -303,6 +355,7 @@ class AgentLoop:
         created_session = existing_session is None
         scoped_request = request.model_copy(update={"session_id": chat_session.id})
         initial_turn_id = str(request.client_turn_id or "").strip() or None
+        self._label_engine_for(scoped_request, chat_session)
         if created_session:
             yield self._stream_event(
                 "session_created",
@@ -311,7 +364,7 @@ class AgentLoop:
                     "sessionId": chat_session.id,
                     "turn_id": initial_turn_id,
                     "client_turn_id": request.client_turn_id,
-                    "execution_engine": "harness_v2",
+                    "execution_engine": "harness_v3",
                 },
             )
         yield self._stream_event(
@@ -321,7 +374,7 @@ class AgentLoop:
                 {
                     "sessionId": chat_session.id,
                     "client_turn_id": request.client_turn_id,
-                    "execution_engine": "harness_v2",
+                    "execution_engine": "harness_v3",
                 },
                 initial_turn_id,
             ),
@@ -330,10 +383,35 @@ class AgentLoop:
             chat_session,
             "planning",
             "正在规划本轮任务",
-            {"execution_engine": "harness_v2"},
+            {"execution_engine": "harness_v3"},
             user_message_id=initial_turn_id,
         )
-        response = self.handle_turn(scoped_request)
+        from app.core.reply_stream import ReplyStream
+
+        public_events: list[dict[str, object]] = []
+
+        def publish_reply(event_type: str, payload: dict[str, Any]) -> None:
+            # This callback runs on the same worker as handle_turn. The HTTP relay reads these
+            # committed rows concurrently, before the model finishes, using the bound turn IDs.
+            row = self.events.record(request.tenant_id, chat_session.id, event_type, payload)
+            self.db.commit()
+            public_events.append({
+                "event": event_type,
+                "data": {
+                    "kind": event_type,
+                    "sessionId": chat_session.id,
+                    "timestamp": row.created_at.isoformat(),
+                    **row.payload_json,
+                },
+            })
+
+        previous_sink = self.stream_sink
+        reply_stream = ReplyStream(publish_reply)
+        self.stream_sink = reply_stream
+        try:
+            response = self.handle_turn(scoped_request)
+        finally:
+            self.stream_sink = previous_sink
         chat_session = self.db.get(ChatSession, response.session_id)
         if chat_session is None:
             return
@@ -376,7 +454,7 @@ class AgentLoop:
                         "phase": "cancelled",
                         "text": CANCELLED_ASSISTANT_REPLY,
                         "client_turn_id": request.client_turn_id,
-                        "execution_engine": "harness_v2",
+                        "execution_engine": "harness_v3",
                     },
                     user_message_id or initial_turn_id,
                 ),
@@ -392,30 +470,20 @@ class AgentLoop:
                         "code": response.runtime_error_code,
                         "message": response.reply,
                         "client_turn_id": request.client_turn_id,
-                        "execution_engine": "harness_v2",
+                        "execution_engine": "harness_v3",
                     },
                     resolved_turn_id,
                 ),
             )
             return
-        for chunk in self.response_generator.chunk_text(response.reply):
-            event = self._stream_event(
-                "stream_delta",
-                chat_session,
-                self._turn_payload(
-                    {
-                        "content": chunk,
-                        "execution_engine": "harness_v2",
-                    },
-                    resolved_turn_id,
-                ),
-            )
-            self.db.commit()
-            yield event
+        # Finalization may normalize citations or supply a direct/fallback answer. Reconcile
+        # once; never append the complete answer again after live deltas.
+        reply_stream.on_replace(response.reply)
+        yield from public_events
         end_event = self._stream_event(
             "stream_end",
             chat_session,
-            self._turn_payload({"execution_engine": "harness_v2"}, resolved_turn_id),
+            self._turn_payload({"execution_engine": "harness_v3"}, resolved_turn_id),
         )
         self.db.commit()
         yield end_event
@@ -425,7 +493,7 @@ class AgentLoop:
             self._turn_payload(
                 {
                     **response.model_dump(mode="json"),
-                    "execution_engine": "harness_v2",
+                    "execution_engine": "harness_v3",
                 },
                 resolved_turn_id,
             ),
@@ -493,43 +561,15 @@ class AgentLoop:
     def _current_step_allows_human_handoff(
         self, skill: Skill | None, active_step_id: str | None
     ) -> bool:
-        if not skill:
-            return False
-        current_step = self._current_skill_step(skill, active_step_id)
-        return bool(current_step and self._step_declares_human_handoff(current_step))
+        return self._sop_service().current_step_allows_human_handoff(skill, active_step_id)
 
     def _maybe_route_to_handoff_node(
         self, chat_session: ChatSession, active_skill: Skill | None
     ) -> bool:
-        """当 step_result.handoff=True 但当前 step 不声明 handoff 时,
-        查找 SOP 中的 handoff 节点并路由到它。这使得后续的
-        _create_human_handoff_request 能从 handoff 节点读取 assignee_user_id。
-
-        返回 True 表示已路由到 handoff 节点。
-        """
-        if not active_skill or not chat_session.active_skill_id:
-            return False
-        current_step = self._current_skill_step(
-            active_skill, chat_session.active_step_id
-        )
-        if current_step and self._step_declares_human_handoff(current_step):
-            return False
-        handoff_step_id = _find_handoff_node_id_in_skill(
-            active_skill, chat_session.active_step_id
-        )
-        if not handoff_step_id:
-            return False
-        self._change_active_step(
-            chat_session.tenant_id,
-            chat_session,
-            handoff_step_id,
-            reason="handoff_node_routed_by_step_result",
-        )
-        return True
+        return self._sop_service().maybe_route_to_handoff_node(chat_session, active_skill)
 
     def _step_declares_human_handoff(self, step: dict[str, Any]) -> bool:
-        node_type = str(step.get("type") or "").strip()
-        return node_type == "handoff" or "handoff_human" in self._step_actions(step)
+        return self._sop_service().step_declares_human_handoff(step)
 
     def _human_handoff_assignee_user_id(
         self, tenant_id: str, agent_id: str | None, fallback_user_id: str | None
@@ -557,22 +597,12 @@ class AgentLoop:
         return HumanHandoffService.pending_question(current_step, step_result)
 
     def _step_actions(self, step: dict[str, Any]) -> list[str]:
-        return GraphRules.step_actions(step)
+        return self._sop_service().step_actions(step)
 
     def _finish_stale_completed_skill(
         self, tenant_id: str, chat_session: ChatSession, skills: list[Skill]
     ) -> None:
-        if chat_session.skill_stack_json or chat_session.resume_after_answer_json:
-            chat_session.skill_stack_json = []
-            chat_session.resume_after_answer_json = None
-            chat_session.updated_at = utc_now()
-        active_skill = next(
-            (skill for skill in skills if skill.skill_id == chat_session.active_skill_id), None
-        )
-        if active_skill and self._is_terminal_skill_state(active_skill, chat_session):
-            self._complete_active_skill(
-                tenant_id, chat_session, active_skill, "stale_terminal_state"
-            )
+        return self._sop_service().finish_stale_completed_skill(tenant_id, chat_session, skills)
 
     def _should_complete_skill(
         self,
@@ -581,44 +611,13 @@ class AgentLoop:
         step_result: StepAgentResult,
         tool_result: ToolResult | None,
     ) -> bool:
-        if not skill or not step_result.is_step_completed:
-            return False
-        if tool_result and not tool_result.success:
-            return False
-        if (
-            tool_result
-            and tool_result.success
-            and self._current_step_can_finish_after_tool(skill, chat_session)
-        ):
-            return True
-        if self._graph_pending_steps(chat_session):
-            return False
-        if self._is_answer_ready_skill_state(skill, chat_session):
-            return True
-        if self._is_terminal_skill_state(skill, chat_session):
-            return True
-        if not step_result.next_step_id and not step_result.tool_call:
-            return True
-        if self._graph_flow_has_unfinished_work(skill, chat_session, step_result):
-            return False
-        return self._is_terminal_skill_state(skill, chat_session)
+        return self._sop_service().should_complete_skill(skill, chat_session, step_result, tool_result)
 
     def _is_terminal_skill_state(self, skill: Skill, chat_session: ChatSession) -> bool:
-        return self._is_terminal_skill_position(
-            skill, chat_session.active_step_id, chat_session.slots_json or {}
-        )
+        return self._sop_service().is_terminal_skill_state(skill, chat_session)
 
     def _is_answer_ready_skill_state(self, skill: Skill, chat_session: ChatSession) -> bool:
-        step = self._current_skill_step(skill, chat_session.active_step_id)
-        if not step:
-            return False
-        actions = self._step_actions(step)
-        if not self._actions_allow_final_reply(actions):
-            return False
-        required = [str(field) for field in (skill.content_json or {}).get("required_info", [])]
-        return all(
-            self._skill_slot_satisfied(chat_session.slots_json or {}, field) for field in required
-        )
+        return self._sop_service().is_answer_ready_skill_state(skill, chat_session)
 
     def _graph_flow_has_unfinished_work(
         self,
@@ -626,71 +625,23 @@ class AgentLoop:
         chat_session: ChatSession,
         step_result: StepAgentResult | None = None,
     ) -> bool:
-        if not skill or chat_session.active_skill_id != skill.skill_id:
-            return False
-        if self._graph_pending_steps(chat_session):
-            return True
-        if (
-            step_result
-            and step_result.next_step_id
-            and str(step_result.next_step_id) == str(chat_session.active_step_id)
-        ):
-            return True
-        if not chat_session.active_step_id:
-            return False
-        return bool(self._graph_outgoing_edges(skill).get(chat_session.active_step_id))
+        return self._sop_service().graph_flow_has_unfinished_work(skill, chat_session, step_result)
 
     def _is_terminal_skill_position(
         self, skill: Skill, active_step_id: str | None, slots: dict[str, Any]
     ) -> bool:
-        if not active_step_id:
-            return False
-        content = skill.content_json or {}
-        terminal_node_ids = {str(node_id) for node_id in content.get("terminal_node_ids", [])}
-        if active_step_id not in terminal_node_ids:
-            return False
-        return GraphRules.terminal_position_from_step(
-            content,
-            active_step_id,
-            slots,
-            self._current_skill_step(skill, active_step_id),
-            self._skill_slot_satisfied,
-            self._step_actions,
-        )
+        return self._sop_service().is_terminal_skill_position(skill, active_step_id, slots)
 
     def _current_step_can_finish_after_tool(self, skill: Skill, chat_session: ChatSession) -> bool:
-        step = self._current_skill_step(skill, chat_session.active_step_id)
-        if not step:
-            return False
-        actions = self._step_actions(step)
-        if not self._actions_allow_final_reply(actions):
-            return False
-        expected = [str(field) for field in step.get("expected_user_info", [])]
-        return all(
-            self._skill_slot_satisfied(chat_session.slots_json or {}, field) for field in expected
-        )
+        return self._sop_service().current_step_can_finish_after_tool(skill, chat_session)
 
     def _actions_allow_final_reply(self, actions: list[str]) -> bool:
-        return GraphRules.actions_allow_final_reply(actions)
+        return self._sop_service().actions_allow_final_reply(actions)
 
     def _complete_active_skill(
         self, tenant_id: str, chat_session: ChatSession, skill: Skill, reason: str
     ) -> None:
-        before_skill = chat_session.active_skill_id
-        before_step = chat_session.active_step_id
-        self.runtime.complete_current_skill(chat_session)
-        self.events.record(
-            tenant_id,
-            chat_session.id,
-            "skill_completed",
-            {
-                "skill_id": before_skill or skill.skill_id,
-                "step_id": before_step,
-                "reason": reason,
-                "resumed_skill_id": chat_session.active_skill_id,
-                "resumed_step_id": chat_session.active_step_id,
-            },
-        )
+        return self._sop_service().complete_active_skill(tenant_id, chat_session, skill, reason)
 
     def _finalize_execution_after_reply(
         self,
@@ -701,20 +652,7 @@ class AgentLoop:
         step_result: StepAgentResult,
         tool_result: ToolResult | None,
     ) -> ExecutionFinalizeState:
-        return TurnFinalizer.finalize(
-            tenant_id,
-            chat_session,
-            active_skill,
-            router_decision,
-            step_result,
-            tool_result,
-            current_step_allows_handoff=self._current_step_allows_human_handoff,
-            route_to_handoff_node=self._maybe_route_to_handoff_node,
-            create_handoff=self._create_human_handoff_request,
-            record_event=self.events.record,
-            should_complete=self._should_complete_skill,
-            complete_skill=self._complete_active_skill,
-        )
+        return self._sop_service().finalize_execution_after_reply(tenant_id, chat_session, active_skill, router_decision, step_result, tool_result)
 
     def _create_human_handoff_request(
         self,
@@ -725,7 +663,9 @@ class AgentLoop:
     ) -> HumanHandoffRequest:
         # SOP 节点指定的处理人:从当前 step 的 assignee_user_id 字段读取
         # (handoff 类型节点或 allowed_actions 含 handoff_human 的节点可配置)。
+        # assignee_notify_channel 指定投递渠道:None=默认;"web"=仅网页端;绑定渠道=按渠道转接。
         step_assignee_user_id: str | None = None
+        step_notify_channel: str | None = None
         current_step = (
             self._current_skill_step(active_skill, chat_session.active_step_id)
             if active_skill
@@ -735,9 +675,12 @@ class AgentLoop:
             step_assignee_user_id = (
                 str(current_step.get("assignee_user_id") or "").strip() or None
             )
+            step_notify_channel = (
+                str(current_step.get("assignee_notify_channel") or "").strip() or None
+            )
         # 当前渠道默认处理人:从会话所属 binding 的 config_json 读取。
-        binding_default_assignee_user_id = self._binding_default_handoff_assignee(
-            tenant_id, chat_session
+        binding_default_assignee_user_id, binding_default_notify_channel = (
+            self._binding_default_handoff_assignee(tenant_id, chat_session)
         )
         handoff = HumanHandoffService(self.db, self.events).create(
             tenant_id,
@@ -749,51 +692,111 @@ class AgentLoop:
             pending_question=self._human_handoff_pending_question,
             step_assignee_user_id=step_assignee_user_id,
             binding_default_assignee_user_id=binding_default_assignee_user_id,
+            step_notify_channel=step_notify_channel,
+            binding_default_notify_channel=binding_default_notify_channel,
         )
-        # 给 assignee 发飞书私聊通知(经会话所属 binding 投递)。失败仅记日志,
-        # 不影响 handoff 主流程(网页收件箱仍可兜底)。
-        self._maybe_notify_handoff_assignee_on_feishu(tenant_id, chat_session, handoff)
+        # 给 assignee 发渠道私聊通知。失败仅记日志,不影响 handoff 主流程
+        # (网页收件箱仍可兜底)。
+        self._maybe_notify_handoff_assignee(tenant_id, chat_session, handoff)
         return handoff
 
     def _binding_default_handoff_assignee(
         self,
         tenant_id: str,
         chat_session: ChatSession,
-    ) -> str | None:
-        """会话所属渠道绑定配置的默认人工处理人。
+    ) -> tuple[str | None, str | None]:
+        """会话所属渠道绑定配置的默认人工处理人及其通知渠道。
 
         从 ChatSession.channel_binding_id 反查 binding(而非 agent 挂载列表取首个),
-        读取 config_json.default_handoff_assignee_user_id。无 binding 或未配置返回 None。
+        读取 config_json.default_handoff_assignee_user_id 与
+        default_handoff_assignee_channel。无 binding 或未配置返回 (None, None)。
         """
         if not chat_session.channel_binding_id:
-            return None
+            return None, None
         binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
         if not binding or binding.tenant_id != tenant_id:
-            return None
+            return None, None
         config = binding.config_json if isinstance(binding.config_json, dict) else {}
         value = str(config.get("default_handoff_assignee_user_id") or "").strip()
-        return value or None
+        if not value:
+            return None, None
+        channel = str(config.get("default_handoff_assignee_channel") or "").strip()
+        return value, (channel or None)
 
-    def _maybe_notify_handoff_assignee_on_feishu(
+    def _maybe_notify_handoff_assignee(
         self,
         tenant_id: str,
         chat_session: ChatSession,
         handoff: HumanHandoffRequest,
     ) -> None:
-        from app.channels.service_outbox import notify_handoff_assignee
+        """按通知渠道偏好解析投递 binding,给 assignee 登记渠道私聊通知。
 
-        # 通知用 binding 必须是会话所属 binding(用户消息进来的那个),
-        # 而非从 agent 挂载列表取首个 active 飞书绑定。
-        if not chat_session.channel_binding_id:
+        绑定解析规则:
+        - 偏好为具体渠道(如 feishu)时:优先会话所属 binding(渠道匹配且 active);
+          会话无 binding 或渠道不匹配时,在租户内找该渠道的任一 active 员工绑定。
+        - 偏好为 None(默认)时:用会话所属 binding(渠道支持私聊通知即可达)。
+        - 偏好为 "web" 时:仅网页收件箱,直接返回。
+
+        无可用 binding(含日志说明)或 assignee 在该 binding scope 无非群聊身份时,
+        由 notify_handoff_assignee 内部跳过,网页收件箱兜底。
+        """
+        from staffdeck_harness.runtime.staff_ownership import handoff_context, selected_registry
+
+        if selected_registry(self.db) is not None:
+            from staffdeck_harness.contracts.errors import PermissionDenied
+            from staffdeck_harness.handoff.core import for_session
+
+            if chat_session.tenant_id != tenant_id or (
+                handoff.tenant_id, handoff.session_id, handoff.agent_id
+            ) != (tenant_id, chat_session.id, chat_session.agent_id):
+                raise PermissionDenied("handoff notification scope mismatch")
+            core = for_session(self.db, chat_session)
+            ctx = handoff_context(self.db, chat_session, core.guard.profile)
+            core.notify(handoff, pending_question=handoff.pending_question or "",
+                        context_summary=handoff.context_summary or "", ctx=ctx)
             return
-        binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
-        if (
-            not binding
-            or binding.tenant_id != tenant_id
-            or binding.channel != "feishu"
-            or binding.status != "active"
-        ):
+        from app.channels.service_outbox import (
+            HANDOFF_NOTIFY_CHANNELS,
+            notify_handoff_assignee,
+            resolve_handoff_notify_binding,
+        )
+
+        metadata = handoff.metadata_json if isinstance(handoff.metadata_json, dict) else {}
+        notify_channel = str(metadata.get("assignee_notify_channel") or "").strip()
+        if notify_channel == "web":
             return
+        binding: ChannelBinding | None = None
+        if notify_channel:
+            # 指定渠道:优先会话所属 binding,渠道不匹配时回退租户内该渠道任一 binding。
+            if chat_session.channel_binding_id:
+                session_binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
+                if (
+                    session_binding
+                    and session_binding.tenant_id == tenant_id
+                    and session_binding.channel == notify_channel
+                    and session_binding.status == "active"
+                ):
+                    binding = session_binding
+            binding = binding or resolve_handoff_notify_binding(self.db, tenant_id, notify_channel)
+            if binding is None:
+                logger.warning(
+                    "handoff 通知跳过:租户无可用的 %s 绑定 handoff=%s", notify_channel, handoff.id
+                )
+                return
+        else:
+            # 默认投递:用会话所属 binding,渠道支持私聊通知即可达。
+            if not chat_session.channel_binding_id:
+                return
+            session_binding = self.db.get(ChannelBinding, chat_session.channel_binding_id)
+            if (
+                not session_binding
+                or session_binding.tenant_id != tenant_id
+                or session_binding.status != "active"
+            ):
+                return
+            if session_binding.channel not in HANDOFF_NOTIFY_CHANNELS:
+                return
+            binding = session_binding
         notify_handoff_assignee(
             self.db,
             binding,
@@ -809,102 +812,7 @@ class AgentLoop:
         step_result: StepAgentResult,
         active_skill: Skill | None = None,
     ) -> None:
-        source_skill_id = chat_session.active_skill_id
-        source_step_id = chat_session.active_step_id
-        if step_result.slot_updates:
-            chat_session.slots_json = {
-                **(chat_session.slots_json or {}),
-                **step_result.slot_updates,
-            }
-            self.events.record(
-                tenant_id,
-                chat_session.id,
-                "slot_updated",
-                {"slot_updates": step_result.slot_updates, "slots": chat_session.slots_json},
-            )
-
-        active_skill_matches = bool(
-            active_skill and active_skill.skill_id == chat_session.active_skill_id
-        )
-        invalid_next_step = False
-        if active_skill_matches and step_result.next_step_id:
-            next_step_id = str(step_result.next_step_id).strip()
-            if not self._skill_has_step(active_skill, next_step_id):
-                self.events.record(
-                    tenant_id,
-                    chat_session.id,
-                    "step_agent_result_repaired",
-                    {
-                        "mode": "invalid_next_step_ignored",
-                        "active_skill_id": chat_session.active_skill_id,
-                        "active_step_id": chat_session.active_step_id,
-                        "invalid_next_step_id": step_result.next_step_id,
-                    },
-                )
-                step_result.next_step_id = None
-                step_result.is_step_completed = False
-                invalid_next_step = True
-
-        self._sync_awaiting_input_from_step_result(
-            chat_session,
-            step_result,
-            active_skill,
-            source_skill_id=source_skill_id,
-            source_step_id=source_step_id,
-        )
-
-        if not chat_session.active_skill_id:
-            return
-        if invalid_next_step:
-            return
-        if active_skill_matches and step_result.next_step_id:
-            next_step_id = str(step_result.next_step_id).strip()
-            source_step_id = chat_session.active_step_id
-            pending_steps = self._graph_pending_steps(chat_session)
-            if pending_steps:
-                if next_step_id in pending_steps:
-                    pending_steps = [item for item in pending_steps if item != next_step_id]
-                    self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
-                    self._change_active_step(
-                        tenant_id,
-                        chat_session,
-                        next_step_id,
-                        reason="graph_merge_step",
-                    )
-                    return
-
-                if next_step_id not in pending_steps:
-                    pending_steps.append(next_step_id)
-                    self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
-                if self._activate_next_pending_graph_step(
-                    tenant_id,
-                    chat_session,
-                    active_skill,
-                    reason="graph_sibling_step",
-                ):
-                    step_result.next_step_id = chat_session.active_step_id
-                return
-
-            self._queue_graph_sibling_steps(
-                tenant_id,
-                chat_session,
-                active_skill,
-                source_step_id,
-                next_step_id,
-            )
-
-        if step_result.next_step_id:
-            self._change_active_step(tenant_id, chat_session, str(step_result.next_step_id).strip())
-            return
-
-        if active_skill_matches and step_result.is_step_completed:
-            if self._activate_next_pending_graph_step(
-                tenant_id,
-                chat_session,
-                active_skill,
-                reason="graph_pending_step",
-            ):
-                step_result.next_step_id = chat_session.active_step_id
+        return self._sop_service().apply_step_result(tenant_id, chat_session, step_result, active_skill)
 
     def _sync_awaiting_input_from_step_result(
         self,
@@ -915,52 +823,7 @@ class AgentLoop:
         source_skill_id: str | None,
         source_step_id: str | None,
     ) -> None:
-        if not active_skill or active_skill.skill_id != source_skill_id or not source_step_id:
-            return
-
-        step = self._current_skill_step(active_skill, source_step_id)
-        if not step:
-            return
-        missing_fields = [
-            str(field)
-            for field in step.get("expected_user_info", [])
-            if not self._skill_slot_satisfied(chat_session.slots_json or {}, str(field))
-        ]
-        is_waiting_reply = step_result.action in {"ask_user", "clarify"}
-        if is_waiting_reply and missing_fields:
-            previous = (
-                chat_session.awaiting_input_json
-                if isinstance(chat_session.awaiting_input_json, dict)
-                else {}
-            )
-            awaiting_input = {
-                "skill_id": source_skill_id,
-                "step_id": source_step_id,
-                "expected_fields": missing_fields,
-                "question_summary": str(step_result.reply or "").strip() or None,
-            }
-            if previous.get("task_id"):
-                awaiting_input["task_id"] = previous["task_id"]
-            chat_session.awaiting_input_json = awaiting_input
-            chat_session.last_agent_question = awaiting_input["question_summary"]
-            return
-
-        should_clear = bool(
-            step_result.next_step_id
-            or step_result.tool_call
-            or step_result.is_step_completed
-            or not missing_fields
-        )
-        awaiting = chat_session.awaiting_input_json
-        if not should_clear or not isinstance(awaiting, dict):
-            return
-        if awaiting.get("skill_id") not in {None, source_skill_id}:
-            return
-        if awaiting.get("step_id") not in {None, source_step_id}:
-            return
-        task_id = awaiting.get("task_id")
-        chat_session.awaiting_input_json = {"task_id": task_id} if task_id else None
-        chat_session.last_agent_question = None
+        return self._sop_service().sync_awaiting_input_from_step_result(chat_session, step_result, active_skill, source_skill_id=source_skill_id, source_step_id=source_step_id)
 
     def _change_active_step(
         self,
@@ -970,23 +833,10 @@ class AgentLoop:
         *,
         reason: str | None = None,
     ) -> None:
-        previous_step = chat_session.active_step_id
-        chat_session.active_step_id = next_step_id
-        if previous_step == next_step_id:
-            return
-        payload: dict[str, Any] = {
-            "from_skill_id": chat_session.active_skill_id,
-            "to_skill_id": chat_session.active_skill_id,
-            "from_step_id": previous_step,
-            "to_step_id": next_step_id,
-        }
-        if reason:
-            payload["reason"] = reason
-        self.events.record(tenant_id, chat_session.id, "skill_step_changed", payload)
+        return self._sop_service().change_active_step(tenant_id, chat_session, next_step_id, reason=reason)
 
     def _graph_pending_steps(self, chat_session: ChatSession) -> list[str]:
-        value = (chat_session.slots_json or {}).get(GRAPH_PENDING_STEPS_SLOT)
-        return GraphRules.normalize_pending_steps(value)
+        return self._sop_service().graph_pending_steps(chat_session)
 
     def _store_graph_pending_steps(
         self,
@@ -994,19 +844,7 @@ class AgentLoop:
         chat_session: ChatSession,
         pending_steps: list[str],
     ) -> None:
-        slots = dict(chat_session.slots_json or {})
-        normalized = GraphRules.normalize_pending_steps(pending_steps)
-        if normalized:
-            slots[GRAPH_PENDING_STEPS_SLOT] = normalized
-        else:
-            slots.pop(GRAPH_PENDING_STEPS_SLOT, None)
-        chat_session.slots_json = slots
-        self.events.record(
-            tenant_id,
-            chat_session.id,
-            "graph_pending_steps_updated",
-            {"pending_step_ids": normalized},
-        )
+        return self._sop_service().store_graph_pending_steps(tenant_id, chat_session, pending_steps)
 
     def _queue_graph_sibling_steps(
         self,
@@ -1016,24 +854,10 @@ class AgentLoop:
         source_step_id: str | None,
         selected_step_id: str,
     ) -> None:
-        if not source_step_id:
-            return
-        outgoing = self._graph_outgoing_edges(active_skill).get(source_step_id) or []
-        sibling_steps = GraphRules.sibling_steps_from_edges(
-            outgoing,
-            selected_step_id,
-            self._edge_condition,
-        )
-        if not sibling_steps:
-            return
-        pending_steps = self._graph_pending_steps(chat_session)
-        for step_id in sibling_steps:
-            if step_id not in pending_steps:
-                pending_steps.append(step_id)
-        self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
+        return self._sop_service().queue_graph_sibling_steps(tenant_id, chat_session, active_skill, source_step_id, selected_step_id)
 
     def _edge_condition(self, edge: dict[str, Any]) -> str:
-        return GraphRules.edge_condition(edge)
+        return self._sop_service().edge_condition(edge)
 
     def _activate_next_pending_graph_step(
         self,
@@ -1043,57 +867,33 @@ class AgentLoop:
         *,
         reason: str,
     ) -> bool:
-        pending_steps = self._graph_pending_steps(chat_session)
-        while pending_steps:
-            next_step_id = pending_steps.pop(0)
-            if not self._skill_has_step(active_skill, next_step_id):
-                continue
-            self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
-            self._change_active_step(tenant_id, chat_session, next_step_id, reason=reason)
-            return True
-        self._store_graph_pending_steps(tenant_id, chat_session, [])
-        return False
+        return self._sop_service().activate_next_pending_graph_step(tenant_id, chat_session, active_skill, reason=reason)
 
     def _skill_has_step(self, skill: Skill, step_id: str | None) -> bool:
-        return GraphRules.has_step(skill.content_json or {}, step_id)
+        return self._sop_service().skill_has_step(skill, step_id)
 
     def _first_step_id(self, skill: Skill) -> str | None:
-        content = skill.content_json or {}
-        start_node_id = str(content.get("start_node_id") or "").strip()
-        if start_node_id and self._skill_has_step(skill, start_node_id):
-            return start_node_id
-        steps = self._skill_steps(skill)
-        first_step = steps[0] if steps and isinstance(steps[0], dict) else None
-        return first_step.get("step_id") if first_step else None
+        return self._sop_service().first_step_id(skill)
 
     def _skill_steps(self, skill: Skill) -> list[dict[str, Any]]:
-        return GraphRules.steps_from_nodes(self._ordered_skill_nodes(skill))
+        return self._sop_service().skill_steps(skill)
 
     def _skill_nodes(self, skill: Skill) -> list[dict[str, Any]]:
-        return GraphRules.nodes(skill.content_json or {})
+        return self._sop_service().skill_nodes(skill)
 
     def _ordered_skill_nodes(self, skill: Skill) -> list[dict[str, Any]]:
-        content = skill.content_json or {}
-        return GraphRules.ordered_nodes(
-            content,
-            nodes=self._skill_nodes(skill),
-            outgoing=self._graph_outgoing_edges(skill),
-        )
+        return self._sop_service().ordered_skill_nodes(skill)
 
     def _graph_outgoing_edges(self, skill: Skill) -> dict[str, list[dict[str, Any]]]:
-        return GraphRules.outgoing_edges(skill.content_json or {})
+        return self._sop_service().graph_outgoing_edges(skill)
 
     def _default_next_step(self, skill: Skill, active_step_id: str | None) -> dict[str, Any] | None:
-        if not active_step_id:
-            return None
-        return GraphRules.default_next_step_from_parts(
-            self._skill_nodes(skill),
-            self._graph_outgoing_edges(skill).get(active_step_id, []),
-        )
+        return self._sop_service().default_next_step(skill, active_step_id)
 
     def _get_or_create_session(self, request: ChatTurnRequest) -> ChatSession:
         session_id = request.session_id or new_id("session")
         chat_session = self.db.get(ChatSession, session_id)
+        created = chat_session is None
         if not chat_session:
             chat_session = ChatSession(
                 id=session_id,
@@ -1110,17 +910,17 @@ class AgentLoop:
             self.db.flush()
         elif not chat_session.agent_id and request.agent_id:
             chat_session.agent_id = request.agent_id
+        from staffdeck_harness.runtime.session_binding import bind_session
+        bind_session(self.db, chat_session, created=created)
         return chat_session
 
     def _current_skill_step(
         self, skill: Skill, active_step_id: str | None
     ) -> dict[str, Any] | None:
-        if not active_step_id:
-            return None
-        return GraphRules.current_step_from_steps(self._skill_steps(skill), active_step_id)
+        return self._sop_service().current_skill_step(skill, active_step_id)
 
     def _skill_slot_satisfied(self, slots: dict[str, Any], field: str) -> bool:
-        return GraphRules.slot_satisfied(slots, field)
+        return self._sop_service().skill_slot_satisfied(slots, field)
 
     def _get_request_model(
         self,
@@ -1168,8 +968,51 @@ class AgentLoop:
         value = row.agent_loop_max_actions if row else MAX_TOOL_ACTIONS_PER_TURN
         return max(1, min(int(value), MAX_TOOL_ACTIONS_PER_TURN_LIMIT))
 
+    def _get_conversation_context_settings(
+        self,
+        tenant_id: str,
+    ) -> ConversationContextSettings:
+        if not hasattr(self.db, "get"):
+            return ConversationContextSettings()
+        row = self.db.get(UIConfig, tenant_id)
+        if row is None:
+            return ConversationContextSettings()
+        return ConversationContextSettings(
+            token_budget=getattr(row, "context_token_budget", 32_000),
+            compaction_trigger_ratio=getattr(
+                row,
+                "context_compaction_trigger_ratio",
+                0.70,
+            ),
+            recent_round_limit=getattr(row, "context_recent_round_limit", 6),
+            long_summary_token_budget=getattr(
+                row,
+                "context_long_summary_token_budget",
+                4_000,
+            ),
+            medium_summary_token_budget=getattr(
+                row,
+                "context_medium_summary_token_budget",
+                4_000,
+            ),
+            allowed_roles=frozenset(
+                getattr(row, "context_allowed_roles", None)
+                or {"user", "assistant"}
+            ),
+            long_summary_prefix=getattr(
+                row,
+                "context_long_summary_prefix",
+                "历史的信息可以被总结为：",
+            ),
+            medium_summary_prefix=getattr(
+                row,
+                "context_medium_summary_prefix",
+                "近期的历史信息总结为：",
+            ),
+        ).normalized()
+
     def _list_published_skills(self, tenant_id: str, agent_id: str | None = None) -> list[Skill]:
-        return visible_published_skills(self.db, tenant_id, agent_id)
+        return self._sop_service().list_published_skills(tenant_id, agent_id)
 
     def _get_agent_profile(self, tenant_id: str, agent_id: str | None) -> AgentProfile | None:
         if not agent_id:
@@ -1182,9 +1025,7 @@ class AgentLoop:
     def _get_active_skill(
         self, tenant_id: str, skill_id: str | None, agent_id: str | None = None
     ) -> Skill | None:
-        if not skill_id:
-            return None
-        return visible_skill(self.db, tenant_id, skill_id, agent_id)
+        return self._sop_service().get_active_skill(tenant_id, skill_id, agent_id)
 
     def _drop_unavailable_skill_state(
         self,
@@ -1192,97 +1033,7 @@ class AgentLoop:
         chat_session: ChatSession,
         skills: list[Skill],
     ) -> bool:
-        skills_by_id = {skill.skill_id: skill for skill in skills}
-        available_skill_ids = set(skills_by_id)
-        changed = False
-        removed_skill_ids: set[str] = set()
-        repaired_steps: list[dict[str, str | None]] = []
-
-        if chat_session.skill_stack_json or chat_session.resume_after_answer_json:
-            chat_session.skill_stack_json = []
-            chat_session.resume_after_answer_json = None
-            changed = True
-
-        def frame_skill_id(frame: object) -> str:
-            if not isinstance(frame, dict):
-                return ""
-            return str(frame.get("target_skill_id") or frame.get("skill_id") or "").strip()
-
-        def keep_frame(frame: object) -> bool:
-            skill_id = frame_skill_id(frame)
-            if not skill_id:
-                return True
-            if skill_id in available_skill_ids:
-                return True
-            removed_skill_ids.add(skill_id)
-            return False
-
-        active_skill_id = str(chat_session.active_skill_id or "").strip()
-        if active_skill_id and active_skill_id not in available_skill_ids:
-            removed_skill_ids.add(active_skill_id)
-            chat_session.active_skill_id = None
-            chat_session.active_step_id = None
-            chat_session.slots_json = {}
-            chat_session.awaiting_input_json = None
-            chat_session.resume_after_answer_json = None
-            changed = True
-        elif active_skill_id:
-            active_skill = skills_by_id[active_skill_id]
-            active_step_id = str(chat_session.active_step_id or "").strip()
-            restored_step_id = self._first_step_id(active_skill)
-            if (
-                restored_step_id
-                and active_step_id != restored_step_id
-                and not self._skill_has_step(active_skill, active_step_id)
-            ):
-                chat_session.active_step_id = restored_step_id
-                awaiting = (
-                    chat_session.awaiting_input_json
-                    if isinstance(chat_session.awaiting_input_json, dict)
-                    else {}
-                )
-                task_id = awaiting.get("task_id")
-                chat_session.awaiting_input_json = {"task_id": task_id} if task_id else None
-                chat_session.last_agent_question = None
-                repaired_steps.append(
-                    {
-                        "skill_id": active_skill_id,
-                        "from_step_id": active_step_id,
-                        "to_step_id": restored_step_id,
-                    }
-                )
-                changed = True
-
-        for attr in ("pending_tasks_json",):
-            value = getattr(chat_session, attr) or []
-            if not isinstance(value, list):
-                continue
-            kept = [frame for frame in value if keep_frame(frame)]
-            if len(kept) != len(value):
-                setattr(chat_session, attr, kept)
-                changed = True
-
-        awaiting = chat_session.awaiting_input_json
-        if isinstance(awaiting, dict):
-            awaiting_skill_id = str(awaiting.get("skill_id") or "").strip()
-            if awaiting_skill_id and awaiting_skill_id not in available_skill_ids:
-                removed_skill_ids.add(awaiting_skill_id)
-                chat_session.awaiting_input_json = None
-                changed = True
-
-        if changed:
-            chat_session.updated_at = utc_now()
-            if hasattr(self, "events"):
-                self.events.record(
-                    tenant_id,
-                    chat_session.id,
-                    "skill_state_pruned",
-                    {
-                        "removed_skill_ids": sorted(removed_skill_ids),
-                        "repaired_steps": repaired_steps,
-                    },
-                )
-        return changed
+        return self._sop_service().drop_unavailable_skill_state(tenant_id, chat_session, skills)
 
     def _conversation_context(
         self,
@@ -1310,10 +1061,14 @@ class AgentLoop:
                 )
                 for row in visible_rows
             ],
+            settings=self._get_conversation_context_settings(chat_session.tenant_id),
             context_state=chat_session.context_state_json,
             summary_builder=self._context_summary_builder(model_config) if model_config else None,
         )
         next_state = context.get("context_state")
+        if isinstance(next_state, dict):
+            # Conversation compaction owns its summary keys, not SOP/module state stored beside them.
+            next_state = {**(chat_session.context_state_json or {}), **next_state}
         if isinstance(next_state, dict) and next_state != (chat_session.context_state_json or {}):
             chat_session.context_state_json = next_state
             self.db.add(chat_session)
@@ -1471,14 +1226,18 @@ class AgentLoop:
         model_config: ModelConfig,
     ) -> list[dict[str, object]]:
         try:
+            from staffdeck_harness.runtime.services import runtime_services
             job = enqueue_memory_capture(
                 request,
                 chat_session.id,
                 step_result,
                 tool_result,
                 model_config.id,
+                data_services=runtime_services(self.db),
+                model_config=model_config,
+                registry=getattr(self, "registry", None) or self.db.info.get("staffdeck_registry"),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - record composition failures without granting execution
             self.events.record(
                 request.tenant_id,
                 chat_session.id,
@@ -1510,13 +1269,15 @@ class AgentLoop:
             "error_occurred",
             {"code": code, "message": message},
         )
-        reply = self._finalize_turn(chat_session, chat_session.tenant_id, reply)
+        reply = self._finalize_turn(chat_session, chat_session.tenant_id, reply,
+            assistant_metadata_override={'runtime_error_code': code, 'execution_engine': 'harness_v3'})
         self.db.commit()
         self.db.refresh(chat_session)
         return ChatTurnResponse(
             reply=reply,
             session_id=chat_session.id,
             session_state=public_session(chat_session),
+            runtime_error_code=code,
         )
 
     def _finalize_turn(
@@ -1564,7 +1325,8 @@ class AgentLoop:
             reply,
             metadata=assistant_metadata,
         )
-        stage_channel_delivery(self.db, chat_session, assistant_message)
+        if not self.stream_delivery_succeeded:
+            stage_channel_delivery(self.db, chat_session, assistant_message)
         event_payload: dict[str, Any] = {
             "message_id": assistant_message.id,
             "assistant_message_id": assistant_message.id,

@@ -8,16 +8,22 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from staffdeck_harness.runtime.staff_directory import staff_profile, optional_staff_profile
 from app.db.models import (
-    AgentProfile,
+    ChatSession,
     Team,
     TeamBlackboardEntry,
     TeamMember,
+    TeamRun,
     TeamTask,
     TeamTaskBid,
     TeamTaskEvent,
     TeamWakeEvent,
     utc_now,
+)
+from app.session.cleanup import (
+    purge_chat_session_records,
+    remove_chat_session_workspace,
 )
 
 TEAM_MEMBER_ROLES = {"leader", "member"}
@@ -372,8 +378,9 @@ def create_team(
 
 
 def delete_team(db: Session, team: Team) -> None:
-    """删除团队并级联清理成员/任务/竞标/审计/唤醒事件/黑板。"""
+    """删除团队并级联清理成员/运行/任务/竞标/审计/唤醒事件/黑板/团队会话。"""
     members = list_team_members(db, team.id)
+    runs = list(db.exec(select(TeamRun).where(TeamRun.team_id == team.id)).all())
     tasks = list(db.exec(select(TeamTask).where(TeamTask.team_id == team.id)).all())
     bids = list(db.exec(select(TeamTaskBid).where(TeamTaskBid.team_id == team.id)).all())
     events = list(db.exec(select(TeamTaskEvent).where(TeamTaskEvent.team_id == team.id)).all())
@@ -381,19 +388,23 @@ def delete_team(db: Session, team: Team) -> None:
     entries = list(
         db.exec(select(TeamBlackboardEntry).where(TeamBlackboardEntry.team_id == team.id)).all()
     )
-    for row in [*members, *tasks, *bids, *events, *wakes, *entries]:
+    sessions = list(
+        db.exec(select(ChatSession).where(ChatSession.team_id == team.id)).all()
+    )
+    workspace_keys = [(session.tenant_id, session.id) for session in sessions]
+    for row in [*members, *runs, *tasks, *bids, *events, *wakes, *entries]:
         db.delete(row)
+    for session in sessions:
+        purge_chat_session_records(db, session)
     db.delete(team)
     db.commit()
+    for tenant_id, session_id in workspace_keys:
+        remove_chat_session_workspace(tenant_id=tenant_id, session_id=session_id, db=db)
 
 
-def _ensure_team_agent(db: Session, team: Team, agent_id: str) -> AgentProfile:
-    agent = db.get(AgentProfile, agent_id)
-    if agent is None or agent.tenant_id != team.tenant_id:
-        raise HTTPException(status_code=404, detail="Agent not found in this tenant")
-    if agent.status != "active":
-        raise HTTPException(status_code=400, detail="Agent is not active")
-    return agent
+def _ensure_team_agent(db: Session, team: Team, agent_id: str):
+    actor = db.info.get("staffdeck_actor_id") or db.info.get("staffdeck_control_subject")
+    return staff_profile(db, team.tenant_id, agent_id, action="use" if actor else None, active_only=True)
 
 
 def add_member(db: Session, team: Team, *, agent_id: str, role: str = "member") -> TeamMember:
@@ -489,7 +500,14 @@ def apply_task_transition(
     """按状态机迁移任务状态并写审计;非法流转抛 TeamTaskTransitionError。"""
     if new_status not in TASK_STATUSES:
         raise TeamTaskTransitionError(f"未知任务状态: {new_status}")
-    if new_status != task.status and new_status not in TASK_TRANSITIONS.get(task.status, set()):
+    planner_run_completed = bool(
+        task.team_run_id and task.status == "in_progress" and new_status == "done"
+    )
+    if (
+        new_status != task.status
+        and new_status not in TASK_TRANSITIONS.get(task.status, set())
+        and not planner_run_completed
+    ):
         raise TeamTaskTransitionError(f"任务不允许从 {task.status} 流转到 {new_status}")
     previous = task.status
     task.status = new_status
@@ -512,7 +530,7 @@ def team_roster_lines(db: Session, team: Team) -> list[str]:
     """团队花名册文本行:agent_id、名称、角色、能力标签,供注入 TL/成员上下文。"""
     lines: list[str] = []
     for member in list_team_members(db, team.id):
-        agent = db.get(AgentProfile, member.agent_id)
+        agent = optional_staff_profile(db, team.tenant_id, member.agent_id)
         if agent is None:
             continue
         metadata = agent.metadata_json if isinstance(agent.metadata_json, dict) else {}
@@ -757,7 +775,7 @@ def select_bid_candidates(db: Session, team: Team, task: TeamTask) -> list[str]:
     for member in list_team_members(db, team.id):
         if member.agent_id == leader_agent_id:
             continue
-        agent = db.get(AgentProfile, member.agent_id)
+        agent = optional_staff_profile(db, team.tenant_id, member.agent_id)
         if agent is None:
             continue
         metadata = agent.metadata_json if isinstance(agent.metadata_json, dict) else {}

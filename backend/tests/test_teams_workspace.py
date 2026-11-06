@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine, inspect, text
-from sqlmodel import Session, select
+from sqlalchemy import inspect, text
+from sqlmodel import Session, SQLModel, create_engine, select
 from test_teams_api import (
     _admin_user,
     _member_user,
@@ -16,7 +16,16 @@ from app.api import chat as chat_api
 from app.api import teams as teams_api
 from app.core import AgentLoop
 from app.db import database
-from app.db.models import ChatSession, TeamTask, TeamWakeEvent, User
+from app.db.models import (
+    AgentProfile,
+    ChatSession,
+    Message,
+    Team,
+    TeamTask,
+    TeamWakeEvent,
+    Tenant,
+    User,
+)
 from app.session.session_schema import ChatTurnRequest, ChatTurnResponse, SessionPublic
 from app.teams.schema import TeamTLChatRequest, TeamTLSessionRequest
 from app.teams.service import create_team, set_leader
@@ -53,6 +62,67 @@ def test_sessions_team_id_migration(monkeypatch: pytest.MonkeyPatch, tmp_path) -
     database._migrate_sqlite_skill_schema()  # 重复执行不炸
     columns = {column["name"] for column in inspect(engine).get_columns("sessions")}
     assert "team_id" in columns
+
+
+def test_purge_orphaned_chat_sessions_cleans_pre_fix_leftovers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """级联清理上线前删除团队/员工残留的孤儿会话,启动时一次性清掉。"""
+    db_path = tmp_path / "orphans.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_keep", tenant_id="tenant_demo", name="保留员工"))
+        team = Team(
+            tenant_id="tenant_demo",
+            name="存活的团队",
+            owner_user_id="user_admin",
+            status="active",
+        )
+        db.add(team)
+        for session_id, team_id, agent_id, title in (
+            ("session_team_orphan", "team_gone", "agent_keep", "团队 已删团队 · TL 对话"),
+            ("session_agent_orphan", None, "agent_gone", "与已删员工的对话"),
+            ("session_team_ok", team.id, "agent_keep", "团队 存活的团队 · TL 对话"),
+            ("session_plain_ok", None, "agent_keep", "普通会话"),
+            ("session_no_agent", None, None, "无员工会话"),
+        ):
+            db.add(
+                ChatSession(
+                    id=session_id,
+                    tenant_id="tenant_demo",
+                    user_id="user_admin",
+                    agent_id=agent_id,
+                    team_id=team_id,
+                    title=title,
+                    status="active",
+                )
+            )
+            db.add(
+                Message(
+                    id=f"msg_{session_id}",
+                    tenant_id="tenant_demo",
+                    session_id=session_id,
+                    role="user",
+                    content="你好",
+                )
+            )
+        db.commit()
+
+    monkeypatch.setattr(database, "database_url", f"sqlite:///{db_path}")
+    monkeypatch.setattr(database, "engine", engine)
+
+    database._purge_orphaned_chat_sessions()  # 首次清理
+    database._purge_orphaned_chat_sessions()  # 重复执行幂等
+
+    with Session(engine) as db:
+        remaining = {session.id for session in db.exec(select(ChatSession)).all()}
+        assert remaining == {"session_team_ok", "session_plain_ok", "session_no_agent"}
+        remaining_messages = {
+            message.session_id for message in db.exec(select(Message)).all()
+        }
+        assert remaining_messages == remaining
 
 
 # ---------- TL 会话 get-or-create ----------
@@ -186,6 +256,44 @@ def test_global_list_contains_team_group_but_hides_internal_team_sessions() -> N
         team_read = chat_api.get_chat_session(tl.session_id, "tenant_demo", admin, db)
         assert team_read.team_id == team.id
         assert team_read.team_name == team.name
+
+
+def test_delete_team_purges_team_chat_sessions() -> None:
+    """删除团队后,团队会话及其消息不再出现在对话端列表。"""
+    with _test_session() as db:
+        team = _seed_team(db)
+        admin = _admin_user()
+        plain = ChatSession(
+            id="session_plain_survivor",
+            tenant_id="tenant_demo",
+            user_id=admin.id,
+            agent_id="agent_tl",
+            title="普通会话",
+            status="active",
+        )
+        db.add(plain)
+        db.commit()
+        tl = teams_api.tl_session_endpoint(
+            team.id, TeamTLSessionRequest(tenant_id="tenant_demo"), db, admin
+        )
+        db.add(
+            Message(
+                id="msg_team_1",
+                tenant_id="tenant_demo",
+                session_id=tl.session_id,
+                role="user",
+                content="团队消息",
+            )
+        )
+        db.commit()
+
+        assert teams_api.delete_team_endpoint(team.id, "tenant_demo", db, admin) == {"ok": True}
+
+        assert db.get(ChatSession, tl.session_id) is None
+        assert db.exec(select(Message).where(Message.session_id == tl.session_id)).all() == []
+        reads = {item.id for item in chat_api.list_chat_sessions("tenant_demo", admin, db)}
+        assert tl.session_id not in reads
+        assert plain.id in reads
 
 
 def test_tl_chat_session_carries_team_id(monkeypatch: pytest.MonkeyPatch) -> None:

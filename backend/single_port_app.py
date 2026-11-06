@@ -13,6 +13,7 @@ from starlette.types import Scope
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from app import paths
+from app.config import get_settings
 from app.main import app
 
 
@@ -20,11 +21,59 @@ logger = logging.getLogger("staffdeck.static")
 ROOT_DIR = paths.resource_dir()
 # frozen: dist 被收集到 _MEIPASS/frontend-enterprise/dist
 # dev:    resource_dir()==backend/，需回到仓库根找 frontend-enterprise
-ENTERPRISE_DIST = (
+RELEASES_DIST = (
     ROOT_DIR / "frontend-enterprise" / "dist"
     if paths.is_frozen()
     else ROOT_DIR.parent / "frontend-enterprise" / "dist"
 )
+
+
+# The business SPA ships as an additional dist beside the releases one. Both are
+# built with the same base path, so which one is served is a settings decision.
+# Keep both build roots immutable. Requests select from the applied assembly;
+# saving a draft alone must not change which SPA is served.
+BUSINESS_DIST = (
+    ROOT_DIR / "frontend-business" / "dist"
+    if paths.is_frozen()
+    else ROOT_DIR.parent / "frontend-business" / "dist"
+)
+
+
+def _selected_dist() -> Path:
+    """The SPA to serve, taken from the *applied* assembly.
+
+    Resolve on every document request so applying an assembly inside the running
+    process also changes the SPA. Never use the selected build as a fallback root.
+
+    Unknown or missing variants fall back to the releases build.
+    """
+    try:
+        from staffdeck_harness.modules.config import UI_VARIANTS, load_applied
+
+        variant = load_applied(get_settings()).ui_variant
+    except Exception:  # noqa: BLE001 - never fail startup over a settings read
+        logger.warning("ui variant unavailable; serving releases", exc_info=True)
+        return RELEASES_DIST
+    if variant == "business" and (BUSINESS_DIST / "index.html").is_file():
+        return BUSINESS_DIST
+    if variant not in UI_VARIANTS:
+        logger.warning("unknown ui variant %r; serving releases", variant)
+    return RELEASES_DIST
+
+
+# Compatibility name for callers referring to the releases build, not UI state.
+ENTERPRISE_DIST = RELEASES_DIST
+
+# The admin console owns the module settings page, so it must stay reachable whichever
+# SPA the deployment serves; it is pinned to the releases build.
+_ADMIN_ROUTES = frozenset({"/admin"})
+
+
+def _dist_for(route: str) -> Path:
+    """Which dist serves one route. Everything but the admin console follows the variant."""
+    if route in _ADMIN_ROUTES:
+        return RELEASES_DIST
+    return _selected_dist()
 SPA_INDEX_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
@@ -290,6 +339,31 @@ class FrontendStaticFiles(StaticFiles):
         return response
 
 
+class MultiDistStaticFiles(StaticFiles):
+    """Serve one asset tree that may live in either dist (the releases build or the
+    business one), so a page rendered from one build still loads its own hashed
+    assets while the other build is being served.
+
+    Starlette's ``lookup_path`` already walks ``all_directories`` and applies its
+    own path-escape checks, so the whole job is populating that list; overriding
+    the lookup is both unnecessary and easy to get wrong (it rejects absolute
+    paths and ignores ``self.directory``).
+    """
+
+    def __init__(self, directories: list[Path]):
+        super().__init__(directory=directories[0], check_dir=False)
+        self.all_directories = [str(directory) for directory in directories]
+
+
+def _frontend_asset_files(subdir: str = "assets") -> "MultiDistStaticFiles":
+    dirs: list[Path] = []
+    for candidate in (_selected_dist(), RELEASES_DIST, BUSINESS_DIST):
+        target = candidate / subdir
+        if target not in dirs:
+            dirs.append(target)
+    return MultiDistStaticFiles(dirs)
+
+
 def spa_index_response(index_path: Path) -> FileResponse:
     return FileResponse(index_path, headers=SPA_INDEX_HEADERS)
 
@@ -443,29 +517,35 @@ async def _relay_llm_request(
 
 app.mount(
     "/assets",
-    FrontendStaticFiles(directory=ENTERPRISE_DIST / "assets", check_dir=False),
+    _frontend_asset_files("assets"),
     name="assets",
 )
 app.mount(
     "/enterprise/assets",
-    FrontendStaticFiles(directory=ENTERPRISE_DIST / "assets", check_dir=False),
+    _frontend_asset_files("assets"),
     name="enterprise-assets",
 )
 app.mount(
     "/chat/assets",
-    FrontendStaticFiles(directory=ENTERPRISE_DIST / "assets", check_dir=False),
+    _frontend_asset_files("assets"),
     name="chat-assets",
 )
 app.mount(
     "/workspace/assets",
-    FrontendStaticFiles(directory=ENTERPRISE_DIST / "assets", check_dir=False),
+    _frontend_asset_files("assets"),
     name="workspace-assets",
+)
+app.mount(
+    "/admin/assets",
+    _frontend_asset_files("assets"),
+    name="admin-assets",
 )
 
 
 @app.get("/", include_in_schema=False)
-def root_redirect() -> RedirectResponse:
-    return RedirectResponse(url="/chat/")
+def root_redirect(request: Request) -> RedirectResponse:
+    prefix = str(request.scope.get("root_path") or "").rstrip("/")
+    return RedirectResponse(url=prefix + "/chat/")
 
 
 @app.get("/pilotdeck", include_in_schema=False)
@@ -481,23 +561,35 @@ def pilotdeck_redirect() -> RedirectResponse:
 @app.get("/staffdeck-icon.png", include_in_schema=False)
 def brand_icon(request: Request) -> FileResponse:
     # 品牌图标：从前端 dist 根目录 serve（favicon.ico/png、apple-touch-icon）
-    name = request.url.path.lstrip("/")
-    target = ENTERPRISE_DIST / name
+    name = request.url.path.rsplit("/", 1)[-1]
+    selected_dist = _selected_dist()
+    target = selected_dist / name
     if not target.exists():
-        target = ENTERPRISE_DIST / "favicon.ico"
+        target = selected_dist / "favicon.ico"
     return FileResponse(target)
 
 
 @app.get("/enterprise", include_in_schema=False)
 @app.get("/enterprise/{path:path}", include_in_schema=False)
 def enterprise_app(path: str = "") -> FileResponse:
-    return spa_index_response(ENTERPRISE_DIST / "index.html")
+    return spa_index_response(_selected_dist() / "index.html")
 
 
 @app.get("/login", include_in_schema=False)
+@app.get("/new", include_in_schema=False)
+@app.get("/plaza", include_in_schema=False)
+@app.get("/plaza/{path:path}", include_in_schema=False)
 @app.get("/chat", include_in_schema=False)
 @app.get("/chat/{path:path}", include_in_schema=False)
 @app.get("/workspace", include_in_schema=False)
 @app.get("/workspace/{path:path}", include_in_schema=False)
 def chat_app(path: str = "") -> FileResponse:
-    return spa_index_response(ENTERPRISE_DIST / "index.html")
+    return spa_index_response(_selected_dist() / "index.html")
+
+
+@app.get("/admin", include_in_schema=False)
+@app.get("/admin/{path:path}", include_in_schema=False)
+def admin_app(path: str = "") -> FileResponse:
+    # Always the releases build: the module settings page (engine / permission profile /
+    # frontend switch) lives there, so it must stay reachable whatever SPA is served.
+    return spa_index_response(_dist_for("/admin") / "index.html")

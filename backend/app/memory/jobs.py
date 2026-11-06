@@ -20,6 +20,7 @@ def enqueue_memory_capture(
     step_result: StepAgentResult,
     tool_result: ToolResult | None,
     model_config_id: str,
+    *, data_services=None, model_config=None, registry=None,
 ) -> AsyncJob:
     payload = {
         "request": request.model_dump(mode="json"),
@@ -28,10 +29,12 @@ def enqueue_memory_capture(
         "tool_result": tool_result.model_dump(mode="json") if tool_result else None,
         "model_config_id": model_config_id,
     }
-    return enqueue_async_job(
+    from staffdeck_harness.runtime.jobs import enqueue_runtime_job
+    return enqueue_runtime_job(
         "memory.capture_turn",
         run_memory_capture_job,
         payload,
+        data_services=data_services, model_config=model_config, registry=registry,
         metadata={
             "tenant_id": request.tenant_id,
             "session_id": session_id,
@@ -40,16 +43,16 @@ def enqueue_memory_capture(
     )
 
 
-def run_memory_capture_job(payload: dict[str, Any]) -> None:
+def run_memory_capture_job(payload: dict[str, Any], *, data_services=None, model_config=None) -> None:
     request = ChatTurnRequest.model_validate(payload["request"])
     session_id = str(payload["session_id"])
     model_config_id = str(payload["model_config_id"])
     step_result = StepAgentResult.model_validate(payload["step_result"])
     tool_result = ToolResult.model_validate(payload["tool_result"]) if payload.get("tool_result") else None
-    with Session(engine) as db:
+    with data_services.session(None, purpose="memory.capture") if data_services else Session(engine) as db:
         events = EventLog(db)
         chat_session = db.get(ChatSession, session_id)
-        model_config = db.get(ModelConfig, model_config_id)
+        model_config = model_config or db.get(ModelConfig, model_config_id)
         if not chat_session or not model_config:
             events.record(
                 request.tenant_id,

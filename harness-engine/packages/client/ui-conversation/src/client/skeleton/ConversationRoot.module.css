@@ -1,0 +1,452 @@
+.root {
+  position: relative; /* positioning context for slot-owned absolute chrome */
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  background: var(--dsw-alias-bg-base);
+
+  /* Shared width axis for the whole column: one content width W
+     (--dsh-chat-content-width) for the transcript, the dock cards
+     (todo/goal/queue: card minus four insets, 4 x 8 = 32), and business-owned
+     takeover cards; the input card alone is W + 32px.
+     The relation also holds when a narrow viewport shrinks everything: the
+     chat scroller and the takeover frames pad clearance + 16px per side while
+     the input card clears the bare clearance, so the input card stays exactly
+     content + 32px at every width. Declared on the root because the
+     transcript and the composer seat are sibling subtrees.
+
+     W adapts to the column, not the viewport (a collapsed sidebar widens the
+     column without resizing the window): the component publishes the column's
+     live width as --dsh-conversation-column-width (px, via ResizeObserver —
+     container-type would re-anchor the subtree's portal-free position:fixed
+     descendants) and the clamp keeps a 680px floor (a step under the figma
+     748px — the full-width reading felt wide on every screen), takes 64% of
+     wider columns, and caps at 920px for line-length
+     readability. A dragged user preference (--dsh-chat-user-width, published
+     by the width handles) replaces the adaptive term wholesale. */
+  --dsh-chat-content-width: var(
+    --dsh-chat-user-width,
+    clamp(680px, calc(var(--dsh-conversation-column-width, 0px) * 0.64), 920px)
+  );
+  --dsh-composer-card-max-width: calc(var(--dsh-chat-content-width) + 32px);
+  --dsh-composer-side-clearance: 16px;
+  --dsh-composer-dock-inset: 8px;
+}
+
+.header {
+  position: relative;
+  flex: none;
+  padding: 12px 28px 0 20px;
+  border-bottom: 1px solid transparent;
+}
+
+.header::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 1px;
+  left: 0;
+  z-index: 0;
+  height: 1px;
+  background: var(--dsw-alias-border-l2);
+  pointer-events: none;
+}
+
+/* Blank hero/settling: keep the strict Session header mounted without taking
+   column space; the root-owned scrollport and composer remain below it. */
+.headerHidden {
+  display: none;
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-height: 32px;
+}
+
+.titleCluster {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.crumbSeg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.crumbSep {
+  /* figma: "/" separators are 14px caption gray (75:7903), one tint lighter than crumb text. */
+  color: var(--dsw-alias-label-caption);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.crumb {
+  max-width: 220px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.crumbSubagent {
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.crumb:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.crumbCurrent {
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+  cursor: default;
+}
+
+.headerActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.headerUtilities {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  margin-left: 20px;
+}
+
+.headerUtilities:empty {
+  display: none;
+}
+
+/* figma Tab_Group 34:11441: 35px strip, gap 36, pad-left 8, tabs bottom-aligned. */
+.tabs {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 36px;
+  margin-top: 4px;
+  padding-left: 8px;
+}
+
+/* figma .Tab 34:11442: 13/16 text (figma wt510, rendered 500), gap 8 to the 2px bar. */
+.tab {
+  position: relative;
+  padding: 0 0 11px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.tab::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 1px;
+  left: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: transparent;
+}
+
+/* Selected tab is blue, not ink: brand-primary resolves to neutral black in
+   this token sheet, so the selected state rides the business blue — the
+   nearest semantic token that stays blue in both themes. */
+.tabActive {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.tabActive::after {
+  background: var(--dsw-alias-state-business-primary);
+}
+
+.viewArea {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Width handles: 40px col-resize strips beside the transcript, absolute in
+   .body (NOT the scrollport: an absolute strip there would extend the
+   scrollable range; NOT .root: a strip from the column top would paint its
+   glow through the header's transparent background). Inner edge sits 24px
+   outside the content column — the
+   same offset the glow line paints at — and the strip extends 40px outward
+   from there; the outer edge is clamped to keep a 24px safe zone against the
+   column edges (sidebar side and scrollbar side stay drag-free). When the
+   margin cannot fit inset + strip + safe zone the computed width goes
+   negative and the strip resolves to zero — no mispositioned hit area on
+   narrow columns. Known half-scrollbar (~4px) centering offset vs the
+   gutter-reserved content box is accepted: it stays well inside the strip. */
+.widthHandle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 8;
+  width: min(
+    40px,
+    calc((100% - var(--dsh-chat-content-width)) / 2 - 24px - 24px)
+  );
+  cursor: col-resize;
+}
+
+.widthHandle[data-side='left'] {
+  right: calc(50% + var(--dsh-chat-content-width) / 2 + 24px);
+}
+
+.widthHandle[data-side='right'] {
+  left: calc(50% + var(--dsh-chat-content-width) / 2 + 24px);
+}
+
+/* The glow: a short 3px bar riding the pointer's Y, inset 16px outward from
+   the strip's inner edge (40px from the content column),
+   not a full-height rule — a 24px solid core centered on the pointer
+   (published by pointermove as --dsh-width-handle-pointer-y), fading to
+   transparent over 40px each side (~104px total). A solid CORE, not a single
+   solid stop: a lone peak washes out over the fade. The scrollbar hover tint,
+   not a border token: this is a draggable bar and the border alphas (4-16%)
+   disappear against the base fill. Before the first move the fallback centers
+   the glow at 50% height. */
+.widthHandle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to bottom,
+    transparent calc(var(--dsh-width-handle-pointer-y, 50%) - 52px),
+    var(--dsw-alias-scrollbar-hover-l1) calc(var(--dsh-width-handle-pointer-y, 50%) - 12px),
+    var(--dsw-alias-scrollbar-hover-l1) calc(var(--dsh-width-handle-pointer-y, 50%) + 12px),
+    transparent calc(var(--dsh-width-handle-pointer-y, 50%) + 52px)
+  );
+  opacity: 0;
+  pointer-events: none;
+}
+
+.widthHandle[data-side='left']::after {
+  right: 16px;
+}
+
+.widthHandle[data-side='right']::after {
+  left: 16px;
+}
+
+.widthHandle:hover::after,
+.widthHandle[data-dragging]::after {
+  opacity: 1;
+}
+
+/* Views that elect a composer overlay (trajectory etc.) own their full-bleed
+   scrollers; the strips would sit over their content and steal clicks. */
+.root:has([data-conversation-composer-overlay]) .widthHandle {
+  display: none;
+}
+
+/* Composer context stack (Figma 9:937): standalone dock cards share one
+   rhythm above the input card. */
+.composerStack {
+  /* Horizontal geometry (card width, clearance, dock inset) rides the shared
+     .root variables above so takeover siblings match the stack. */
+  --dsh-composer-stack-gap: 6px;
+
+  display: flex;
+  flex-direction: column;
+  gap: var(--dsh-composer-stack-gap);
+}
+
+/* Common seat for the composer chain (fallback + elected overlay siblings). */
+.composerSeat {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  /* One cap for every scrolling text region a composer seat can hold: the
+     InputBar draft (figma Input 75:8208 max 14 lines × 24px line) and the
+     takeover panels' bodies top out at the same height, so electing a
+     takeover never grows the footer past the card it replaces. Declared on
+     the seat because it is the chain's only shared ancestor — fallback and
+     elected overlay are siblings — and custom properties inherit down to
+     whichever entry is mounted. */
+  --dsh-composer-text-max-height: 336px;
+}
+
+/* Active phase: header is ordinary column chrome above the scrollport (not
+   sticky). The scroll body holds the transcript and the sticky composer seat
+   so wheel over the footer moves the flow. */
+.root[data-phase='active'] {
+  overflow: hidden;
+}
+
+.root[data-phase='active'] .header {
+  flex: none;
+}
+
+/* Band below the header: the scrollport plus the width handles. Anchoring the
+   handles here keeps their full-height strips and glow under the header's
+   bottom edge at every header height. */
+.body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.scrollBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  /* Reserved unconditionally: the composer seat rides this box's content box in
+     Chat and its padding box under a view's composer overlay, so an `auto`
+     gutter moves the input card sideways by the bar's width whenever the two
+     differ ([decision](../../../../../../.agents/notes/implemented/bug-fix/2026-08-04-composer-tab-gutter-reservation.md)). */
+  scrollbar-gutter: stable;
+}
+
+.root[data-phase='active'] .viewArea {
+  flex: 1 0 auto;
+  min-height: auto;
+}
+
+.root[data-phase='active'] .composerSeat {
+  position: sticky;
+  bottom: 0;
+  /* Above markdown CodeBlock sticky banners (z-index 6) so the footer never
+     paints under a sticking code header while scrolling. */
+  z-index: 7;
+  /* Input mask (figma 1205:27463): transcript fades out under a FIXED 36px
+     band at the seat's top (the figma 24% of the resting ~150px composer),
+     solid below — px stops, not %, so a growing draft only widens the solid
+     region and the fade band never stretches. The 0px stop is bg-base at
+     zero alpha (not white, which the figma export hardcodes) so both themes
+     fade from their own base. */
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px,
+    var(--dsw-alias-bg-base) 36px
+  );
+}
+
+/* An open @/slash menu (data-trigger-menu, ui-input-trigger) renders inside
+   the input card, so the seat's stacking context caps its z-index; lift the
+   seat above the back-to-bottom control (z-index 8, ui-chat ChatView) while
+   the menu is open. The steady state stays 7 so the control keeps painting
+   over the card. */
+.root[data-phase='active'] .composerSeat:has([data-trigger-menu]) {
+  z-index: 9;
+}
+
+/* Views may opt into a composer overlay while ConversationRoot retains
+   ownership of the seat geometry and its active-phase precedence. */
+.scrollBody:has([data-conversation-composer-overlay]) {
+  position: relative;
+  /* A clipping box nothing scrolls out of, stated as a scroll container on both
+     axes rather than `overflow: hidden`: a single-axis scroller computes the
+     other axis to `auto`, and the seat's absolute positioning below needs the
+     box to stay a containing block in every engine. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* The view owns its own scrollers (the trajectory ledger scrolls inside the
+     view), so this box never scrolls here; reserving a gutter would only
+     narrow the view's content by the bar's width. Chat keeps the reservation
+     on the same element, so the seat below compensates with the bar's width
+     ([decision](../../../../../../.agents/notes/implemented/bug-fix/2026-08-04-composer-tab-gutter-reservation.md)). */
+  scrollbar-gutter: auto;
+}
+
+.scrollBody:has([data-conversation-composer-overlay]) > :global([data-slot='conversation.session']) > .viewArea {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.scrollBody:has([data-conversation-composer-overlay]) > .composerSeat {
+  position: absolute;
+  /* Chat's seat rides this box's content box, which its own scrolling shortens
+     by the bar's width; the overlay seat is against the padding box, so it
+     must give back the same width to keep the input card in place across
+     tabs. Reads ui-theme's --dsh-scrollbar-width, which mirrors the WebKit
+     bar's layout width. Chat reserves the engine-resolved width, so on an
+     engine where the resolved width differs from this fixed 8px the card
+     drifts by half the difference — accepted residual risk, recorded in
+     ([decision](../../../../../../.agents/notes/implemented/bug-fix/2026-08-12-composer-overlay-seat-width-compensation.md)). */
+  right: var(--dsh-scrollbar-width);
+  bottom: 0;
+  left: 0;
+}
+
+/* Hero phase: the composer stack (hero chrome + workspace row + card) is
+   flex-centered in the column; composer phase docks it at the bottom. Flex,
+   NOT absolute+transform: a transform would make this box the containing
+   block for position:fixed descendants (pickers/modals), shrinking them. */
+.composerHero {
+  align-self: center;
+  /* figma 75:8208 drew 12 between all three rows; the workspace row now sits
+     8 above the card (its margin-top restores 12 under the hero chrome). */
+  gap: 8px;
+  /* Foot inside the centered box floats the stack a bit above true center. */
+  padding-bottom: 32px;
+  /* Card cap + both clearances: the hero input card lands at exactly the same
+     width as the docked composer at every viewport. */
+  width: min(calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)), 100%);
+  z-index: 1;
+}
+
+.heroWorkspaceRow {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin-top: 4px;
+  /* figma drew px 8; nudged +12 so the chip's folder glyph lines up closer to
+     the card's inner controls below. */
+  padding-left: 20px;
+}
+
+/* Hero: the composer sits inside the session scroll body; center there so
+   the tree seat matches active (sticky footer) without a Root remount. */
+.root[data-phase='hero'] .scrollBody {
+  justify-content: center;
+  overflow-y: auto;
+}
+
+/* Settling (session replaying, hero/docked unknown): keep the composer seat
+   mounted but invisible so no wrong layout flashes before the phase lands. */
+.root[data-phase='settling'] .composerSeat {
+  visibility: hidden;
+}

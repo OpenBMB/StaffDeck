@@ -26,6 +26,14 @@ dump_logs() {
 cleanup() {
   if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
     kill "$PID" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      if ! kill -0 "$PID" 2>/dev/null; then break; fi
+      sleep 0.2
+    done
+    if kill -0 "$PID" 2>/dev/null; then
+      echo "Packaged-app test process exceeded the shutdown grace period; stopping it" >&2
+      kill -KILL "$PID" 2>/dev/null || true
+    fi
     wait "$PID" 2>/dev/null || true
   fi
   rm -rf "$DATA_DIR"
@@ -65,7 +73,7 @@ for _ in $(seq 1 90); do
     dump_logs
     exit 1
   fi
-  if curl --fail --silent --show-error \
+  if curl --fail --silent --show-error --connect-timeout 1 --max-time 2 \
     "http://127.0.0.1:$PORT/api/health" >"$HEALTH_RESPONSE" 2>/dev/null; then
     if grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"' "$HEALTH_RESPONSE"; then
       echo "OK: Packaged macOS app health check passed ($(uname -m))"

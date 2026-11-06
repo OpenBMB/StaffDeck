@@ -1,0 +1,127 @@
+.root {
+  position: relative;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 3px 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.trigger:hover,
+.trigger:focus-visible {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.trigger svg {
+  flex: none;
+}
+
+.trigger > svg:last-child {
+  transition: transform 120ms ease;
+}
+
+.triggerOpen {
+  transform: rotate(180deg);
+}
+
+.count {
+  margin-left: 2px;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 100;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 336px;
+  max-width: min(336px, calc(100vw - 32px));
+  max-height: min(420px, calc(100vh - 140px));
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+  list-style: none;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-specific-menu);
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+  box-shadow: var(--dsw-shadow-lv3);
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 3px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 54px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.rowOverdue {
+  background: var(--dsw-alias-state-warn-tertiary);
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.statusDot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-business-primary);
+}
+
+.rowOverdue .status {
+  color: var(--dsw-alias-state-warn-label);
+}
+
+.rowOverdue .statusDot {
+  background: var(--dsw-alias-state-warn-primary);
+}
+
+.prompt {
+  font-size: 13px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.metadata {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.relativeOverdue {
+  color: var(--dsw-alias-state-warn-label);
+}

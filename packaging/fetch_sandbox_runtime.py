@@ -26,7 +26,7 @@ PACKAGE = "@anthropic-ai/sandbox-runtime@0.0.67"
 MANIFEST_DIR = Path(__file__).resolve().parent
 PACKAGE_JSON = MANIFEST_DIR / "sandbox-runtime-package.json"
 PACKAGE_LOCK = MANIFEST_DIR / "sandbox-runtime-package-lock.json"
-NODE_VERSION = os.environ.get("STAFFDECK_NODE_VERSION", "v22.14.0")
+NODE_VERSION = os.environ.get("STAFFDECK_NODE_VERSION", "v22.19.0")
 PATCH_MARKER = "staffdeck-allow-all-domains-patch-v1"
 PATCHED_SHA256 = {
     "sandbox-config.js": "17a9bdd4cce375bb098f9c02eb564cf80806079571d4ff784e2af7d27db446bb",
@@ -34,12 +34,12 @@ PATCHED_SHA256 = {
 }
 SRT_INTEGRITY = "sha512-4doSyr6KNdc/4zARMXYEawhFu3z6bPQjgKRq3lKp6dbgEYVMv39oaLJ28QsDc7TmLvrLqzHW+VzD2LAXxvnw8A=="
 NODE_SHA256 = {
-    "node-v22.14.0-darwin-arm64.tar.gz": "e9404633bc02a5162c5c573b1e2490f5fb44648345d64a958b17e325729a5e42",
-    "node-v22.14.0-darwin-x64.tar.gz": "6698587713ab565a94a360e091df9f6d91c8fadda6d00f0cf6526e9b40bed250",
-    "node-v22.14.0-linux-x64.tar.gz": "9d942932535988091034dc94cc5f42b6dc8784d6366df3a36c4c9ccb3996f0c2",
-    "node-v22.14.0-linux-arm64.tar.gz": "8cf30ff7250f9463b53c18f89c6c606dfda70378215b2c905d0a9a8b08bd45e0",
-    "node-v22.14.0-win-arm64.zip": "2d71f5f9b2fffa33baa108c07d74b0d24e0c3dd8f441d567772ae0e3dd4b1a22",
-    "node-v22.14.0-win-x64.zip": "55b639295920b219bb2acbcfa00f90393a2789095b7323f79475c9f34795f217",
+    "node-v22.19.0-darwin-arm64.tar.gz": "c59006db713c770d6ec63ae16cb3edc11f49ee093b5c415d667bb4f436c6526d",
+    "node-v22.19.0-darwin-x64.tar.gz": "3cfed4795cd97277559763c5f56e711852d2cc2420bda1cea30c8aa9ac77ce0c",
+    "node-v22.19.0-linux-x64.tar.gz": "d36e56998220085782c0ca965f9d51b7726335aed2f5fc7321c6c0ad233aa96d",
+    "node-v22.19.0-linux-arm64.tar.gz": "d32817b937219b8f131a28546035183d79e7fd17a86e38ccb8772901a7cd9009",
+    "node-v22.19.0-win-arm64.zip": "e4a7336010d58ff35b53d9dd5869095c56089c70913cf22508cf8183593e56b2",
+    "node-v22.19.0-win-x64.zip": "ea3fad0e67a991d8477d8c01344b56e69c676ccb733f065b22436994b1253f86",
 }
 
 

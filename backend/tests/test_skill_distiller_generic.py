@@ -105,14 +105,184 @@ def test_model_input_uses_plain_text_and_compacts_available_tools() -> None:
     model_input = distiller._model_input(request, payload)  # noqa: SLF001
 
     projected_tool = payload["available_tools"][0]
-    assert set(projected_tool) == {"name", "display_name", "description", "input_schema"}
+    assert set(projected_tool) == {
+        "id",
+        "name",
+        "display_name",
+        "description",
+        "input_schema",
+    }
     assert "output_schema" not in json.dumps(payload, ensure_ascii=False)
-    assert "tool_internal_id" not in model_input
+    assert "ID=tool_internal_id" in model_input
     assert "localhost:5173" not in model_input
     assert model_input.startswith("技能标题：新SOP\n原始流程：")
     assert "expense.submit（提交报销单）" in model_input
     assert "reason (string, 必填)" in model_input
     assert not model_input.lstrip().startswith("{")
+
+
+def test_distill_preserves_and_resolves_capability_references() -> None:
+    request = SkillDistillRequest(
+        tenant_id="tenant_demo",
+        title="每日科技新闻入 Excel",
+        raw_content="获取每日科技新闻，整理后写入 Excel。",
+        available_tools=[
+            {
+                "id": "tool_news",
+                "name": "news.fetch",
+                "display_name": "科技新闻获取",
+                "description": "获取当天科技新闻。",
+            },
+            {
+                "id": "tool_excel",
+                "name": "excel.write",
+                "display_name": "Excel 写入",
+                "description": "把结构化数据写入 Excel。",
+            },
+        ],
+        available_general_skills=[
+            {
+                "id": "genskill_news",
+                "slug": "news-summary",
+                "name": "科技新闻整理",
+                "description": "筛选并整理科技新闻。",
+            }
+        ],
+        available_knowledge_bases=[
+            {
+                "id": "kb_news_rules",
+                "name": "新闻筛选规范",
+                "description": "科技新闻筛选标准。",
+            }
+        ],
+    )
+    raw = {
+        "draft_skill": {
+            "skill_id": "daily_tech_news_excel",
+            "name": "每日科技新闻入 Excel",
+            "nodes": [
+                {
+                    "node_id": "collect_news",
+                    "type": "tool_call",
+                    "name": "获取并整理新闻",
+                    "instruction": "获取科技新闻并按规范整理。",
+                    "allowed_actions": ["call_tool:news.fetch"],
+                    "capability_refs": {
+                        "general_skill_ids": ["general_skill.news-summary"],
+                        "required_general_skill_ids": ["genskill_news"],
+                        "tool_ids": ["news.fetch"],
+                        "required_tool_ids": ["tool_news"],
+                        "knowledge_base_ids": ["新闻筛选规范"],
+                    },
+                },
+                {
+                    "node_id": "write_excel",
+                    "type": "tool_call",
+                    "name": "写入 Excel",
+                    "instruction": "将整理结果写入 Excel。",
+                    "allowed_actions": ["call_tool:excel.write"],
+                    "capability_refs": {},
+                },
+            ],
+            "edges": [
+                {
+                    "source_node_id": "collect_news",
+                    "next_node_id": "write_excel",
+                    "priority": 0,
+                }
+            ],
+            "start_node_id": "collect_news",
+            "terminal_node_ids": ["write_excel"],
+        }
+    }
+
+    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+
+    collect_refs = response.draft_skill.nodes[0].capability_refs
+    assert collect_refs.general_skill_ids == ["genskill_news"]
+    assert collect_refs.required_general_skill_ids == ["genskill_news"]
+    assert collect_refs.tool_ids == ["tool_news"]
+    assert collect_refs.required_tool_ids == ["tool_news"]
+    assert collect_refs.knowledge_base_ids == ["kb_news_rules"]
+    assert response.draft_skill.nodes[1].capability_refs.tool_ids == ["tool_excel"]
+    assert not any("不可用的能力" in warning for warning in response.warnings)
+
+    model_input = SkillDistiller()._model_input(request)  # noqa: SLF001
+    assert "ID=tool_news" in model_input
+    assert "ID=tool_excel" in model_input
+    assert "ID=genskill_news" in model_input
+    assert "ID=kb_news_rules" in model_input
+
+
+def test_distill_infers_explicit_catalog_capabilities_when_model_omits_refs() -> None:
+    request = SkillDistillRequest(
+        tenant_id="tenant_demo",
+        title="在职证明开具",
+        raw_content=(
+            "必须使用证明文书生成技能，先检索员工证明规范知识库，"
+            "再必须调用 hr.cert_issue 工具正式开具证明。"
+        ),
+        available_tools=[
+            {
+                "id": "tool_cert_issue",
+                "name": "hr.cert_issue",
+                "display_name": "在职收入证明开具",
+            }
+        ],
+        available_general_skills=[
+            {
+                "id": "genskill_proof",
+                "slug": "document-generation-for-proofs",
+                "name": "证明文书生成",
+            }
+        ],
+        available_knowledge_bases=[
+            {
+                "id": "kb_proof_rules",
+                "name": "员工证明规范知识库",
+            }
+        ],
+    )
+    raw = {
+        "draft_skill": {
+            "skill_id": "employee_cert_issue",
+            "name": "在职证明开具",
+            "nodes": [
+                {
+                    "node_id": "search_rules",
+                    "type": "knowledge_search",
+                    "name": "检索证明规范",
+                    "instruction": "检索证明规范后准备开具参数。",
+                    "allowed_actions": ["continue_flow"],
+                },
+                {
+                    "node_id": "issue_cert",
+                    "type": "tool_call",
+                    "name": "调用 hr.cert_issue 开具证明",
+                    "instruction": "调用工具正式开具证明。",
+                    "allowed_actions": ["call_tool:hr.cert_issue"],
+                },
+            ],
+            "edges": [
+                {
+                    "source_node_id": "search_rules",
+                    "next_node_id": "issue_cert",
+                }
+            ],
+            "start_node_id": "search_rules",
+            "terminal_node_ids": ["issue_cert"],
+        }
+    }
+
+    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+
+    search_refs = response.draft_skill.nodes[0].capability_refs
+    issue_refs = response.draft_skill.nodes[1].capability_refs
+    assert search_refs.knowledge_base_ids == ["kb_proof_rules"]
+    assert issue_refs.general_skill_ids == ["genskill_proof"]
+    assert issue_refs.required_general_skill_ids == ["genskill_proof"]
+    assert issue_refs.tool_ids == ["tool_cert_issue"]
+    assert issue_refs.required_tool_ids == ["tool_cert_issue"]
 
 
 def test_slot_policy_targets_model_generated_fields() -> None:

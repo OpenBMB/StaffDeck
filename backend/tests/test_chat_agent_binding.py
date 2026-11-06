@@ -590,3 +590,64 @@ def _test_engine():
     )
     SQLModel.metadata.create_all(engine)
     return engine
+
+
+def test_history_sessions_include_employee_names_without_expanding_visibility() -> None:
+    with _test_session() as db:
+        db.add_all([Tenant(id="tenant_demo", name="Demo"), Tenant(id="tenant_other", name="Other")])
+        caller = User(id="user_names", tenant_id="tenant_demo", username="names", password_hash="x")
+        db.add(caller)
+        db.add_all(
+            [
+                AgentProfile(id="agent_named", tenant_id="tenant_demo", name="合同审阅助手"),
+                AgentProfile(
+                    id="agent_archived_name",
+                    tenant_id="tenant_demo",
+                    name="历史客服",
+                    status="archived",
+                ),
+                AgentProfile(
+                    id="agent_foreign_name", tenant_id="tenant_other", name="不可泄露的员工名"
+                ),
+            ]
+        )
+        db.add_all(
+            [
+                ChatSession(
+                    id="session_name",
+                    tenant_id="tenant_demo",
+                    user_id=caller.id,
+                    agent_id="agent_named",
+                ),
+                ChatSession(
+                    id="session_archived_name",
+                    tenant_id="tenant_demo",
+                    user_id=caller.id,
+                    agent_id="agent_archived_name",
+                ),
+                ChatSession(
+                    id="session_foreign_ref",
+                    tenant_id="tenant_demo",
+                    user_id=caller.id,
+                    agent_id="agent_foreign_name",
+                ),
+                ChatSession(
+                    id="session_other_user_name",
+                    tenant_id="tenant_demo",
+                    user_id="someone_else",
+                    agent_id="agent_named",
+                ),
+            ]
+        )
+        db.commit()
+        rows = {
+            row.id: row for row in list_chat_sessions("tenant_demo", current_user=caller, db=db)
+        }
+        assert rows["session_name"].model_dump()["agent_name"] == "合同审阅助手"
+        assert rows["session_archived_name"].agent_name == "历史客服"
+        assert rows["session_foreign_ref"].agent_name is None
+        assert "session_other_user_name" not in rows
+        detail = chat_api.get_chat_session(
+            "session_name", tenant_id="tenant_demo", current_user=caller, db=db
+        )
+        assert detail.agent_name == "合同审阅助手"

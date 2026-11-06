@@ -108,6 +108,10 @@ export const CHAT_MARKDOWN_CLASS = cn(
   '[&_code]:rounded-[5px] [&_code]:bg-[#f1f2f5] [&_code]:px-[5px] [&_code]:py-[1px] [&_code]:font-mono [&_code]:text-[12.5px]',
   '[&_.code-block-vscode]:my-[10px]',
 );
+export const CHAT_MARKDOWN_IMAGE_LINK_CLASS =
+  'my-[10px] block w-fit max-w-full overflow-hidden rounded-[12px] border border-[#e3e7f1] bg-[#f7f8fa] no-underline shadow-[0_8px_24px_rgba(30,45,70,0.08)] transition hover:border-[#c9d2e4] hover:shadow-[0_10px_28px_rgba(30,45,70,0.12)]';
+export const CHAT_MARKDOWN_IMAGE_CLASS =
+  'block max-h-[420px] max-w-full object-contain';
 export const CHAT_MD_TABLE_SCROLL_CLASS = 'my-[10px] max-w-full overflow-x-auto';
 export const CHAT_MD_TABLE_CLASS =
   'w-full border-collapse text-[13px] [&_th]:border [&_th]:border-[#e3e7f1] [&_th]:bg-[#f7f8fa] [&_th]:px-[10px] [&_th]:py-[6px] [&_th]:font-semibold [&_td]:border [&_td]:border-[#e3e7f1] [&_td]:px-[10px] [&_td]:py-[6px]';
@@ -171,14 +175,26 @@ export const CHAT_ARTIFACTS_CLASS =
   'mt-[12px] grid min-w-0 max-w-full gap-[8px] border-t border-[#f0f1f4] pt-[10px]';
 export const CHAT_ARTIFACT_HEADING_CLASS =
   'inline-flex items-center gap-[6px] text-[12px] font-semibold text-[#757f9c]';
-export const CHAT_ARTIFACT_LIST_CLASS = 'grid min-w-0 max-w-[320px] gap-[6px]';
+export const CHAT_ARTIFACT_LIST_CLASS = 'grid min-w-0 max-w-[560px] gap-[6px]';
 export const CHAT_ARTIFACT_BUTTON_CLASS =
-  'grid min-h-[46px] w-full grid-cols-[32px_minmax(0,1fr)_24px] items-center gap-[9px] rounded-[10px] border border-[#e3e7f1] bg-[#fafbfc] px-[8px] py-[6px] text-left text-[#464c5e] transition-colors hover:border-[#c9d2e4] hover:bg-white disabled:cursor-wait disabled:opacity-60';
+  'grid min-h-[46px] w-full max-w-[320px] grid-cols-[32px_minmax(0,1fr)_24px] items-center gap-[9px] rounded-[10px] border border-[#e3e7f1] bg-[#fafbfc] px-[8px] py-[6px] text-left text-[#464c5e] transition-colors hover:border-[#c9d2e4] hover:bg-white disabled:cursor-wait disabled:opacity-60';
 export const CHAT_ARTIFACT_ICON_CLASS =
   'inline-grid size-[32px] place-items-center rounded-[8px] bg-[#eef0f4] text-[#464c5e]';
 export const CHAT_ARTIFACT_COPY_CLASS = 'grid min-w-0 gap-px';
 export const CHAT_ARTIFACT_NAME_CLASS = 'truncate text-[12px] font-medium text-[#18181a]';
 export const CHAT_ARTIFACT_META_CLASS = 'truncate text-[11px] text-[#858b9c]';
+export const CHAT_ARTIFACT_IMAGE_CARD_CLASS =
+  'grid w-[min(560px,100%)] min-w-0 overflow-hidden rounded-[12px] border border-[#e3e7f1] bg-[#fafbfc] shadow-[0_8px_24px_rgba(30,45,70,0.06)]';
+export const CHAT_ARTIFACT_IMAGE_LINK_CLASS =
+  'group relative grid min-h-[120px] max-h-[420px] place-items-center overflow-hidden bg-[linear-gradient(45deg,#f3f4f7_25%,transparent_25%),linear-gradient(-45deg,#f3f4f7_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#f3f4f7_75%),linear-gradient(-45deg,transparent_75%,#f3f4f7_75%)] bg-[length:20px_20px] bg-[position:0_0,0_10px,10px_-10px,-10px_0]';
+export const CHAT_ARTIFACT_IMAGE_CLASS =
+  'block max-h-[420px] max-w-full object-contain transition duration-200 group-hover:scale-[1.01]';
+export const CHAT_ARTIFACT_IMAGE_PLACEHOLDER_CLASS =
+  'grid min-h-[140px] w-full place-items-center px-[20px] text-center text-[12px] text-[#858b9c]';
+export const CHAT_ARTIFACT_IMAGE_FOOTER_CLASS =
+  'grid min-w-0 grid-cols-[minmax(0,1fr)_32px] items-center gap-[10px] border-t border-[#eef0f4] bg-white px-[10px] py-[8px]';
+export const CHAT_ARTIFACT_IMAGE_DOWNLOAD_CLASS =
+  'inline-grid size-[32px] place-items-center rounded-[8px] border border-[#e3e7f1] bg-white text-[#464c5e] transition hover:border-[#c9d2e4] hover:bg-[#f7f8fa] disabled:cursor-wait disabled:opacity-60';
 
 // ---------------------------------------------------------------------------
 // Feedback actions

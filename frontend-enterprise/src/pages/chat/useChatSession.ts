@@ -22,6 +22,7 @@ import {
   type StreamEvent,
 } from '@/api/client';
 import { clearEnterpriseAuthSession, getEnterpriseAuthSession } from '@/auth';
+import { loadModelCatalog } from '@/api/model-catalog';
 import {
   emitAgentScopeChange,
   isTeamScope,
@@ -101,17 +102,20 @@ import {
   mergeTurnTraceSnapshot,
   modelStorageKey,
   normalizeMessageText,
+  normalizePersistedTraceLine,
   normalizeSessionEventForStream,
   normalizeTraceSkill,
   normalizeTraceTool,
   parseMessageTime,
   persistSessionReadTimes,
   publicStreamPhase,
+  reduceReplyText,
   reflectionTraceDetail,
   routerDecisionTraceLine,
   sameRoleTurn,
   scheduledDraftForMessage,
   sessionFilterStorageKey,
+  shouldDeferPersistedEventToLiveStream,
   shouldKeepRealtimeMessage,
   stepResultTraceLine,
   streamErrorTraceLine,
@@ -341,6 +345,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   );
   const [modelConfigsLoading, setModelConfigsLoading] = useState(Boolean(auth));
   const [modelConfigsLoadError, setModelConfigsLoadError] = useState('');
+  const [modelConfigsRevision, setModelConfigsRevision] = useState(0);
+  const modelCatalogRequest = useRef<{ controller: AbortController; valid: boolean } | null>(null);
   const [modelSetupOpen, setModelSetupOpen] = useState(false);
   const [input, setInput] = useState('');
   const [slashCommands, setSlashCommands] = useState<ChatSlashCommand[]>([]);
@@ -384,6 +390,14 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     show_tool_trace: true,
     reflection_max_rounds: 1,
     agent_loop_max_actions: 32,
+    context_token_budget: 32_000,
+    context_compaction_trigger_ratio: 0.7,
+    context_recent_round_limit: 6,
+    context_long_summary_token_budget: 4_000,
+    context_medium_summary_token_budget: 4_000,
+    context_allowed_roles: ['user', 'assistant'],
+    context_long_summary_prefix: '历史的信息可以被总结为：',
+    context_medium_summary_prefix: '近期的历史信息总结为：',
     sandbox_enabled: false,
     harness_storage_path: '',
     effective_harness_storage_path: '',
@@ -427,7 +441,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const redirectToLogin = useCallback(() => {
     if (anonymous) return;
     clearEnterpriseAuthSession();
-    window.location.href = '/';
+    window.location.href = import.meta.env.BASE_URL;
   }, [anonymous]);
 
   useEffect(() => () => {
@@ -460,7 +474,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       return true;
     }
     const rawMessage = error instanceof Error ? error.message : fallback;
-    const isNetworkError = error instanceof TypeError;
+    const isNetworkError = error instanceof TypeError || (error instanceof ApiError && [502, 503, 504].includes(error.status));
     const noticeKey = isNetworkError ? 'chat-network-error' : `chat-${scope}-error`;
     const now = Date.now();
     const lastShownAt = loadErrorNoticeRef.current[noticeKey] || 0;
@@ -644,7 +658,8 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       return false;
     }
     if (modelConfigsLoadError) {
-      notify.error(t('无法读取模型配置，请刷新页面后重试'));
+      setModelConfigsRevision((current) => current + 1);
+      notify.warning(t('正在重新读取模型配置，请稍后再发送'));
       return false;
     }
     if (!selectedModelConfig) {
@@ -661,7 +676,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   const loadAgents = useCallback(async (preferredAgentId?: string) => {
     setAgentsLoaded(false);
     try {
-      const rows = await api.get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`);
+      const rows = await api.get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}&view=summary`);
       setAgents(rows);
       setSelectedAgentId((current) => {
         // A team scope is not part of the employee roster; keep it untouched.
@@ -801,9 +816,11 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     }
     setModelConfigsLoading(true);
     setModelConfigsLoadError('');
-    api
-      .get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${tenantId}`)
+    const request = { controller: new AbortController(), valid: true };
+    modelCatalogRequest.current = request;
+    loadModelCatalog(tenantId, request.controller.signal)
       .then((rows) => {
+        if (!request.valid) return;
         setModelConfigs(rows);
         setSelectedModelConfigId((current) => {
           const enabledRows = rows.filter((item) => item.enabled);
@@ -818,19 +835,30 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         });
       })
       .catch((error) => {
+        if (!request.valid) return;
         if (isAuthError(error)) {
           redirectToLogin();
           return;
         }
         setModelConfigsLoadError(error instanceof Error ? error.message : '模型配置加载失败');
       })
-      .finally(() => setModelConfigsLoading(false));
-  }, [auth, redirectToLogin, tenantId]);
+      .finally(() => { if (request.valid) setModelConfigsLoading(false); });
+    return () => {
+      request.valid = false;
+      request.controller.abort();
+      if (modelCatalogRequest.current === request) modelCatalogRequest.current = null;
+    };
+  }, [auth, redirectToLogin, tenantId, modelConfigsRevision]);
 
   useEffect(() => {
     const onModelConfigsUpdated = (event: Event) => {
       const rows = (event as CustomEvent<{ models?: ModelConfigRead[] }>).detail?.models;
-      if (!rows) return;
+      if (!Array.isArray(rows) || rows.some((row) => row.tenant_id !== tenantId)) return;
+      if (modelCatalogRequest.current) {
+        modelCatalogRequest.current.valid = false;
+        modelCatalogRequest.current.controller.abort();
+        modelCatalogRequest.current = null;
+      }
       setModelConfigs(rows);
       setModelConfigsLoadError('');
       setModelConfigsLoading(false);
@@ -1283,7 +1311,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         rows.forEach((row) => {
           const hasFinalAssistant = hasAssistantMessageForTurn(slot, row.turn_id);
           const hasAssistantCarrier = hasAssistantCarrierForTurn(slot, row.turn_id);
-          const traceLines = row.lines.map((line) => ({
+          const traceLines = row.lines.map((line) => normalizePersistedTraceLine({
             id: line.id,
             kind: line.kind,
             text: line.text,
@@ -1766,13 +1794,25 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
   useEffect(() => {
     if (!sessionId || runningTurn?.sessionId !== sessionId) return;
     const timer = window.setInterval(() => {
-      if (getStreamSlot(sessionId).abortController) return;
       void loadMessages(sessionId).finally(() => {
         void loadTraces(sessionId);
       });
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [getStreamSlot, loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
+  }, [loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
+
+  // A TL turn ends as soon as the team DAG is dispatched. The eventual synthesis is
+  // persisted asynchronously, outside that turn's SSE stream, so keep the active team
+  // conversation synchronized even while there is no locally running turn.
+  useEffect(() => {
+    if (!sessionId || !displayedTeamId || runningTurn?.sessionId === sessionId) return;
+    const timer = window.setInterval(() => {
+      void loadMessages(sessionId).finally(() => {
+        void loadTraces(sessionId);
+      });
+    }, 2_000);
+    return () => window.clearInterval(timer);
+  }, [displayedTeamId, loadMessages, loadTraces, runningTurn?.sessionId, sessionId]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -2060,8 +2100,10 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       item.event === 'task_frame_started'
       || item.event === 'task_frame_finished'
       || item.event === 'harness_action_created'
+      || item.event === 'harness_action_failed'
       || item.event === 'harness_mcp_app_view'
       || item.event === 'harness_tool_completed'
+      || item.event === 'harness_tool_result'
       || item.event === 'harness_step_timeout'
     ) {
       const line = harnessEventTraceLine(item.event, item.data);
@@ -2265,7 +2307,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
         window.clearTimeout(eventStream.timer);
         eventStream.timer = null;
       }
-      eventStream.accumulated = next;
+      eventStream.accumulated = reduceReplyText(eventStream.accumulated, item.event, next);
       updateStreaming(eventSessionId, next, getStreamSlot(eventSessionId).turnId || traceTurnId);
       notifyStream();
       return;
@@ -2275,13 +2317,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
       const piece = typeof item.data.content === 'string' ? item.data.content : '';
       if (!piece) return;
       const previous = eventStream.accumulated;
-      let next = previous + piece;
-      if (previous) {
-        if (piece === previous) return;
-        if (piece.startsWith(previous)) {
-          next = piece;
-        }
-      }
+      const next = reduceReplyText(previous, item.event, piece);
       if (next === previous) return;
       const hadVisibleText = Boolean(normalizeMessageText(previous));
       eventStream.accumulated = next;
@@ -2555,11 +2591,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
     let text = '';
     runningGroup.forEach((event) => {
       const payloadText = eventTextPayload(event);
-      if (event.event === 'stream_replace') {
-        text = payloadText;
-      } else if (event.event === 'stream_delta' || event.event === 'token') {
-        text = text && payloadText.startsWith(text) ? payloadText : text + payloadText;
-      }
+      text = reduceReplyText(text, event.event, payloadText);
     });
 
     const streamChanged = (
@@ -2636,13 +2668,7 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
           let recoveredText = '';
           recoveryEvents.forEach((event) => {
             const payloadText = eventTextPayload(event);
-            if (event.event === 'stream_replace' || event.event === 'assistant_message_created') {
-              recoveredText = payloadText;
-            } else if (event.event === 'stream_delta' || event.event === 'token') {
-              recoveredText = recoveredText && payloadText.startsWith(recoveredText)
-                ? payloadText
-                : recoveredText + payloadText;
-            }
+            recoveredText = reduceReplyText(recoveredText, event.event, payloadText);
           });
           if (recoveredText && recoveredText !== stream.accumulated) {
             stream.accumulated = recoveredText;
@@ -2700,9 +2726,9 @@ export function useChatSession(options: UseChatSessionOptions = {}) {
           const eventTurnId = eventTraceTurnId(event);
           if (!eventTurnId) return;
           const liveSseOwnsTurn = Boolean(stream.abortController && stream.turnId === eventTurnId);
-          if (liveSseOwnsTurn) return;
-          scheduledEventIdsRef.current.add(event.id);
           const terminalEvent = isTerminalSessionEvent(event, isTerminalEvent);
+          if (shouldDeferPersistedEventToLiveStream(event.event, liveSseOwnsTurn)) return;
+          scheduledEventIdsRef.current.add(event.id);
           const hasFinalAssistant = hasAssistantMessageForTurn(slot, eventTurnId);
           if (event.event === 'assistant_message_created') {
             if (!hasFinalAssistant) {

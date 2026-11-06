@@ -1,0 +1,40 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo"
+  },
+  "files": [
+    "src/api-path.ts",
+    "src/api-request-trust.ts",
+    "src/browser-auth.ts",
+    "src/http-bridge.ts",
+    "src/index.ts",
+    "src/invariant.ts",
+    "src/loopback-hostname.ts",
+    "src/rpc-host.ts",
+    "src/rpc-schema.ts",
+    "src/rpc.ts"
+  ],
+  "references": [
+    {
+      "path": "../../attachment/attachment"
+    },
+    {
+      "path": "../../credentials/credentials"
+    },
+    {
+      "path": "../../core/session"
+    },
+    {
+      "path": "../../host/webserver"
+    },
+    {
+      "path": "../../runtime-diagnostics/invariants"
+    },
+    {
+      "path": "../../util/brand"
+    }
+  ]
+}

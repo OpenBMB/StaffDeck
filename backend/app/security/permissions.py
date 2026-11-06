@@ -20,6 +20,10 @@ def ensure_tenant_admin(tenant_id: str, current_user: User) -> User:
     ensure_current_user_tenant(tenant_id, current_user)
     if not is_admin_user(current_user):
         raise HTTPException(status_code=403, detail="Only administrator can manage tenant settings")
+    from app.security.module_policy import require_resource
+    from staffdeck_harness.contracts.security import ResourceRef
+
+    require_resource(current_user, ResourceRef(type="tenant", id=tenant_id, tenant_id=tenant_id), "manage", module="tenant")
     return current_user
 
 
@@ -48,6 +52,10 @@ def require_agent_scope_viewer(
         or agent_owned_by_user(row, current_user)
         or (row.metadata_json or {}).get("published_to_gallery") is True
     ):
+        from app.security.module_policy import require_resource
+        from staffdeck_harness.composition.projection import agent_ref
+
+        require_resource(current_user, agent_ref(row), "view", module="staff")
         return current_user
     raise HTTPException(status_code=403, detail="Cannot access this staff")
 
@@ -69,10 +77,18 @@ def ensure_agent_scope_manager(
     if not row or row.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Agent not found")
     if is_admin_user(current_user):
+        from app.security.module_policy import require_resource
+        from staffdeck_harness.composition.projection import agent_ref
+
+        require_resource(current_user, agent_ref(row), "manage", module="staff")
         return row
     if row.is_overall:
         raise HTTPException(status_code=403, detail="Only administrator can manage overall agent")
     if agent_owned_by_user(row, current_user):
+        from app.security.module_policy import require_resource
+        from staffdeck_harness.composition.projection import agent_ref
+
+        require_resource(current_user, agent_ref(row), "manage", module="staff")
         return row
     raise HTTPException(status_code=403, detail="Only the creator or administrator can manage this staff")
 

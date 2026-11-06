@@ -95,6 +95,35 @@ describe('Harness artifact downloads', () => {
     expect(mocks.blob).not.toHaveBeenCalled();
   });
 
+  it('loads generated image artifacts through the authenticated API and renders a preview', async () => {
+    const imageArtifact: HarnessWorkspaceArtifact = {
+      ...artifact,
+      path: 'charts/趋势图.png',
+      display_name: '趋势图.png',
+      content_type: 'image/png',
+      size: 4096,
+    };
+    mocks.blob.mockResolvedValue(new Blob(['image'], { type: 'image/png' }));
+
+    render(
+      <HarnessArtifactDownloads
+        artifacts={[imageArtifact]}
+        tenantId="tenant demo"
+        sessionId="session demo"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mocks.blob).toHaveBeenCalledWith(
+        '/api/chat/sessions/session%20demo/artifacts/task%2Fframe'
+          + '?tenant_id=tenant+demo&path=charts%2F%E8%B6%8B%E5%8A%BF%E5%9B%BE.png',
+      );
+      expect(screen.getByRole('img', { name: '趋势图.png' })).toBeTruthy();
+    });
+    expect(screen.getByRole('link', { name: '查看图片 趋势图.png' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '下载图片 趋势图.png' })).toBeTruthy();
+  });
+
   it('reports a failed download without creating an object URL', async () => {
     const user = userEvent.setup();
     mocks.blob.mockRejectedValue(new Error('Artifact not found'));

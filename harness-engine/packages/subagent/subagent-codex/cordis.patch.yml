@@ -1,0 +1,5 @@
+# Optional Profile Bundle: register the Codex provider on the Host plane only.
+# Agent Presets grant the model-facing tool independently.
+- insert:
+    - id: subagent-codex
+      name: '@deepseek-ai/dsh-subagent-codex'

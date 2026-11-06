@@ -1,0 +1,15 @@
+- tree "Sessions":
+  - treeitem "{{workspace}} Workspace actions for {{workspace}} New session in {{workspace}}" [expanded]:
+    - img
+    - text: {{workspace}}
+    - button "Workspace actions for {{workspace}}":
+      - img
+    - button "New session in {{workspace}}":
+      - img
+  - treeitem "New Session" [selected]
+  - treeitem "{{workspace}} 1min"
+  - treeitem "{{workspace}} 1min"
+  - treeitem "{{workspace}} 1min"
+  - treeitem "{{workspace}} 1min"
+  - treeitem "{{workspace}} 1min"
+  - button "Show 1 more sessions"

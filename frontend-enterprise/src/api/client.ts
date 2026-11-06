@@ -1,11 +1,15 @@
-import { getEnterpriseAuthSession } from '../auth';
+import { getEnterpriseAuthSession, setEnterpriseAuthSession, type EnterpriseAuthSession } from '../auth';
+import { APP_BASE } from '../lib/app-path';
+import { ReadBackoff } from './read-backoff';
+
+const readBackoff = new ReadBackoff();
 
 const resolveApiBase = () => {
   if (import.meta.env.VITE_API_BASE_URL) {
     return import.meta.env.VITE_API_BASE_URL;
   }
 
-  return '';
+  return APP_BASE;
 };
 
 const API_BASE = resolveApiBase();
@@ -20,11 +24,12 @@ export class ApiError extends Error {
 
   constructor(status: number, body: string, statusText: string) {
     const parsed = parseErrorPayload(body);
-    super(parsed.message || statusText || `HTTP ${status}`);
+    const html = /<(?:!doctype|html|head|body)[\s>]/i.test(parsed.message);
+    super(html ? `服务暂时不可用，请稍后重试 (HTTP ${status})` : parsed.message || statusText || `HTTP ${status}`);
     this.name = 'ApiError';
     this.status = status;
     this.body = body;
-    this.code = parsed.code;
+    this.code = html ? 'UPSTREAM_INVALID_RESPONSE' : parsed.code;
   }
 }
 
@@ -32,19 +37,54 @@ export function isAuthError(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+let authRefresh: Promise<boolean> | null = null;
+
+export function refreshEnterpriseAuth(): Promise<boolean> {
+  if (authRefresh) return authRefresh;
+  const previous = getEnterpriseAuthSession();
+  if (!previous) return Promise.resolve(false);
+  authRefresh = (async () => {
+    const response = await fetch(`${API_BASE}/api/auth/refresh`, { method: 'POST', credentials: 'same-origin' });
+    if (!response.ok) return false;
+    const next = await response.json() as EnterpriseAuthSession;
+    if (!next.token || !next.user?.id) return false;
+    setEnterpriseAuthSession(next);
+    // Never replay one account's operation as another account.
+    if (next.user.id !== previous.user.id || next.user.tenant_id !== previous.user.tenant_id) {
+      window.location.reload();
+      return false;
+    }
+    return true;
+  })().catch(() => false).finally(() => { authRefresh = null; });
+  return authRefresh;
+}
+
+async function request<T>(path: string, options: RequestInit = {}, retryAuth = true): Promise<T> {
+  const reading = !options.method || options.method === 'GET';
+  const pollingRead = reading && /^\/api\/chat\/(sessions|handoffs)(?:[/?]|$)/.test(path);
+  const blocked = pollingRead ? readBackoff.blocked(path) : null;
+  if (blocked) throw blocked;
+  let response: Response;
+  try { response = await fetch(`${API_BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
       ...authHeader(),
       ...(options.headers || {}),
     },
     ...options,
-  });
+  }); } catch (error) {
+    if (pollingRead && error instanceof TypeError) readBackoff.failed(path, error);
+    throw error;
+  }
+  if (response.status === 401 && retryAuth && !['/api/auth/login', '/api/auth/refresh', '/api/auth/logout'].includes(path)
+    && await refreshEnterpriseAuth()) return request<T>(path, options, false);
   if (!response.ok) {
     const text = await response.text();
-    throw new ApiError(response.status, text, response.statusText);
+    const error = new ApiError(response.status, text, response.statusText);
+    if (pollingRead && [502, 503, 504].includes(response.status)) readBackoff.failed(path, error);
+    throw error;
   }
+  if (pollingRead) readBackoff.succeeded(path);
   const text = await response.text();
   return (text ? JSON.parse(text) : {}) as T;
 }
@@ -73,13 +113,14 @@ function authHeader(): Record<string, string> {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  get: <T>(path: string, options?: { signal?: AbortSignal }) => request<T>(path, options),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
   postWithSignal: <T>(path: string, body: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: 'POST', body: JSON.stringify(body), signal }),
   postKeepalive: <T>(path: string, body?: unknown) => keepalivePost<T>(path, body),
   put: <T>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
+  patch: <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
   blob: async (path: string) => {
     const response = await fetch(`${API_BASE}${path}`, {
@@ -107,6 +148,18 @@ export const api = {
       throw new ApiError(response.status, text, response.statusText);
     }
     return response.blob();
+  },
+  postForm: async <T>(path: string, form: FormData) => {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: { ...authHeader() },
+      body: form,
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new ApiError(response.status, text, response.statusText);
+    }
+    return (await response.json()) as T;
   },
 };
 
@@ -148,6 +201,7 @@ export async function streamPost(
   body: Record<string, unknown>,
   onEvent: (item: StreamEvent) => void,
   signal?: AbortSignal,
+  retryAuth = true,
 ): Promise<void> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
@@ -155,6 +209,9 @@ export async function streamPost(
     body: JSON.stringify(body),
     signal,
   });
+  if (response.status === 401 && retryAuth && await refreshEnterpriseAuth()) {
+    return streamPost(path, body, onEvent, signal, false);
+  }
   if (!response.ok) {
     const text = await response.text();
     throw new ApiError(response.status, text, response.statusText);
@@ -188,8 +245,12 @@ export async function streamGet(
   path: string,
   onEvent: (item: StreamEvent) => void,
   signal?: AbortSignal,
+  retryAuth = true,
 ): Promise<void> {
   const response = await fetch(`${API_BASE}${path}`, { headers: { ...authHeader() }, signal });
+  if (response.status === 401 && retryAuth && await refreshEnterpriseAuth()) {
+    return streamGet(path, onEvent, signal, false);
+  }
   if (!response.ok) {
     const text = await response.text();
     throw new ApiError(response.status, text, response.statusText);
@@ -238,6 +299,14 @@ type ParsedApiError = {
   code?: string;
 };
 
+const STABLE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]+$/;
+
+function stableErrorCode(value: unknown): string | undefined {
+  return typeof value === 'string' && STABLE_ERROR_CODE_PATTERN.test(value)
+    ? value
+    : undefined;
+}
+
 function parseErrorPayload(text: string): ParsedApiError {
   if (!text) return { message: '' };
   try {
@@ -248,8 +317,10 @@ function parseErrorPayload(text: string): ParsedApiError {
       error?: unknown;
     };
     const detail = payload.detail ?? payload.message ?? payload.error;
-    const topLevelCode = typeof payload.code === 'string' ? payload.code : undefined;
-    if (typeof detail === 'string') return { message: detail, code: topLevelCode };
+    const topLevelCode = stableErrorCode(payload.code);
+    if (typeof detail === 'string') {
+      return { message: detail, code: topLevelCode ?? stableErrorCode(detail) };
+    }
     if (Array.isArray(detail)) {
       return {
         message: detail
@@ -266,7 +337,7 @@ function parseErrorPayload(text: string): ParsedApiError {
         : typeof structured.detail === 'string'
           ? structured.detail
           : '';
-      const code = typeof structured.code === 'string' ? structured.code : topLevelCode;
+      const code = stableErrorCode(structured.code) ?? topLevelCode;
       if (message || code) return { message: message || String(code), code };
     }
   } catch {

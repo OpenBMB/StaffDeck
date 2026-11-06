@@ -1,0 +1,165 @@
+/* Icon-row Turn-usage pill (data icon + turn total) plus its click-open
+   Turn-details dialog (menu surface: r12, inverted hairline, shadow-lv3 —
+   ContextMeter's panel skin). */
+
+.root {
+  display: inline-flex;
+  min-width: 0;
+}
+
+/* Adjacent stat pills (usage then time) rebate part of their combined internal
+   padding so the pair reads as one cluster inside the row's 8px flex gap,
+   while keeping 2px clear between their hover backgrounds. */
+.root + .root {
+  margin-left: -6px;
+}
+
+/* Same pill rules as the sibling `.action` icon buttons (28px hit height,
+   15px glyph, tertiary → secondary on hover with the interactive hover
+   background), widened to carry the turn-total label. */
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: calc(28px + var(--dsh-content-font-delta, 0px));
+  padding: 6px 8px;
+  border: none;
+  border-radius: 28px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  font-variant-numeric: tabular-nums;
+  line-height: calc(24px + var(--dsh-content-font-delta, 0px));
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* A narrow column trims the label to an ellipsis instead of overflowing the
+   pill; the data glyph never shrinks. */
+.label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trigger svg {
+  width: calc(15px + var(--dsh-content-font-delta, 0px));
+  height: calc(15px + var(--dsh-content-font-delta, 0px));
+  flex: none;
+}
+
+.trigger:hover,
+.trigger[aria-expanded='true'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* Narrow viewport: the pills collapse to bare icons with the sibling
+   `.action` geometry (28px circle, 6px padding, centered glyph); the
+   label-padding rebate no longer applies, so the pair keeps the row's plain
+   8px rhythm. The dialogs keep the words. */
+@media (max-width: 480px) {
+  .trigger {
+    justify-content: center;
+    width: calc(28px + var(--dsh-content-font-delta, 0px));
+    padding: 6px;
+  }
+
+  .trigger .label {
+    display: none;
+  }
+
+  .root + .root {
+    margin-left: 0;
+  }
+}
+
+/* Portal surface: fixed in the viewport, left/top supplied inline from the
+   anchored-position clamp so the panel keeps its 12px viewport margin instead
+   of hanging off the trigger and clipping at the window edge. Portaled panels
+   layer above modal overlays (z 1000). */
+.panel {
+  position: fixed;
+  z-index: 1100;
+  box-sizing: border-box;
+  /* Size to the widest row so provider/model stays on one line, within a cap.
+     Both bounds yield to a viewport narrower than themselves (12px margins),
+     so a fixed floor cannot push the panel past the placement clamp. */
+  width: max-content;
+  min-width: min(300px, calc(100vw - 24px));
+  max-width: min(440px, calc(100vw - 24px));
+  padding: 16px;
+  border: 1px solid var(--dsw-alias-border-inverted);
+  border-radius: 12px;
+  background: var(--dsw-specific-menu);
+  box-shadow: var(--dsw-shadow-lv3);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+  cursor: default;
+}
+
+/* Dialog heading row: the section name left, the section's headline value
+   (the usage total) right, both at the primary weight. */
+.title {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+  color: var(--dsw-alias-label-primary);
+  font-weight: 500;
+}
+
+/* Rule under each section heading, above its rows. */
+.titleRule {
+  margin-bottom: 10px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.titleValue {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Section-heading glyph seated left of the section name. */
+.titleLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.titleLabel svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.details {
+  display: grid;
+  grid-template-columns: minmax(76px, auto) minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.details dt,
+.details dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.details dd {
+  color: var(--dsw-alias-label-secondary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.details .route {
+  overflow-wrap: anywhere;
+}
+
+.reasoning {
+  color: var(--dsw-alias-label-tertiary);
+  white-space: nowrap;
+}

@@ -58,6 +58,13 @@ class CancellationToken:
 class ProtocolDriver(Protocol):
     request_kind: str
 
+    def observable_request(
+        self,
+        request: dict[str, Any],
+        *,
+        stream: bool,
+    ) -> dict[str, Any]: ...
+
     def complete(self, request: dict[str, Any]) -> Any: ...
 
     def stream(self, request: dict[str, Any]) -> Iterator[Any]: ...
@@ -67,6 +74,17 @@ class ProtocolDriver(Protocol):
 class ChatCompletionsDriver:
     client: Any
     request_kind: str = "chat.completions"
+
+    def observable_request(
+        self,
+        request: dict[str, Any],
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        payload = _wire_request(request)
+        if stream:
+            payload["stream"] = True
+        return payload
 
     def complete(self, request: dict[str, Any]) -> Any:
         _raise_if_cancelled(request)
@@ -94,6 +112,17 @@ class OpenAIResponsesDriver:
     client: Any
     request_kind: str = "responses"
 
+    def observable_request(
+        self,
+        request: dict[str, Any],
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        payload = _responses_request(request)
+        if stream:
+            payload["stream"] = True
+        return payload
+
     def complete(self, request: dict[str, Any]) -> Any:
         _raise_if_cancelled(request)
         try:
@@ -120,12 +149,13 @@ class OpenAIResponsesDriver:
                 event_type = _object_value(event, "type")
                 if event_type == "response.created":
                     response_id = _object_value(_object_value(event, "response"), "id")
-                    yield _stream_chunk(response_id)
+                    yield _stream_chunk(response_id, provider_event=event)
                     continue
                 if event_type == "response.output_text.delta":
                     yield _stream_chunk(
                         response_id,
                         text=str(_object_value(event, "delta") or ""),
+                        provider_event=event,
                     )
                     continue
                 if event_type in {"response.completed", "response.incomplete"}:
@@ -135,6 +165,7 @@ class OpenAIResponsesDriver:
                         response_id,
                         finish_reason=_responses_finish_reason(response),
                         usage=_responses_usage(_object_value(response, "usage")),
+                        provider_event=event,
                     )
                     continue
                 if event_type in {"response.failed", "error"}:
@@ -164,6 +195,17 @@ class AnthropicMessagesDriver:
     client: Any
     request_kind: str = "anthropic.messages"
 
+    def observable_request(
+        self,
+        request: dict[str, Any],
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        payload = _anthropic_request(request)
+        if stream:
+            payload["stream"] = True
+        return payload
+
     def complete(self, request: dict[str, Any]) -> Any:
         _raise_if_cancelled(request)
         payload = _anthropic_request(request)
@@ -181,6 +223,7 @@ class AnthropicMessagesDriver:
         usage = getattr(response, "usage", None)
         return SimpleNamespace(
             id=getattr(response, "id", None),
+            provider_response=response,
             usage=_anthropic_usage(usage),
             choices=[
                 SimpleNamespace(
@@ -207,6 +250,7 @@ class AnthropicMessagesDriver:
                     yield _stream_chunk(
                         response_id,
                         usage=_anthropic_usage(getattr(message, "usage", None)),
+                        provider_event=event,
                     )
                     continue
                 if event_type == "content_block_delta":
@@ -215,6 +259,7 @@ class AnthropicMessagesDriver:
                         yield _stream_chunk(
                             response_id,
                             text=str(getattr(delta, "text", "")),
+                            provider_event=event,
                         )
                     continue
                 if event_type == "message_delta":
@@ -223,6 +268,7 @@ class AnthropicMessagesDriver:
                         response_id,
                         finish_reason=getattr(delta, "stop_reason", None),
                         usage=_anthropic_usage(getattr(event, "usage", None)),
+                        provider_event=event,
                     )
         except ProtocolCallError:
             raise
@@ -241,6 +287,14 @@ class GeminiGenerateContentDriver:
     api_key: str
     model: str
     request_kind: str = "gemini.generate_content"
+
+    def observable_request(
+        self,
+        request: dict[str, Any],
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        return _gemini_request(request)
 
     def complete(self, request: dict[str, Any]) -> Any:
         _raise_if_cancelled(request)
@@ -371,6 +425,7 @@ def _responses_completion(response: Any) -> Any:
     text = "".join(text_parts)
     return SimpleNamespace(
         id=_object_value(response, "id"),
+        provider_response=response,
         usage=_responses_usage(_object_value(response, "usage")),
         choices=[
             SimpleNamespace(
@@ -556,6 +611,7 @@ def _gemini_completion(data: dict[str, Any]) -> Any:
     output_tokens = usage.get("candidatesTokenCount")
     return SimpleNamespace(
         id=data.get("responseId"),
+        provider_response=data,
         usage=SimpleNamespace(
             prompt_tokens=prompt_tokens,
             completion_tokens=output_tokens,
@@ -833,6 +889,7 @@ def _stream_chunk(
     text: str = "",
     finish_reason: Any = None,
     usage: Any = None,
+    provider_event: Any = None,
 ) -> Any:
     choices = []
     if text or finish_reason:
@@ -842,4 +899,9 @@ def _stream_chunk(
                 finish_reason=finish_reason,
             )
         )
-    return SimpleNamespace(id=response_id, usage=usage, choices=choices)
+    return SimpleNamespace(
+        id=response_id,
+        usage=usage,
+        choices=choices,
+        provider_event=provider_event,
+    )

@@ -1,0 +1,24 @@
+{
+  "unit": {
+    "name": "session_projcache",
+    "version": 3
+  },
+  "global": null,
+  "tables": {
+    "sessions": {
+      "preview-showcase": {
+        "identity": {
+          "createdAt": 1787472000000,
+          "cwd": "/dsh/workspace"
+        },
+        "rows": {
+          "title": {
+            "ver": 1,
+            "seq": 198,
+            "val": "WebWorker Preview Showcase"
+          }
+        }
+      }
+    }
+  }
+}

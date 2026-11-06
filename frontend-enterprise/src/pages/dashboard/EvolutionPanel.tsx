@@ -187,7 +187,7 @@ export default function EvolutionPanel({ agentId }: { agentId: string }) {
                   </div>
                   <p className="mt-2 mb-0 text-[13px] font-medium text-[#444b59]">{proposal.hypothesis}</p>
                   <p className="mt-1 mb-0 text-[12px] leading-5 text-[#7b8499]">
-                    {proposal.source_feedback_ids.length} 条反馈证据 · {proposal.diff.length} 项修改 ·
+                    {(proposal.source_feedback_ids ?? []).length} 条反馈证据 · {(proposal.diff ?? []).length} 项修改 ·
                     {passed ? ' 静态校验通过' : ' 等待或未通过校验'}
                   </p>
                 </div>
@@ -243,7 +243,7 @@ export default function EvolutionPanel({ agentId }: { agentId: string }) {
                   <div>
                     <strong className="text-[#394150]">结构化 Diff</strong>
                     <div className="mt-1 max-h-[240px] overflow-auto rounded-lg bg-[#f7f8fa] p-2 font-mono text-[11px]">
-                      {proposal.diff.length === 0 ? '无修改' : proposal.diff.map((item, index) => (
+                      {(proposal.diff ?? []).length === 0 ? '无修改' : (proposal.diff ?? []).map((item, index) => (
                         <div key={`${item.path}-${index}`} className="border-b border-[#e9edf3] py-1 last:border-0">
                           <span className="mr-2 text-[#12805c]">{item.op || 'change'}</span>
                           <span>{item.path || '/'}</span>

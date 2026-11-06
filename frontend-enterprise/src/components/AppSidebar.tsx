@@ -20,6 +20,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { ComponentType, SVGProps } from 'react';
 import { cn } from '@/lib/utils';
+import { FRAMEWORK_MANAGEMENT_INCLUDED } from '@/lib/productFeatures';
 import { teamIdFromScope, toTeamScope } from '@/lib/agent-scope-storage';
 import EmployeeAvatar from './EmployeeAvatar';
 import BrandLogo from './BrandLogo';
@@ -44,6 +45,7 @@ import IconHeaderCollapse from '../assets/icons/header-collapse.svg?react';
 import IconAccounts from '../assets/icons/sys-accounts.svg?react';
 import IconModels from '../assets/icons/sys-models.svg?react';
 import IconSettings from '../assets/icons/action-toggle.svg?react';
+import IconAdmin from '../assets/icons/nav-agents.svg?react';
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconAdd from '../assets/icons/add.svg?react';
 import IconSort from '../assets/icons/sort.svg?react';
@@ -86,10 +88,12 @@ const SYSTEM_NAV: NavItem[] = [
   { route: EnterpriseRoute.Accounts, label: '账号管理', Icon: IconAccounts },
   { route: EnterpriseRoute.Models, label: '模型配置', Icon: IconModels },
   { route: EnterpriseRoute.RuntimeSettings, label: '运行设置', Icon: IconSettings },
+  { route: EnterpriseRoute.Admin, label: '管理后台', Icon: IconAdmin },
 ];
 
 function primaryNavItems(isAdmin: boolean): NavItem[] {
-  return isAdmin ? [...PRIMARY_NAV, ...SYSTEM_NAV] : PRIMARY_NAV;
+  const system = SYSTEM_NAV.filter((item) => FRAMEWORK_MANAGEMENT_INCLUDED || item.route !== EnterpriseRoute.Admin);
+  return isAdmin ? [...PRIMARY_NAV, ...system] : PRIMARY_NAV;
 }
 
 export type AppSidebarManagementProps = {

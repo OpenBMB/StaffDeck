@@ -1,3 +1,7 @@
+import base64
+import json
+import re
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
@@ -5,18 +9,20 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.api.channels as channels_api
+from app.channels.adapters.wechat_kf import WeChatKfTokenProvider
 from app.channels.crypto import decrypt_channel_secret, encrypt_channel_secret
 from app.channels.schema import channel_binding_read
 from app.db import get_session
 from app.db.models import (
     AgentProfile,
     ChannelBinding,
-    ChannelIdentity,
     ChannelDelivery,
+    ChannelIdentity,
     ChannelInboundEvent,
     Message,
     Tenant,
     User,
+    WeChatKfAccount,
     utc_now,
 )
 from app.security.auth import create_access_token
@@ -69,12 +75,18 @@ def _auth(user: User) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_access_token(user)}"}
 
 
-def _seed_binding(engine, *, agent_id: str = "agent_1", status: str = "pending") -> str:
+def _seed_binding(
+    engine,
+    *,
+    agent_id: str = "agent_1",
+    status: str = "pending",
+    channel: str = "wechat",
+) -> str:
     with Session(engine) as db:
         binding = ChannelBinding(
             tenant_id="tenant_demo",
             agent_id=agent_id,
-            channel="wechat",
+            channel=channel,
             status=status,
             created_by_user_id="user_owner",
         )
@@ -88,6 +100,144 @@ def test_endpoints_require_authentication() -> None:
     client = _make_client(engine)
     response = client.get("/api/enterprise/channels?tenant_id=tenant_demo")
     assert response.status_code == 401
+
+
+def test_wechat_kf_credentials_bind_account_to_selected_agent(monkeypatch) -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat_kf",
+            status="pending",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+    monkeypatch.setattr(
+        WeChatKfTokenProvider,
+        "get",
+        lambda self, row: "access-token",
+    )
+    aes_key = base64.b64encode(bytes(range(32))).decode().rstrip("=")
+    client = _make_client(engine)
+
+    response = client.post(
+        f"/api/enterprise/channels/{binding_id}/wechat_kf/credentials",
+        json={
+            "tenant_id": "tenant_demo",
+            "corp_id": "ww1234567890",
+            "secret": "app-secret",
+            "callback_token": "callback-token",
+            "encoding_aes_key": aes_key,
+        },
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["open_kfid"] is None
+    with Session(engine) as db:
+        saved = db.get(ChannelBinding, binding_id)
+        credentials = json.loads(decrypt_channel_secret(saved.credentials_enc))
+        assert saved.agent_id == "agent_1"
+        assert saved.status == "active"
+        assert saved.identity_scope_key == "ww1234567890"
+        assert credentials == {
+            "secret": "app-secret",
+            "callback_token": "callback-token",
+            "encoding_aes_key": aes_key,
+        }
+
+
+def test_wechat_kf_callback_config_can_be_created_before_secret() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat_kf",
+            status="pending",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+    client = _make_client(engine)
+
+    response = client.post(
+        f"/api/enterprise/channels/{binding_id}/wechat_kf/callback-config",
+        json={"tenant_id": "tenant_demo", "corp_id": "ww1234567890"},
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["callback_path"].endswith(f"/{binding_id}/callback")
+    assert len(payload["callback_token"]) == 32
+    assert len(payload["encoding_aes_key"]) == 43
+    assert payload["encoding_aes_key"].isalnum()
+    with Session(engine) as db:
+        saved = db.get(ChannelBinding, binding_id)
+        credentials = json.loads(decrypt_channel_secret(saved.credentials_enc))
+        assert saved.status == "pending"
+        assert saved.config_json["callback_ready"] is True
+        assert credentials["secret"] == ""
+        assert credentials["callback_token"] == payload["callback_token"]
+
+
+def test_wechat_kf_credentials_reuse_prepared_callback_secrets(monkeypatch) -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    aes_key = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat_kf",
+            status="pending",
+            created_by_user_id="user_owner",
+            config_json={"corp_id": "ww1234567890", "callback_ready": True},
+            credentials_enc=encrypt_channel_secret(
+                json.dumps(
+                    {
+                        "secret": "",
+                        "callback_token": "prepared-token",
+                        "encoding_aes_key": aes_key,
+                    }
+                )
+            ),
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+    monkeypatch.setattr(
+        WeChatKfTokenProvider,
+        "get",
+        lambda self, row: "access-token",
+    )
+    client = _make_client(engine)
+
+    response = client.post(
+        f"/api/enterprise/channels/{binding_id}/wechat_kf/credentials",
+        json={
+            "tenant_id": "tenant_demo",
+            "corp_id": "ww1234567890",
+            "secret": "generated-after-callback",
+            "open_kfid": "wk1234567890",
+        },
+        headers=_auth(users["owner"]),
+    )
+
+    assert response.status_code == 200, response.text
+    with Session(engine) as db:
+        saved = db.get(ChannelBinding, binding_id)
+        credentials = json.loads(decrypt_channel_secret(saved.credentials_enc))
+        assert credentials["secret"] == "generated-after-callback"
+        assert credentials["callback_token"] == "prepared-token"
+        assert credentials["encoding_aes_key"] == aes_key
 
 
 def test_non_creator_cannot_create_binding() -> None:
@@ -130,6 +280,72 @@ def test_unsupported_channel_rejected() -> None:
         headers=_auth(users["owner"]),
     )
     assert response.status_code == 400
+
+
+def test_create_binding_generates_default_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "feishu"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    # 默认名:渠道名 + YYYYMMDDHHMM,如「飞书202608250910」
+    assert re.fullmatch(r"飞书\d{12}", response.json()["name"])
+
+
+def test_create_binding_with_custom_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={
+            "tenant_id": "tenant_demo",
+            "agent_id": "agent_1",
+            "channel": "feishu",
+            "name": "  客服飞书专用  ",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    # 名称去首尾空白后落库
+    assert response.json()["name"] == "客服飞书专用"
+    with Session(engine) as db:
+        rows = db.exec(select(ChannelBinding)).all()
+        assert rows[0].name == "客服飞书专用"
+
+
+def test_create_binding_blank_name_falls_back_to_default() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "wechat", "name": "   "},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    assert re.fullmatch(r"微信\d{12}", response.json()["name"])
+
+
+def test_create_binding_rejects_long_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/api/enterprise/channels",
+        json={"tenant_id": "tenant_demo", "agent_id": "agent_1", "channel": "wechat", "name": "名" * 51},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 400
+    assert "接入名称" in response.json()["detail"]
 
 
 def test_tenant_mismatch_forbidden() -> None:
@@ -437,6 +653,7 @@ def test_delete_binding(monkeypatch) -> None:
         }
         assert all(row.status == "failed" for row in events)
 
+
     audit = client.get(
         "/api/enterprise/channels/delivery-audit",
         params={"tenant_id": "tenant_demo", "binding_id": binding_id},
@@ -452,6 +669,92 @@ def test_delete_binding(monkeypatch) -> None:
         headers=_auth(users["owner"]),
     )
     assert forbidden_audit.status_code == 403
+
+
+def test_delete_wechat_kf_binding_releases_account_for_rebinding(monkeypatch) -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    first_id = _seed_binding(engine, status="active")
+    with Session(engine) as db:
+        db.add(
+            WeChatKfAccount(
+                tenant_id="tenant_demo",
+                binding_id=first_id,
+                open_kfid="wk_reusable",
+                agent_id="agent_1",
+            )
+        )
+        db.commit()
+    client = _make_client(engine)
+    monkeypatch.setattr(channels_api, "channel_services_enabled", lambda: False)
+
+    assert client.delete(
+        f"/api/enterprise/channels/{first_id}?tenant_id=tenant_demo",
+        headers=_auth(users["owner"]),
+    ).status_code == 204
+
+    with Session(engine) as db:
+        assert db.exec(
+            select(WeChatKfAccount).where(WeChatKfAccount.open_kfid == "wk_reusable")
+        ).first() is None
+        second = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wechat_kf",
+            status="active",
+            created_by_user_id="user_owner",
+        )
+        db.add(second)
+        db.commit()
+        second_id = second.id
+
+    response = client.post(
+        f"/api/enterprise/channels/{second_id}/wechat_kf/account",
+        json={"tenant_id": "tenant_demo", "open_kfid": "wk_reusable"},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+
+
+def test_wechat_kf_account_update_and_delete_api(monkeypatch) -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine, channel="wechat_kf", status="active")
+    with Session(engine) as db:
+        db.add(
+            WeChatKfAccount(
+                tenant_id="tenant_demo",
+                binding_id=binding_id,
+                open_kfid="wk_edit",
+                agent_id="agent_1",
+            )
+        )
+        db.commit()
+    monkeypatch.setattr(channels_api.WeChatKfAdapter, "update_account", lambda *args, **kwargs: None)
+    monkeypatch.setattr(channels_api.WeChatKfAdapter, "delete_account", lambda *args, **kwargs: None)
+    client = _make_client(engine)
+
+    updated = client.patch(
+        f"/api/enterprise/channels/{binding_id}/wechat_kf/account",
+        json={
+            "tenant_id": "tenant_demo",
+            "open_kfid": "wk_edit",
+            "name": "更新后的客服",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert updated.status_code == 200
+    assert updated.json()["wechat_kf_accounts"][0]["name"] == "更新后的客服"
+
+    deleted = client.delete(
+        f"/api/enterprise/channels/{binding_id}/wechat_kf/account/wk_edit?tenant_id=tenant_demo",
+        headers=_auth(users["owner"]),
+    )
+    assert deleted.status_code == 200
+    with Session(engine) as db:
+        assert db.exec(
+            select(WeChatKfAccount).where(WeChatKfAccount.open_kfid == "wk_edit")
+        ).first() is None
 
 
 def test_deliveries_listing(monkeypatch) -> None:
@@ -1205,6 +1508,69 @@ def test_put_binding_empty_update_400() -> None:
     assert response.status_code == 400
 
 
+def test_put_binding_rename() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "  客服飞书专用  "},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "客服飞书专用"
+    with Session(engine) as db:
+        assert db.get(ChannelBinding, binding_id).name == "客服飞书专用"
+
+    # 不带 name 的更新不影响已有名称
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"auto_route": False},
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "客服飞书专用"
+
+
+def test_put_binding_rename_rejects_blank_and_long_name() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    blank = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "   "},
+        headers=_auth(users["owner"]),
+    )
+    assert blank.status_code == 400
+
+    too_long = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "名" * 51},
+        headers=_auth(users["owner"]),
+    )
+    assert too_long.status_code == 400
+
+
+def test_put_binding_rename_requires_manager() -> None:
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"name": "新名字"},
+        headers=_auth(users["other"]),
+    )
+    assert response.status_code == 403
+    with Session(engine) as db:
+        assert db.get(ChannelBinding, binding_id).name is None
+
+
 def test_put_binding_default_handoff_assignee() -> None:
     engine = _test_engine()
     users = _seed_users(engine)
@@ -1280,7 +1646,8 @@ def test_put_binding_default_handoff_assignee_rejects_channel_customer() -> None
     assert response.status_code == 400
 
 
-def test_put_feishu_default_handoff_assignee_requires_bound_identity() -> None:
+def test_put_feishu_default_handoff_assignee_channel_variant_requires_bound_identity() -> None:
+    """飞书绑定:网页端选项不要求绑定;渠道选项要求当前 scope 下的非群聊身份。"""
     engine = _test_engine()
     users = _seed_users(engine)
     with Session(engine) as db:
@@ -1298,12 +1665,36 @@ def test_put_feishu_default_handoff_assignee_requires_bound_identity() -> None:
         binding_id = binding.id
     client = _make_client(engine)
 
-    unbound = client.put(
+    # 网页端选项:未绑定也允许(收件箱兜底)
+    web_variant = client.put(
         f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
         json={"default_handoff_assignee_user_id": "user_owner"},
         headers=_auth(users["owner"]),
     )
-    assert unbound.status_code == 400
+    assert web_variant.status_code == 200
+    assert web_variant.json()["default_handoff_assignee_channel"] is None
+
+    # 渠道选项:未绑定当前飞书账号 → 400
+    unbound_channel = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "feishu",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert unbound_channel.status_code == 400
+
+    # 渠道选项与绑定渠道不一致 → 400
+    wrong_channel = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "wechat",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert wrong_channel.status_code == 400
 
     with Session(engine) as db:
         db.add(
@@ -1318,12 +1709,59 @@ def test_put_feishu_default_handoff_assignee_requires_bound_identity() -> None:
         )
         db.commit()
 
+    # 绑定后渠道选项 → 200 且落库
     reachable = client.put(
         f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
-        json={"default_handoff_assignee_user_id": "user_owner"},
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "feishu",
+        },
         headers=_auth(users["owner"]),
     )
     assert reachable.status_code == 200
+    payload = reachable.json()
+    assert payload["default_handoff_assignee_user_id"] == "user_owner"
+    assert payload["default_handoff_assignee_channel"] == "feishu"
+    with Session(engine) as db:
+        config = db.get(ChannelBinding, binding_id).config_json or {}
+        assert config["default_handoff_assignee_channel"] == "feishu"
+
+    # 清空处理人时同步清空渠道
+    cleared = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={"default_handoff_assignee_user_id": None},
+        headers=_auth(users["owner"]),
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["default_handoff_assignee_channel"] is None
+    with Session(engine) as db:
+        config = db.get(ChannelBinding, binding_id).config_json or {}
+        assert not config.get("default_handoff_assignee_user_id")
+        assert not config.get("default_handoff_assignee_channel")
+
+
+def test_put_binding_default_handoff_assignee_web_variant_stores_web_channel() -> None:
+    """网页端选项落库为 web 渠道,运行时不再发渠道通知。"""
+    engine = _test_engine()
+    users = _seed_users(engine)
+    binding_id = _seed_binding(engine)
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "web",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["default_handoff_assignee_user_id"] == "user_owner"
+    assert payload["default_handoff_assignee_channel"] == "web"
+    with Session(engine) as db:
+        config = db.get(ChannelBinding, binding_id).config_json or {}
+        assert config["default_handoff_assignee_channel"] == "web"
 
 
 def test_put_binding_default_handoff_assignee_unchanged_by_default() -> None:
@@ -1348,6 +1786,122 @@ def test_put_binding_default_handoff_assignee_unchanged_by_default() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["default_handoff_assignee_user_id"] == "user_owner"
+
+
+def test_put_non_feishu_default_handoff_assignee_channel_rejected() -> None:
+    """渠道转接通知要求渠道支持私聊:钉钉绑定即使处理人已绑定钉钉身份也拒绝保存。"""
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="dingtalk",
+            status="active",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        # 处理人已绑定当前钉钉账号的非群聊身份(可达性本身没问题)
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="dingtalk",
+                external_account_scope="",
+                external_user_id="staff_owner",
+                display_name="Owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+        binding_id = binding.id
+    client = _make_client(engine)
+
+    response = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "dingtalk",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert response.status_code == 400
+    assert "暂不支持私聊通知" in response.json()["detail"]
+
+    # 网页端选项不受影响
+    web_variant = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "web",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert web_variant.status_code == 200
+    assert web_variant.json()["default_handoff_assignee_channel"] == "web"
+
+
+def test_put_wecom_default_handoff_assignee_channel_variant_requires_scope_identity() -> None:
+    """企微绑定:渠道选项要求当前 binding scope 下的非群聊身份(scope 级可达)。"""
+    engine = _test_engine()
+    users = _seed_users(engine)
+    with Session(engine) as db:
+        binding = ChannelBinding(
+            tenant_id="tenant_demo",
+            agent_id="agent_1",
+            channel="wecom",
+            status="active",
+            identity_scope_key="corp_current",
+            created_by_user_id="user_owner",
+        )
+        db.add(binding)
+        db.commit()
+        binding_id = binding.id
+    client = _make_client(engine)
+
+    # 身份挂在其他企业 scope 下 → 400(跨企业绑定不互通)
+    with Session(engine) as db:
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corp_other",
+                external_user_id="staff_owner_other",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+    wrong_scope = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "wecom",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert wrong_scope.status_code == 400
+
+    # 当前 scope 身份 → 200 且落库
+    with Session(engine) as db:
+        db.add(
+            ChannelIdentity(
+                tenant_id="tenant_demo",
+                channel="wecom",
+                external_account_scope="corp_current",
+                external_user_id="staff_owner",
+                staffdeck_user_id="user_owner",
+            )
+        )
+        db.commit()
+    reachable = client.put(
+        f"/api/enterprise/channels/{binding_id}?tenant_id=tenant_demo",
+        json={
+            "default_handoff_assignee_user_id": "user_owner",
+            "default_handoff_assignee_channel": "wecom",
+        },
+        headers=_auth(users["owner"]),
+    )
+    assert reachable.status_code == 200
+    assert reachable.json()["default_handoff_assignee_channel"] == "wecom"
 
 
 # ---------- 分页 ----------

@@ -684,6 +684,28 @@ def search_knowledge(
         request.tenant_id,
         request.agent_id,
     )
+    from app.security.module_policy import require_resource
+    from staffdeck_harness.contracts.security import ResourceRef
+    from app.db.models import KnowledgeBaseVersion
+
+    permitted_versions = []
+    decisions: dict[str, bool] = {}
+    for version_id in visible_version_ids:
+        version = db.get(KnowledgeBaseVersion, version_id)
+        if version is None:
+            continue
+        base_id = version.knowledge_base_id
+        if base_id not in decisions:
+            try:
+                require_resource(current_user, ResourceRef(type="knowledge_base", id=base_id, tenant_id=request.tenant_id), "use", module="knowledge", local_checked=True)
+                decisions[base_id] = True
+            except HTTPException as exc:
+                if exc.status_code != 403:
+                    raise
+                decisions[base_id] = False
+        if decisions[base_id]:
+            permitted_versions.append(version_id)
+    visible_version_ids = permitted_versions
     if not visible_version_ids:
         trace = [{"phase": "no_visible_knowledge", "message": "当前范围没有可见知识"}]
         return KnowledgeSearchResponse(trace=trace, route_trace=trace)

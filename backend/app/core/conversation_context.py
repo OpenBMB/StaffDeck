@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import Any
 
 
@@ -17,22 +18,61 @@ MEDIUM_SUMMARY_PREFIX = "近期的历史信息总结为："
 SummaryBuilder = Callable[[str, str, int], str]
 
 
+@dataclass(frozen=True)
+class ConversationContextSettings:
+    token_budget: int = DEFAULT_CONTEXT_TOKEN_BUDGET
+    compaction_trigger_ratio: float = COMPACTION_TRIGGER_RATIO
+    recent_round_limit: int = RECENT_ROUND_LIMIT
+    long_summary_token_budget: int = LONG_SUMMARY_TOKEN_BUDGET
+    medium_summary_token_budget: int = MEDIUM_SUMMARY_TOKEN_BUDGET
+    allowed_roles: frozenset[str] = frozenset(ALLOWED_CONTEXT_ROLES)
+    long_summary_prefix: str = LONG_SUMMARY_PREFIX
+    medium_summary_prefix: str = MEDIUM_SUMMARY_PREFIX
+
+    def normalized(self) -> ConversationContextSettings:
+        token_budget = max(1, min(int(self.token_budget), 262_144))
+        long_budget = max(1, min(int(self.long_summary_token_budget), token_budget))
+        medium_budget = max(1, min(int(self.medium_summary_token_budget), token_budget))
+        allowed_roles = frozenset(self.allowed_roles).intersection(ALLOWED_CONTEXT_ROLES)
+        return replace(
+            self,
+            token_budget=token_budget,
+            compaction_trigger_ratio=max(
+                0.10,
+                min(float(self.compaction_trigger_ratio), 0.95),
+            ),
+            recent_round_limit=max(1, min(int(self.recent_round_limit), 50)),
+            long_summary_token_budget=long_budget,
+            medium_summary_token_budget=medium_budget,
+            allowed_roles=allowed_roles or frozenset(ALLOWED_CONTEXT_ROLES),
+            long_summary_prefix=str(self.long_summary_prefix or LONG_SUMMARY_PREFIX).strip(),
+            medium_summary_prefix=str(self.medium_summary_prefix or MEDIUM_SUMMARY_PREFIX).strip(),
+        )
+
+
 def build_conversation_context(
     messages: list[dict[str, Any]],
-    token_budget: int = DEFAULT_CONTEXT_TOKEN_BUDGET,
+    token_budget: int | None = None,
     *,
+    settings: ConversationContextSettings | None = None,
     context_state: dict[str, Any] | None = None,
     summary_builder: SummaryBuilder | None = None,
 ) -> dict[str, object]:
-    normalized = _normalize_messages(messages)
+    resolved = (settings or ConversationContextSettings()).normalized()
+    if token_budget is not None:
+        resolved = replace(resolved, token_budget=token_budget).normalized()
+    normalized = _normalize_messages(messages, resolved.allowed_roles)
     state = _normalize_state(context_state)
     unsummarized, summarized_count = _messages_after_cursor(normalized, state)
-    projected = _project_messages(state, unsummarized)
-    trigger_tokens = max(1, math.floor(token_budget * COMPACTION_TRIGGER_RATIO))
+    projected = _project_messages(state, unsummarized, resolved)
+    trigger_tokens = max(
+        1,
+        math.floor(resolved.token_budget * resolved.compaction_trigger_ratio),
+    )
     compacted_now = False
 
     if _messages_tokens(projected) >= trigger_tokens:
-        recent = _recent_rounds(unsummarized, RECENT_ROUND_LIMIT)
+        recent = _recent_rounds(unsummarized, resolved.recent_round_limit)
         older_count = len(unsummarized) - len(recent)
         older = unsummarized[:older_count]
         if older:
@@ -40,13 +80,13 @@ def build_conversation_context(
             state["long_term_summary"] = _summarize(
                 "长期历史信息",
                 previous_history,
-                LONG_SUMMARY_TOKEN_BUDGET,
+                resolved.long_summary_token_budget,
                 summary_builder,
             )
             state["medium_term_summary"] = _summarize(
                 "近期历史信息",
                 _transcript(older),
-                MEDIUM_SUMMARY_TOKEN_BUDGET,
+                resolved.medium_summary_token_budget,
                 summary_builder,
             )
             state["summarized_through_message_id"] = older[-1]["_message_id"]
@@ -54,17 +94,17 @@ def build_conversation_context(
             unsummarized = recent
             summarized_count += len(older)
             compacted_now = True
-            projected = _project_messages(state, unsummarized)
+            projected = _project_messages(state, unsummarized, resolved)
 
-    projected = _fit_projected_messages(projected, token_budget)
+    projected = _fit_projected_messages(projected, resolved.token_budget, resolved)
     summary = _joined_existing_history(state)
     return {
         "messages": projected,
         "compacted_summary": summary,
         "context_state": state,
         "metadata": {
-            "token_budget": token_budget,
-            "compaction_trigger_ratio": COMPACTION_TRIGGER_RATIO,
+            "token_budget": resolved.token_budget,
+            "compaction_trigger_ratio": resolved.compaction_trigger_ratio,
             "compaction_trigger_tokens": trigger_tokens,
             "estimated_tokens": _messages_tokens(projected),
             "total_messages": len(normalized),
@@ -74,7 +114,12 @@ def build_conversation_context(
             "compacted_now": compacted_now,
             "long_term_summary": bool(state.get("long_term_summary")),
             "medium_term_summary": bool(state.get("medium_term_summary")),
-            "recent_round_limit": RECENT_ROUND_LIMIT,
+            "recent_round_limit": resolved.recent_round_limit,
+            "long_summary_token_budget": resolved.long_summary_token_budget,
+            "medium_summary_token_budget": resolved.medium_summary_token_budget,
+            "allowed_roles": sorted(resolved.allowed_roles),
+            "long_summary_prefix": resolved.long_summary_prefix,
+            "medium_summary_prefix": resolved.medium_summary_prefix,
             "current_turn_time": normalized[-1].get("_created_at") if normalized else None,
         },
     }
@@ -92,12 +137,15 @@ def _normalize_state(value: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _normalize_messages(
+    messages: list[dict[str, Any]],
+    allowed_roles: frozenset[str],
+) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for index, message in enumerate(messages):
         role = str(message.get("role") or "").strip()
         content = str(message.get("content") or "").strip()
-        if role not in ALLOWED_CONTEXT_ROLES or not content:
+        if role not in allowed_roles or not content:
             continue
         normalized_message: dict[str, Any] = {
             "role": role,
@@ -130,7 +178,9 @@ def _messages_after_cursor(
 
 
 def _project_messages(
-    state: dict[str, Any], recent: list[dict[str, Any]]
+    state: dict[str, Any],
+    recent: list[dict[str, Any]],
+    settings: ConversationContextSettings,
 ) -> list[dict[str, Any]]:
     projected: list[dict[str, Any]] = []
     long_summary = str(state.get("long_term_summary") or "").strip()
@@ -139,14 +189,20 @@ def _project_messages(
         projected.append(
             {
                 "role": "user",
-                "content": f"{LONG_SUMMARY_PREFIX}\n{long_summary or '暂无长期历史摘要。'}",
+                "content": (
+                    f"{settings.long_summary_prefix}\n"
+                    f"{long_summary or '暂无长期历史摘要。'}"
+                ),
             }
         )
     if long_summary or medium_summary:
         projected.append(
             {
                 "role": "user",
-                "content": f"{MEDIUM_SUMMARY_PREFIX}\n{medium_summary or '暂无近期历史摘要。'}",
+                "content": (
+                    f"{settings.medium_summary_prefix}\n"
+                    f"{medium_summary or '暂无近期历史摘要。'}"
+                ),
             }
         )
     projected.extend(_public_message(message) for message in recent)
@@ -167,6 +223,8 @@ def _recent_rounds(
     user_indexes = [
         index for index, message in enumerate(messages) if message.get("role") == "user"
     ]
+    if not user_indexes:
+        return messages[-round_limit:]
     if len(user_indexes) <= round_limit:
         return messages
     return messages[user_indexes[-round_limit] :]
@@ -221,14 +279,16 @@ def _compact_transcript(source: str, token_budget: int) -> str:
 
 
 def _fit_projected_messages(
-    messages: list[dict[str, Any]], token_budget: int
+    messages: list[dict[str, Any]],
+    token_budget: int,
+    settings: ConversationContextSettings,
 ) -> list[dict[str, Any]]:
     projected = list(messages)
     summary_count = sum(
         1
         for message in projected[:2]
         if str(message.get("content") or "").startswith(
-            (LONG_SUMMARY_PREFIX, MEDIUM_SUMMARY_PREFIX)
+            (settings.long_summary_prefix, settings.medium_summary_prefix)
         )
     )
     while len(projected) > summary_count + 1 and _messages_tokens(projected) > token_budget:

@@ -114,7 +114,7 @@ export default function ExecutionRecord({
                 {line.detail && <span className={CHAT_TRACE_LINE_DETAIL_CLASS}>{t(line.detail)}</span>}
                 {line.code && (
                   <details className={CHAT_TRACE_CODE_DETAILS_CLASS}>
-                    <summary className={CHAT_TRACE_CODE_SUMMARY_CLASS}>查看代码</summary>
+                    <summary className={CHAT_TRACE_CODE_SUMMARY_CLASS}>{t(line.kind === 'tool' && line.language === 'json' ? '查看调用参数' : '查看代码')}</summary>
                     <CodeBlock className={CHAT_TRACE_CODE_BLOCK_CLASS} code={line.code} language={line.language || 'python'} />
                   </details>
                 )}

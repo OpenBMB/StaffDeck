@@ -1,8 +1,8 @@
 import hashlib
 import json
+import logging
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-import logging
 from pathlib import Path
 
 from sqlalchemy import Engine, func, inspect, text
@@ -12,6 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.config import get_settings
 from app.db.database_path import normalize_database_url
 from app.db.dialect import get_dialect
+from app.db.models import new_id, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,8 @@ def init_db() -> None:
     _migrate_sqlite_skill_schema()
     _validate_default_model_invariant()
     _warn_backend_constraints()
+    if settings.startup_orphan_cleanup_enabled:
+        _purge_orphaned_chat_sessions()
 
 
 def _ensure_driver_available() -> None:
@@ -127,6 +130,40 @@ def _warn_backend_constraints() -> None:
     )
 
 
+def _purge_orphaned_chat_sessions() -> None:
+    """清理孤儿会话:团队/员工已被删除但会话残留(级联清理上线前的历史数据)。"""
+    from app.db.models import AgentProfile, ChatSession, Team
+    from app.session.cleanup import (
+        purge_chat_session_records,
+        remove_chat_session_workspace,
+    )
+
+    with Session(engine) as db:
+        referenced = db.exec(
+            select(ChatSession).where(
+                ChatSession.team_id.is_not(None) | ChatSession.agent_id.is_not(None)
+            )
+        ).all()
+        if not referenced:
+            return
+        team_ids = {team_id for team_id in db.exec(select(Team.id)).all()}
+        agent_ids = {agent_id for agent_id in db.exec(select(AgentProfile.id)).all()}
+        orphaned = [
+            session
+            for session in referenced
+            if (session.team_id and session.team_id not in team_ids)
+            or (session.agent_id and session.agent_id not in agent_ids)
+        ]
+        if not orphaned:
+            return
+        workspace_keys = [(session.tenant_id, session.id) for session in orphaned]
+        for session in orphaned:
+            purge_chat_session_records(db, session)
+        db.commit()
+        for tenant_id, session_id in workspace_keys:
+            remove_chat_session_workspace(tenant_id=tenant_id, session_id=session_id, db=db)
+
+
 def _configure_sqlite_runtime() -> None:
     if not database_url.startswith("sqlite"):
         return
@@ -158,6 +195,7 @@ def _migrate_sqlite_skill_schema() -> None:
         _migrate_feishu_channel_schema(conn, tables)
         _migrate_channel_inbound_run_schema(conn, tables)
         _migrate_channel_bind_code_constraints(conn, tables)
+        _migrate_wechat_kf_accounts(conn, tables)
         _migrate_capability_scope_schema(conn, inspector, tables)
         _migrate_harness_v2_schema(conn, inspector, tables)
 
@@ -289,6 +327,8 @@ def _migrate_sqlite_skill_schema() -> None:
                 conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN last_connected_at DATETIME"))
             if "team_id" not in binding_columns:
                 conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN team_id VARCHAR"))
+            if "name" not in binding_columns:
+                conn.execute(text("ALTER TABLE channel_bindings ADD COLUMN name VARCHAR"))
 
         if "channel_deliveries" in tables:
             delivery_columns = {column["name"] for column in inspector.get_columns("channel_deliveries")}
@@ -368,6 +408,52 @@ def _migrate_sqlite_skill_schema() -> None:
                 )
             )
 
+        if "external_business_tasks" in tables:
+            task_columns = {
+                column["name"]
+                for column in inspector.get_columns("external_business_tasks")
+            }
+            additions = {
+                "status_config_json": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN status_config_json JSON"
+                ),
+                "idempotency_key": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN idempotency_key VARCHAR"
+                ),
+                "lease_owner": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN lease_owner VARCHAR"
+                ),
+                "lease_expires_at": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN lease_expires_at DATETIME"
+                ),
+                "expires_at": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN expires_at DATETIME"
+                ),
+                "task_frame_id": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN task_frame_id VARCHAR"
+                ),
+                "resume_step_id": (
+                    "ALTER TABLE external_business_tasks ADD COLUMN resume_step_id VARCHAR"
+                ),
+            }
+            for column_name, ddl in additions.items():
+                if column_name not in task_columns:
+                    conn.execute(text(ddl))
+            conn.execute(
+                text(
+                    "UPDATE external_business_tasks SET status_config_json = '{}' "
+                    "WHERE status_config_json IS NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_external_business_tasks_idempotency_key "
+                    "ON external_business_tasks(idempotency_key) "
+                    "WHERE idempotency_key IS NOT NULL"
+                )
+            )
+
         if "mcp_servers" in tables:
             mcp_server_columns = {
                 column["name"] for column in inspector.get_columns("mcp_servers")
@@ -417,6 +503,62 @@ def _migrate_sqlite_skill_schema() -> None:
                         "INTEGER NOT NULL DEFAULT 32"
                     )
                 )
+            if "context_token_budget" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_token_budget "
+                        "INTEGER NOT NULL DEFAULT 32000"
+                    )
+                )
+            if "context_compaction_trigger_ratio" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_compaction_trigger_ratio "
+                        "FLOAT NOT NULL DEFAULT 0.70"
+                    )
+                )
+            if "context_recent_round_limit" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_recent_round_limit "
+                        "INTEGER NOT NULL DEFAULT 6"
+                    )
+                )
+            if "context_long_summary_token_budget" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_long_summary_token_budget "
+                        "INTEGER NOT NULL DEFAULT 4000"
+                    )
+                )
+            if "context_medium_summary_token_budget" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_medium_summary_token_budget "
+                        "INTEGER NOT NULL DEFAULT 4000"
+                    )
+                )
+            if "context_allowed_roles" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_allowed_roles "
+                        "JSON NOT NULL DEFAULT '[\"user\", \"assistant\"]'"
+                    )
+                )
+            if "context_long_summary_prefix" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_long_summary_prefix "
+                        "VARCHAR NOT NULL DEFAULT '历史的信息可以被总结为：'"
+                    )
+                )
+            if "context_medium_summary_prefix" not in ui_columns:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ui_configs ADD COLUMN context_medium_summary_prefix "
+                        "VARCHAR NOT NULL DEFAULT '近期的历史信息总结为：'"
+                    )
+                )
             if "sandbox_enabled" not in ui_columns:
                 conn.execute(
                     text(
@@ -447,6 +589,19 @@ def _migrate_sqlite_skill_schema() -> None:
             team_task_columns = {
                 column["name"] for column in inspector.get_columns("team_tasks")
             }
+            if "team_run_id" not in team_task_columns:
+                conn.execute(text("ALTER TABLE team_tasks ADD COLUMN team_run_id VARCHAR"))
+                conn.execute(
+                    text("CREATE INDEX IF NOT EXISTS ix_team_tasks_team_run_id ON team_tasks (team_run_id)")
+                )
+            if "source_turn_id" not in team_task_columns:
+                conn.execute(text("ALTER TABLE team_tasks ADD COLUMN source_turn_id VARCHAR"))
+                conn.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS ix_team_tasks_source_turn_id "
+                        "ON team_tasks (source_turn_id)"
+                    )
+                )
             if "depends_on_task_ids_json" not in team_task_columns:
                 conn.execute(text("ALTER TABLE team_tasks ADD COLUMN depends_on_task_ids_json JSON"))
                 conn.execute(
@@ -1121,6 +1276,76 @@ def _migrate_channel_bindings_multi(conn, inspector, tables: set[str]) -> None:
     )
 
 
+def _migrate_wechat_kf_accounts(conn, tables: set[str]) -> None:
+    """Add the per-客服账号 routing table for multi-account WeChat客服 bindings."""
+    if "wechat_kf_accounts" in tables:
+        return
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS wechat_kf_accounts (
+                id VARCHAR PRIMARY KEY,
+                tenant_id VARCHAR NOT NULL,
+                binding_id VARCHAR NOT NULL,
+                open_kfid VARCHAR NOT NULL,
+                name VARCHAR NOT NULL DEFAULT '',
+                agent_id VARCHAR,
+                team_id VARCHAR,
+                status VARCHAR NOT NULL DEFAULT 'active',
+                sync_cursor VARCHAR NOT NULL DEFAULT '',
+                last_error VARCHAR,
+                last_sync_at DATETIME,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                CONSTRAINT uq_wechat_kf_account_binding_kfid UNIQUE (binding_id, open_kfid),
+                CONSTRAINT uq_wechat_kf_account_tenant_kfid UNIQUE (tenant_id, open_kfid)
+            )
+            """
+        )
+    )
+    if "channel_bindings" in tables:
+        rows = conn.execute(
+            text(
+                "SELECT id, tenant_id, agent_id, "
+                + ("team_id" if "team_id" in {column["name"] for column in inspect(conn).get_columns("channel_bindings")} else "NULL AS team_id")
+                + ", config_json "
+                "FROM channel_bindings WHERE channel = 'wechat_kf'"
+            )
+        ).mappings().all()
+        for row in rows:
+            config = _json_object(row["config_json"])
+            open_kfid = str(config.get("open_kfid") or "").strip()
+            if not open_kfid:
+                continue
+            now = utc_now()
+            conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO wechat_kf_accounts "
+                    "(id, tenant_id, binding_id, open_kfid, agent_id, team_id, "
+                    "status, sync_cursor, created_at, updated_at) "
+                    "VALUES (:id, :tenant_id, :binding_id, :open_kfid, :agent_id, "
+                    ":team_id, 'active', '', :created_at, :updated_at)"
+                ),
+                {
+                    "id": new_id("wka"),
+                    "tenant_id": row["tenant_id"],
+                    "binding_id": row["id"],
+                    "open_kfid": open_kfid,
+                    "agent_id": row["agent_id"] if not row["team_id"] else None,
+                    "team_id": row["team_id"],
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+    for column in ("tenant_id", "binding_id", "open_kfid", "agent_id", "team_id", "status"):
+        conn.execute(
+            text(
+                f"CREATE INDEX IF NOT EXISTS ix_wechat_kf_accounts_{column} "
+                f"ON wechat_kf_accounts ({column})"
+            )
+        )
+
+
 def _channel_account_key_from_row(channel: str, config: object) -> str | None:
     parsed = _json_object(config)
     if channel == "wecom":
@@ -1713,6 +1938,7 @@ def _ensure_skill_graph(content: dict[str, object]) -> dict[str, object]:
     nodes = content.get("nodes")
     steps = content.get("steps")
     if isinstance(nodes, list) and nodes:
+        _ensure_required_capability_refs(nodes)
         content.pop("steps", None)
         content.setdefault("start_node_id", _first_node_id(nodes))
         content.setdefault("terminal_node_ids", [_last_node_id(nodes)] if _last_node_id(nodes) else [])
@@ -1741,6 +1967,31 @@ def _ensure_skill_graph(content: dict[str, object]) -> dict[str, object]:
         ]
     content.pop("steps", None)
     return content
+
+
+def _ensure_required_capability_refs(nodes: list[object]) -> None:
+    """Repair legacy nodes where a required capability was not also selected."""
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        refs = node.get("capability_refs")
+        if not isinstance(refs, dict):
+            continue
+        for required_field, selected_field in (
+            ("required_general_skill_ids", "general_skill_ids"),
+            ("required_tool_ids", "tool_ids"),
+            ("required_knowledge_base_ids", "knowledge_base_ids"),
+        ):
+            required = refs.get(required_field)
+            if not isinstance(required, list):
+                continue
+            selected = refs.get(selected_field)
+            selected_values = list(selected) if isinstance(selected, list) else []
+            for capability_id in required:
+                if capability_id not in selected_values:
+                    selected_values.append(capability_id)
+            refs[selected_field] = selected_values
 
 
 def _step_to_node_dict(step: dict[str, object]) -> dict[str, object]:
@@ -1871,6 +2122,9 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
             column["name"] for column in inspector.get_columns("harness_task_frames")
         }
         task_frame_column_sql = {
+            "agent_loop_id": (
+                "ALTER TABLE harness_task_frames ADD COLUMN agent_loop_id VARCHAR"
+            ),
             "decision": (
                 "ALTER TABLE harness_task_frames ADD COLUMN decision "
                 "VARCHAR NOT NULL DEFAULT 'answer_only'"
@@ -1919,12 +2173,19 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
                 "ON harness_task_frames(lease_expires_at)"
             )
         )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_harness_task_frames_agent_loop_id "
+                "ON harness_task_frames(agent_loop_id)"
+            )
+        )
 
     if "harness_runs" in tables:
         run_columns = {
             column["name"] for column in inspector.get_columns("harness_runs")
         }
         run_column_sql = {
+            "agent_loop_id": "ALTER TABLE harness_runs ADD COLUMN agent_loop_id VARCHAR",
             "attempt_no": (
                 "ALTER TABLE harness_runs ADD COLUMN attempt_no "
                 "INTEGER NOT NULL DEFAULT 1"
@@ -1953,6 +2214,12 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS ix_harness_runs_lease_expires_at "
                 "ON harness_runs(lease_expires_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_harness_runs_agent_loop_id "
+                "ON harness_runs(agent_loop_id)"
             )
         )
 
@@ -2022,13 +2289,15 @@ def _migrate_harness_v2_schema(conn, inspector, tables: set[str]) -> None:
 
 def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
     tenant_ids = _tenant_ids(conn, tables)
+    default_ids: dict[str, str] = {}
     if "knowledge_bases" in tables:
         for tenant_id in tenant_ids:
             default_id = _default_knowledge_base_id(tenant_id)
             existing = conn.execute(
-                text("SELECT id FROM knowledge_bases WHERE id = :id"),
-                {"id": default_id},
+                text("SELECT id FROM knowledge_bases WHERE tenant_id = :tenant_id AND (id = :id OR name = :name) ORDER BY CASE WHEN id = :id THEN 0 ELSE 1 END LIMIT 1"),
+                {"id": default_id, "tenant_id": tenant_id, "name": "默认知识库"},
             ).first()
+            default_ids[tenant_id] = str(existing[0]) if existing else default_id
             if not existing:
                 conn.execute(
                     text(
@@ -2073,7 +2342,7 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
             if tenant_id:
                 conn.execute(
                     text(f"UPDATE {table_name} SET {column_name} = :knowledge_base_id WHERE tenant_id = :tenant_id AND ({column_name} IS NULL OR {column_name} = '')"),
-                    {"tenant_id": tenant_id, "knowledge_base_id": _default_knowledge_base_id(tenant_id)},
+                    {"tenant_id": tenant_id, "knowledge_base_id": default_ids.get(tenant_id, _default_knowledge_base_id(tenant_id))},
                 )
 
     resolved_version_ids: dict[str, str] = {}
@@ -2430,7 +2699,7 @@ def _seed_default_agents(conn, tables: set[str]) -> None:
         for agent_id, name, is_overall in (
             (_overall_agent_id(tenant_id), "整体智能体", True),
         ):
-            existing = conn.execute(text("SELECT id FROM agent_profiles WHERE id = :id"), {"id": agent_id}).first()
+            existing = conn.execute(text("SELECT id FROM agent_profiles WHERE tenant_id = :tenant_id AND (id = :id OR is_overall = 1)"), {"id": agent_id, "tenant_id": tenant_id}).first()
             if existing:
                 continue
             conn.execute(
