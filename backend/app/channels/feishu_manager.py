@@ -6,11 +6,10 @@ from app.channels.adapters.feishu import feishu_binding_ready
 import logging
 import threading
 import time
-from pathlib import Path
 from typing import Callable
 
 from sqlalchemy import update
-from sqlmodel import Session, select
+from sqlmodel import select
 
 from app.channels.feishu_process import ConnectorState, FeishuProcessSupervisor
 from app.db import engine
@@ -31,9 +30,12 @@ class FeishuProcessManager:
     ):
         self._engine = db_engine or engine
         database = self._engine.url.database
-        if self._engine.url.get_backend_name() != "sqlite" or not database or database == ":memory:":
-            raise RuntimeError("飞书长连接首版仅支持文件 SQLite")
-        self._database_path = Path(database).expanduser().resolve()
+        if self._engine.url.get_backend_name() == "sqlite" and (
+            not database or database == ":memory:"
+        ):
+            raise RuntimeError("飞书长连接子进程无法共享 SQLite 内存数据库")
+        # 子进程按完整 SQLAlchemy URL 自建引擎(密码不遮蔽)
+        self._database_url = self._engine.url.render_as_string(hide_password=False)
         self._supervisor_factory = supervisor_factory
         self._supervisor: FeishuProcessSupervisor | None = None
         self._reconcile_seconds = reconcile_seconds
@@ -51,7 +53,7 @@ class FeishuProcessManager:
                 from staffdeck_harness.modules.registry import peek_registry
                 from app.channels.storage import applied_fingerprint
                 options = {"assembly_fingerprint": applied_fingerprint()} if self._engine is engine and peek_registry() else {}
-                self._supervisor = self._supervisor_factory(database_path=self._database_path, **options)
+                self._supervisor = self._supervisor_factory(database_url=self._database_url, **options)
             return self._supervisor
 
     def start(self) -> None:

@@ -285,6 +285,35 @@ curl.exe http://127.0.0.1:5173/api/health
 
 外部业务系统可以通过员工级 API Key 调用数字员工、持续会话、Harness v2 Run、SOP、知识、技能、工具和定时任务。完整的鉴权边界、接口清单、SSE、Webhook 与调用示例见 [数字员工开放 API v1](docs/open-api-v1.md)。
 
+## 数据库后端
+
+StaffDeck 的全部状态存放在一个 SQL 数据库中，默认使用本地 SQLite（零配置）。数据访问层为方言可插拔设计：业务代码统一走 SQLAlchemy ORM，少数方言相关点（日分桶、JSON 配置补丁、进程/advisory 锁、部分索引）集中收口在 `backend/app/db/dialect.py`。
+
+| 后端 | 状态 | 说明 |
+| --- | --- | --- |
+| SQLite（默认） | 支持 | 文件库；connector/binding 进程锁为数据库文件旁的文件锁。schema 变更走内置启动迁移（行为不变）。 |
+| PostgreSQL | 实验性 | 通过 `postgresql` 方言提供全能力。需先安装可选驱动：`pip install "skill-agent-loop-backend[postgres]"`，再在 `backend/.env` 设置 `DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"`。存量库由 Alembic 管理升级（见下文）。 |
+| openGauss（高斯） | 实验性 | 通过 PostgreSQL 协议 + 轻量兼容方言使用（`DATABASE_URL="opengauss+psycopg://user:pass@host:5432/postgres"`，复用 `[postgres]` 可选驱动）：自定义方言处理 openGauss 的版本串并强制 `client_encoding=utf8`。具备全部方言能力（含部分唯一索引与会话级 advisory lock），存量库同样由 Alembic 管理升级。已在 openGauss 5.0（Docker）上验证。 |
+| MySQL 8.x | 实验性 | 需先安装可选驱动：`pip install "skill-agent-loop-backend[mysql]"`（PyMySQL），再设置 `DATABASE_URL="mysql+pymysql://user:pass@host:3306/dbname?charset=utf8mb4"`。不支持部分唯一索引："每租户至多一条默认模型"改由代码层维护 + 启动校验兜底（运行期无 DB 级约束）。connector 单实例锁使用 `GET_LOCK()` 命名锁。JSON 列保持原生 JSON，长文本列显式 `TEXT`/`MEDIUMTEXT`（不会静默退化为 VARCHAR(255) 截断）。已在 MySQL 8.4 上验证。 |
+| 达梦（Dameng） | 需适配器 | 需要 `dmPython` 驱动 + 部署方提供第三方 SQLAlchemy 达梦方言插件（本仓库未预装、未真机验证）。JSON 列经 `PortableJSON` 降级为 CLOB，长文本列显式 `TEXT`。未实现原生 advisory lock 时，connector 锁会在启动期响亮失败，而不是静默错锁。 |
+
+### 数据库迁移（非 SQLite）
+
+SQLite 保持既有启动路径（`create_all` + 内置迁移）不变；非 SQLite 后端由 Alembic 管理，存量 schema 可跨版本升级：
+
+- 全新空库：`init_db` 用 `create_all` 建当前 schema（含部分唯一索引等方言 DDL），并按 Alembic 基线版本 stamp；
+- 已有应用表但没有 `alembic_version`：按基线 stamp head 并输出告警——升级前请人工核对既有 schema 与当前版本是否一致；
+- 已有 `alembic_version`：启动时执行 `alembic upgrade head` 应用未执行的迁移。
+
+新增 schema 变更：修改 models 后执行 `cd backend && DATABASE_URL=... .venv/bin/python -m alembic revision --autogenerate -m "..."`，提交生成的 revision。迁移脚本位于 `backend/app/db/migrations/`，随 wheel 与打包产物一并分发。
+
+在 PostgreSQL/MySQL/openGauss 上运行的当前限制：
+
+- **单写者启动**：首次启动/升级只跑一个应用 worker——多 worker 并发 `create_all` + 演示数据播种会撞键，请先用单 worker 完成初始化；
+- `APP_TIMEZONE` 只对 PostgreSQL 日分桶生效；SQLite 的日分桶恒为服务器本地时区（该配置在 SQLite 下会输出告警并被忽略）；
+- 每个数据库只允许运行一个 connector 进程——单实例守护使用会话级 PostgreSQL/openGauss advisory lock（专属 AUTOCOMMIT 连接）或 MySQL `GET_LOCK()` 命名锁，并带定期存活校验（锁失效时渠道服务主动降级停止）；
+- MySQL/达梦没有部分唯一索引，"每租户至多一条默认模型"由代码层维护 + 启动校验兜底，不是数据库约束。
+
 ## 项目结构
 
 ```text

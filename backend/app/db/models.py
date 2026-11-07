@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import JSON, Column, Index, Integer, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Column,
+    DDL,
+    Index,
+    Integer,
+    Text,
+    TypeDecorator,
+    UniqueConstraint,
+    event,
+)
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlmodel import Field, SQLModel
 
 
@@ -14,6 +26,33 @@ def utc_now() -> datetime:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:16]}"
+
+
+class PortableJSON(TypeDecorator):
+    """JSON 列的可移植实现:sqlite/postgresql/mysql 用原生 JSON;Oracle/达梦系
+    无 JSON 类型,降级为 CLOB 存序列化文本(读出自动还原,Python 侧透明)。"""
+
+    impl = JSON
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name in ("oracle", "dm"):
+            return dialect.type_descriptor(Text())
+        return dialect.type_descriptor(JSON())
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and dialect.name in ("oracle", "dm"):
+            return json.dumps(value, ensure_ascii=False)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None and dialect.name in ("oracle", "dm"):
+            return json.loads(value)
+        return value
+
+
+# 头像等内联二进制数据:MySQL TEXT 只有 64KB,用 MEDIUMTEXT 容纳 <=2MB 图片 base64
+HugeText = Text().with_variant(MEDIUMTEXT(), "mysql")
 
 
 class Tenant(SQLModel, table=True):
@@ -61,7 +100,7 @@ class UserAvatar(SQLModel, table=True):
     __tablename__ = "user_avatars"
 
     user_id: str = Field(primary_key=True)
-    data_url: str
+    data_url: str = Field(sa_column=Column(HugeText))
     updated_at: datetime = Field(default_factory=utc_now)
 
 
@@ -76,11 +115,11 @@ class APIClient(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("apiclient"), primary_key=True)
     tenant_id: str = Field(index=True)
     name: str
-    description: Optional[str] = None
-    scopes_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
+    scopes_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     status: str = Field(default="active", index=True)
     created_by_user_id: Optional[str] = Field(default=None, index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -100,7 +139,7 @@ class APICredential(SQLModel, table=True):
     name: str
     key_prefix: str = Field(index=True)
     key_digest: str
-    scopes_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    scopes_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     status: str = Field(default="active", index=True)
     expires_at: Optional[datetime] = Field(default=None, index=True)
     last_used_at: Optional[datetime] = Field(default=None, index=True)
@@ -120,13 +159,13 @@ class APIIdempotencyRecord(SQLModel, table=True):
 
     id: str = Field(default_factory=lambda: new_id("apiidem"), primary_key=True)
     tenant_id: str = Field(index=True)
-    credential_id: str = Field(index=True)
-    method: str
-    path: str
-    idempotency_key: str = Field(index=True)
+    credential_id: str = Field(max_length=64, index=True)
+    method: str = Field(max_length=16)
+    path: str = Field(max_length=400)
+    idempotency_key: str = Field(max_length=200, index=True)
     request_hash: str
     status_code: int = 200
-    response_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    response_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     resource_id: Optional[str] = Field(default=None, index=True)
     expires_at: datetime = Field(index=True)
     created_at: datetime = Field(default_factory=utc_now)
@@ -144,9 +183,9 @@ class APIJob(SQLModel, table=True):
     status: str = Field(default="queued", index=True)
     stage: str = Field(default="queued", index=True)
     progress: float = 0.0
-    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     cancel_requested: bool = False
     retryable: bool = False
     execution_owner: Optional[str] = Field(default=None, index=True)
@@ -170,7 +209,7 @@ class APIJobEvent(SQLModel, table=True):
     job_id: str = Field(index=True)
     sequence: int = Field(index=True)
     event_type: str = Field(index=True)
-    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     public: bool = True
     created_at: datetime = Field(default_factory=utc_now)
 
@@ -195,11 +234,11 @@ class A2ATaskRun(SQLModel, table=True):
     context_id: Optional[str] = Field(default=None, index=True)
     codex_session_id: Optional[str] = Field(default=None, index=True)
     status: str = Field(default="submitted", index=True)
-    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    artifacts_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    agent_card_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    artifacts_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    agent_card_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     last_event_id: Optional[str] = Field(default=None, index=True)
     cancel_requested: bool = False
     recovery_attempts: int = 0
@@ -221,7 +260,7 @@ class A2ATaskEvent(SQLModel, table=True):
     sequence: int = Field(index=True)
     external_event_id: Optional[str] = Field(default=None, index=True)
     event_type: str = Field(index=True)
-    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -240,23 +279,23 @@ class ExternalBusinessTask(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: new_id("exttask"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    user_id: str = Field(index=True)
+    tenant_id: str = Field(max_length=64, index=True)
+    user_id: str = Field(max_length=64, index=True)
     agent_id: Optional[str] = Field(default=None, index=True)
     session_id: Optional[str] = Field(default=None, index=True)
     task_frame_id: Optional[str] = Field(default=None, index=True)
     resume_step_id: Optional[str] = None
     invocation_id: Optional[str] = Field(default=None, index=True)
-    tool_id: str = Field(index=True)
-    external_task_id: Optional[str] = Field(default=None, index=True)
+    tool_id: str = Field(max_length=64, index=True)
+    external_task_id: Optional[str] = Field(max_length=192, default=None, index=True)
     idempotency_key: Optional[str] = Field(default=None, unique=True, index=True)
     status: str = Field(default="submitting", index=True)
-    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    request_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     callback_token_hash: str
     status_url: Optional[str] = None
-    status_config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    status_config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     poll_interval_seconds: float = 5.0
     next_poll_at: Optional[datetime] = Field(default=None, index=True)
     poll_attempts: int = 0
@@ -280,7 +319,7 @@ class ExternalBusinessTaskEvent(SQLModel, table=True):
     task_id: str = Field(index=True)
     event_id: str = Field(index=True)
     event_type: str = Field(index=True)
-    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    data_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -291,9 +330,9 @@ class WebhookEndpoint(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     client_id: str = Field(index=True)
     name: str
-    url: str
+    url: str = Field(sa_column=Column(Text))
     secret_encrypted: str
-    events_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    events_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     status: str = Field(default="active", index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -310,14 +349,14 @@ class WebhookDelivery(SQLModel, table=True):
     endpoint_id: str = Field(index=True)
     event_id: str = Field(index=True)
     event_type: str = Field(index=True)
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     status: str = Field(default="queued", index=True)
     delivery_owner: Optional[str] = Field(default=None, index=True)
     lease_expires_at: Optional[datetime] = Field(default=None, index=True)
     attempt_count: int = 0
     next_attempt_at: Optional[datetime] = Field(default=None, index=True)
     last_status_code: Optional[int] = None
-    last_error: Optional[str] = None
+    last_error: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     delivered_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=utc_now)
@@ -339,7 +378,7 @@ class ExternalSessionBinding(SQLModel, table=True):
     external_session_id: str = Field(index=True)
     external_user_id: Optional[str] = Field(default=None, index=True)
     session_id: str = Field(index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -353,11 +392,11 @@ class APISOPDraft(SQLModel, table=True):
     skill_id: str = Field(index=True)
     base_version: Optional[str] = Field(default=None, index=True)
     draft_version: str = Field(index=True)
-    content_json: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
+    content_json: dict[str, Any] = Field(sa_column=Column(PortableJSON, nullable=False))
     status: str = Field(default="draft", index=True)
     source: str = Field(default="structured", index=True)
-    warnings_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    validation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    warnings_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    validation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     etag: str = Field(index=True)
     created_by_credential_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
@@ -390,9 +429,9 @@ class Skill(SQLModel, table=True):
     skill_id: str = Field(index=True)
     version: str = "1.0.0"
     name: str
-    business_domain: Optional[str] = None
-    description: Optional[str] = None
-    content_json: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
+    business_domain: Optional[str] = Field(default=None, sa_column=Column(Text))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
+    content_json: dict[str, Any] = Field(sa_column=Column(PortableJSON, nullable=False))
     status: str = Field(default="draft", index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -407,9 +446,9 @@ class SkillVersion(SQLModel, table=True):
     skill_id: str = Field(index=True)
     version: str = Field(index=True)
     name: str
-    business_domain: Optional[str] = None
-    description: Optional[str] = None
-    content_json: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
+    business_domain: Optional[str] = Field(default=None, sa_column=Column(Text))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
+    content_json: dict[str, Any] = Field(sa_column=Column(PortableJSON, nullable=False))
     status: str = Field(default="draft", index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -428,10 +467,10 @@ class AgentSkillBranch(SQLModel, table=True):
     source_skill_id: str = Field(index=True)
     base_version: str = "1.0.0"
     head_version: str = "1.0.0"
-    content_json: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
+    content_json: dict[str, Any] = Field(sa_column=Column(PortableJSON, nullable=False))
     status: str = Field(default="active", index=True)
     sync_state: str = Field(default="synced", index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -443,16 +482,16 @@ class AgentSkillBranchVersion(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: new_id("agentbranchver"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    agent_id: str = Field(index=True)
-    skill_id: str = Field(index=True)
+    tenant_id: str = Field(max_length=64, index=True)
+    agent_id: str = Field(max_length=64, index=True)
+    skill_id: str = Field(max_length=64, index=True)
     source_skill_id: str = Field(index=True)
-    version: str = Field(index=True)
+    version: str = Field(max_length=32, index=True)
     base_version: str = "1.0.0"
-    content_json: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
+    content_json: dict[str, Any] = Field(sa_column=Column(PortableJSON, nullable=False))
     status: str = Field(default="active", index=True)
     sync_state: str = Field(default="diverged", index=True)
-    change_summary: Optional[str] = None
+    change_summary: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -465,15 +504,15 @@ class GeneralSkill(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     slug: str = Field(index=True)
     name: str
-    description: Optional[str] = None
-    homepage: Optional[str] = None
-    skill_markdown: str
-    skill_files_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
+    homepage: Optional[str] = Field(default=None, sa_column=Column(Text))
+    skill_markdown: str = Field(sa_column=Column(Text))
+    skill_files_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     status: str = Field(default="draft", index=True)
     capability_scope: str = Field(default="general", index=True)
-    permissions_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    runtime_config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    permissions_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    runtime_config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -485,10 +524,10 @@ class KnowledgeBase(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("kb"), primary_key=True)
     tenant_id: str = Field(index=True)
     name: str
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
     status: str = Field(default="active", index=True)
     capability_scope: str = Field(default="general", index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -504,10 +543,10 @@ class KnowledgeBaseVersion(SQLModel, table=True):
     knowledge_base_id: str = Field(index=True)
     version: str = Field(default="1.0.0", index=True)
     name: str
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
     status: str = Field(default="active", index=True)
     capability_scope: str = Field(default="general", index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -526,7 +565,7 @@ class AgentKnowledgeBranch(SQLModel, table=True):
     head_version: str = "1.0.0"
     status: str = Field(default="active", index=True)
     sync_state: str = Field(default="synced", index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -540,12 +579,12 @@ class KnowledgeDocument(SQLModel, table=True):
     knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
     filename: str
     file_type: str = Field(index=True)
-    title: Optional[str] = None
+    title: Optional[str] = Field(default=None, sa_column=Column(Text))
     status: str = Field(default="processing", index=True)
     bucket_count: int = 0
     chunk_count: int = 0
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    error: Optional[str] = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -559,10 +598,10 @@ class KnowledgeBucket(SQLModel, table=True):
     knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
     document_id: str = Field(index=True)
     bucket_key: str = Field(index=True)
-    title: str
-    summary: str
+    title: str = Field(sa_column=Column(Text))
+    summary: str = Field(sa_column=Column(Text))
     token_estimate: int = 0
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -577,10 +616,10 @@ class KnowledgeChunk(SQLModel, table=True):
     document_id: str = Field(index=True)
     bucket_id: str = Field(index=True)
     chunk_index: int = Field(index=True)
-    content: str
-    summary: Optional[str] = None
+    content: str = Field(sa_column=Column(Text))
+    summary: Optional[str] = Field(default=None, sa_column=Column(Text))
     source_ref: Optional[str] = None
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -603,13 +642,13 @@ class KnowledgeConcept(SQLModel, table=True):
     document_id: Optional[str] = Field(default=None, index=True)
     concept_id: str = Field(index=True)
     concept_type: str = Field(index=True)
-    title: str
-    description: Optional[str] = None
-    content_md: str
-    frontmatter_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    links_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    citations_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    source_refs_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    title: str = Field(sa_column=Column(Text))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
+    content_md: str = Field(sa_column=Column(Text))
+    frontmatter_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    links_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    citations_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    source_refs_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
     status: str = Field(default="active", index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -625,11 +664,11 @@ class KnowledgeDiscoverySuggestion(SQLModel, table=True):
     document_id: str = Field(index=True)
     bucket_id: Optional[str] = Field(default=None, index=True)
     suggestion_type: str = Field(index=True)
-    title: str
+    title: str = Field(sa_column=Column(Text))
     status: str = Field(default="pending", index=True)
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    source_refs_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    reason: Optional[str] = None
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    source_refs_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    reason: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -646,8 +685,8 @@ class KnowledgeIngestJob(SQLModel, table=True):
     status: str = Field(default="queued", index=True)
     stage: str = "queued"
     progress: float = 0.0
-    error: Optional[str] = None
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
@@ -662,15 +701,15 @@ class ModelConfig(SQLModel, table=True):
     name: str
     provider: str = "openai_compatible"
     api_protocol: str = Field(default="openai_chat_completions", index=True)
-    base_url: Optional[str] = None
-    api_key_encrypted: str
+    base_url: Optional[str] = Field(default=None, sa_column=Column(Text))
+    api_key_encrypted: str = Field(sa_column=Column(Text))
     model: str
     temperature: float = 0.2
     max_output_tokens: int = 8192
-    extra_body_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    protocol_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    extra_body_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    protocol_options_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     legacy_unmapped_options_json: dict[str, Any] = Field(
-        default_factory=dict, sa_column=Column(JSON)
+        default_factory=dict, sa_column=Column(PortableJSON)
     )
     trust_status: str = Field(default="unverified", index=True)
     verified_at: Optional[datetime] = None
@@ -688,11 +727,33 @@ class ModelConfig(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+# 每租户至多一条默认模型:部分唯一索引只按方言显式创建(SQLite=1 字面量,PG=布尔)。
+# 不把该索引挂在 metadata 上:sqlite_where/postgresql_where 在其它方言下会被静默
+# 丢弃,退化为全量唯一索引(MySQL/达梦下变成"每租户仅一条模型配置");不支持
+# 部分索引的后端由 init_db 的启动校验兜底(见 database.py)。
+event.listen(
+    ModelConfig.__table__,
+    "after_create",
+    DDL(
+        "CREATE UNIQUE INDEX uq_model_configs_tenant_default "
+        "ON model_configs (tenant_id) WHERE is_default = 1"
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    ModelConfig.__table__,
+    "after_create",
+    DDL(
+        "CREATE UNIQUE INDEX uq_model_configs_tenant_default "
+        "ON model_configs (tenant_id) WHERE is_default"
+    ).execute_if(dialect="postgresql"),
+)
+
+
 class PersonaConfig(SQLModel, table=True):
     __tablename__ = "persona_configs"
 
     tenant_id: str = Field(primary_key=True)
-    system_prompt: str
+    system_prompt: str = Field(sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -713,14 +774,14 @@ class UIConfig(SQLModel, table=True):
     context_medium_summary_token_budget: int = 4_000
     context_allowed_roles: list[str] = Field(
         default_factory=lambda: ["user", "assistant"],
-        sa_column=Column(JSON),
+        sa_column=Column(PortableJSON),
     )
     context_long_summary_prefix: str = "历史的信息可以被总结为："
     context_medium_summary_prefix: str = "近期的历史信息总结为："
     sandbox_enabled: bool = False
     sandbox_network_mode: str = Field(default="all")
-    sandbox_allowed_domains: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    harness_storage_path: Optional[str] = None
+    sandbox_allowed_domains: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    harness_storage_path: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -732,12 +793,12 @@ class AgentProfile(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("agent"), primary_key=True)
     tenant_id: str = Field(index=True)
     name: str
-    description: Optional[str] = None
-    persona_prompt: Optional[str] = None
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
+    persona_prompt: Optional[str] = Field(default=None, sa_column=Column(Text))
     is_overall: bool = Field(default=False, index=True)
     status: str = Field(default="active", index=True)
     harness_max_actions: int = Field(default=32)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -752,7 +813,7 @@ class AgentUsage(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     user_id: str = Field(index=True)
     agent_id: str = Field(index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -779,12 +840,12 @@ class AgentResourceBinding(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: new_id("agentres"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    agent_id: str = Field(index=True)
-    resource_type: str = Field(index=True)
-    resource_id: str = Field(index=True)
+    tenant_id: str = Field(max_length=64, index=True)
+    agent_id: str = Field(max_length=64, index=True)
+    resource_type: str = Field(max_length=64, index=True)
+    resource_id: str = Field(max_length=192, index=True)
     status: str = Field(default="active", index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -797,17 +858,17 @@ class Tool(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     name: str = Field(index=True)
     display_name: Optional[str] = None
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
     bucket: str = Field(default="未分桶", index=True)
     tool_type: str = Field(default="http", index=True)
     method: str
-    url: str
-    headers_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    auth_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    input_schema: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    output_schema: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    allowed_skills_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    url: str = Field(sa_column=Column(Text))
+    headers_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    auth_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    input_schema: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    output_schema: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    allowed_skills_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     mcp_server_id: Optional[str] = Field(default=None, index=True)
     capability_scope: str = Field(default="general", index=True)
     capability_scope_inherited: bool = True
@@ -824,26 +885,26 @@ class MCPServer(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     name: str = Field(index=True)
     display_name: Optional[str] = None
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
     bucket: str = Field(default="MCP 工具", index=True)
     # 连接方式：stdio / streamable_http / sse / builtin
     transport: str = Field(default="streamable_http", index=True)
     # streamable_http / sse 使用
-    url: Optional[str] = None
-    headers_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    url: Optional[str] = Field(default=None, sa_column=Column(Text))
+    headers_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     # stdio 使用
-    command: Optional[str] = None
-    args_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    env_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    cwd: Optional[str] = None
+    command: Optional[str] = Field(default=None, sa_column=Column(Text))
+    args_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    env_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    cwd: Optional[str] = Field(default=None, sa_column=Column(Text))
     # MCP Apps is opt-in so legacy standard MCP servers retain identical behavior.
     apps_mode: str = Field(default="disabled", index=True)
     negotiated_capabilities_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON),
+        sa_column=Column(PortableJSON),
     )
     # 最近一次发现的原始工具定义（预览/审计用）
-    discovered_tools_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    discovered_tools_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
     last_synced_at: Optional[datetime] = None
     capability_scope: str = Field(default="general", index=True)
     enabled: bool = True
@@ -866,36 +927,48 @@ class MockOrder(SQLModel, table=True):
     refundable: bool = True
     total_amount: float = 0.0
     currency: str = "CNY"
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
 
 class ChatSession(SQLModel, table=True):
     __tablename__ = "sessions"
+    __table_args__ = (
+        # SQLite/PG 唯一索引中 NULL 互不相等,web 会话(channel 为空)不受约束;
+        # 含 channel_binding_id 以隔离同企业多 Bot(与 SQLite 迁移中的同名索引一致)
+        Index(
+            "uq_sessions_agent_channel_extconv",
+            "agent_id",
+            "channel",
+            "channel_binding_id",
+            "external_conv_id",
+            unique=True,
+        ),
+    )
 
     id: str = Field(primary_key=True)
     tenant_id: str = Field(index=True)
     user_id: Optional[str] = Field(default=None, index=True)
-    agent_id: Optional[str] = Field(default=None, index=True)
-    title: Optional[str] = None
+    agent_id: Optional[str] = Field(max_length=64, default=None, index=True)
+    title: Optional[str] = Field(default=None, sa_column=Column(Text))
     active_skill_id: Optional[str] = None
     active_step_id: Optional[str] = None
-    slots_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    skill_stack_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    pending_tasks_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    resume_after_answer_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
-    awaiting_input_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
-    knowledge_context_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    context_state_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    summary: Optional[str] = None
-    last_agent_question: Optional[str] = None
+    slots_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    skill_stack_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    pending_tasks_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    resume_after_answer_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(PortableJSON))
+    awaiting_input_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(PortableJSON))
+    knowledge_context_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    context_state_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    summary: Optional[str] = Field(default=None, sa_column=Column(Text))
+    last_agent_question: Optional[str] = Field(default=None, sa_column=Column(Text))
     status: str = "active"
-    channel: Optional[str] = None
-    external_conv_id: Optional[str] = None
-    channel_target_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    channel: Optional[str] = Field(default=None, max_length=32)
+    external_conv_id: Optional[str] = Field(default=None, max_length=192)
+    channel_target_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(PortableJSON))
     # 渠道会话直挂绑定:出站 staging 优先按它直查,不再靠 (agent_id, channel) 反查
-    channel_binding_id: Optional[str] = None
+    channel_binding_id: Optional[str] = Field(default=None, max_length=64)
     # 渠道外部账号稳定键:绑定删除后仍保留,仅允许同一外部 Bot 精确认领历史会话
     channel_account_key: Optional[str] = Field(default=None, index=True)
     # 团队会话挂接:非空表示该会话属于某团队(TL 对话/任务执行等)
@@ -919,9 +992,9 @@ class ChannelBinding(SQLModel, table=True):
     # pending/active/expired/disabled
     status: str = Field(default="pending", index=True)
     # Fernet 加密后的渠道凭证（如微信 bot_token），绝不回传明文
-    credentials_enc: Optional[str] = None
+    credentials_enc: Optional[str] = Field(default=None, sa_column=Column(Text))
     # ilink_bot_id、baseurl、get_updates_buf 游标、session_expired、bound_at 等
-    config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     # provider 侧 Bot 的稳定连接键,全部署唯一;pending 绑定激活前允许为空
     external_account_key: Optional[str] = Field(default=None, unique=True, index=True)
     # 身份作用域稳定键:企微为 corp_id,微信为空字符串
@@ -1057,11 +1130,11 @@ class ChannelIdentity(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: new_id("chident"), primary_key=True)
-    tenant_id: str = Field(index=True)
-    channel: str = Field(index=True)
+    tenant_id: str = Field(max_length=64, index=True)
+    channel: str = Field(max_length=32, index=True)
     # 渠道账号作用域:wechat 置空(全局 wxid);wecom 取 corp_id/bot_id/binding.id,隔离跨企业身份
-    external_account_scope: str = Field(default="", index=True)
-    external_user_id: str
+    external_account_scope: str = Field(max_length=64, default="", index=True)
+    external_user_id: str = Field(max_length=192)
     staffdeck_user_id: str = Field(index=True)
     display_name: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -1085,7 +1158,7 @@ class ChannelInboundEvent(SQLModel, table=True):
     binding_id: str = Field(index=True)
     channel: str = Field(index=True)
     event_id: str
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     # 入站时的绑定配置代次，仅用于 ingress 代际审计；已落库事件不因后续轮换失效
     config_revision: int = Field(
         default=0,
@@ -1094,7 +1167,10 @@ class ChannelInboundEvent(SQLModel, table=True):
     # 每条事件不可变的回复目标；异步处理不得读取会话上的可变 target
     target_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON, nullable=False, server_default="{}"),
+        # server_default 不用于 JSON 列:MySQL 不允许 JSON 字面量默认值(1101);
+        # SQLite 存量库由 _migrate_sqlite_skill_schema 的 ALTER ... DEFAULT '{}' 兜底,
+        # 新库由 default_factory 保证 ORM 写入,故不在 DDL 层声明默认值。
+        sa_column=Column(PortableJSON, nullable=False),
     )
     # 收到确认标记的句柄；最终回复送达后据此异步撤回。飞书存远端 reaction_id；
     # 钉钉 emotion 接口不返回 ID，存本地哨兵值表示"已挂上待撤回"。
@@ -1104,7 +1180,7 @@ class ChannelInboundEvent(SQLModel, table=True):
     # 创建/接管该事件的进程启动代次；当前代次仍在运行时禁止按墙钟误接管。
     processor_run_id: Optional[str] = Field(default=None, index=True)
     processor_lease_expires_at: Optional[datetime] = Field(default=None, index=True)
-    error: Optional[str] = None
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
     processed_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -1119,10 +1195,10 @@ class ChannelDelivery(SQLModel, table=True):
     session_id: str = Field(index=True)
     message_id: Optional[str] = Field(default=None, index=True)
     # 投递目标：to_user_id + context_token
-    target_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    target_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     # reply/error_notice
     kind: str = Field(default="reply", index=True)
-    text: str
+    text: str = Field(sa_column=Column(Text))
     # pending/sending/delivered/failed
     status: str = Field(default="pending", index=True)
     attempts: int = 0
@@ -1135,7 +1211,7 @@ class ChannelDelivery(SQLModel, table=True):
         default=0,
         sa_column=Column(Integer, nullable=False, server_default="0"),
     )
-    last_error: Optional[str] = None
+    last_error: Optional[str] = Field(default=None, sa_column=Column(Text))
     # 回复类投递 = message_id，天然幂等
     idempotency_key: str = Field(unique=True, index=True)
     # 第一次真正尝试远端发送的时间，用于飞书 UUID 一小时去重窗口
@@ -1156,12 +1232,12 @@ class HumanHandoffRequest(SQLModel, table=True):
     assignee_user_id: Optional[str] = Field(default=None, index=True)
     trigger_skill_id: Optional[str] = Field(default=None, index=True)
     trigger_step_id: Optional[str] = Field(default=None, index=True)
-    context_summary: Optional[str] = None
-    pending_question: Optional[str] = None
+    context_summary: Optional[str] = Field(default=None, sa_column=Column(Text))
+    pending_question: Optional[str] = Field(default=None, sa_column=Column(Text))
     status: str = Field(default="pending", index=True)
-    human_reply: Optional[str] = None
-    resume_payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    human_reply: Optional[str] = Field(default=None, sa_column=Column(Text))
+    resume_payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     answered_at: Optional[datetime] = None
@@ -1177,11 +1253,11 @@ class ScheduledTask(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     agent_id: str = Field(index=True)
     created_by_user_id: str = Field(index=True)
-    title: str
-    prompt: str
-    description: Optional[str] = None
+    title: str = Field(sa_column=Column(Text))
+    prompt: str = Field(sa_column=Column(Text))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
     schedule_type: str = Field(default="daily", index=True)
-    schedule_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    schedule_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     timezone: str = Field(default="Asia/Shanghai", index=True)
     rrule: Optional[str] = None
     status: str = Field(default="active", index=True)
@@ -1196,7 +1272,7 @@ class ScheduledTask(SQLModel, table=True):
     lease_owner: Optional[str] = Field(default=None, index=True)
     lease_until: Optional[datetime] = Field(default=None, index=True)
     source_session_id: Optional[str] = Field(default=None, index=True)
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1217,9 +1293,9 @@ class ScheduledTaskRun(SQLModel, table=True):
     status: str = Field(default="queued", index=True)
     started_at: Optional[datetime] = Field(default=None, index=True)
     finished_at: Optional[datetime] = Field(default=None, index=True)
-    result_summary: Optional[str] = None
-    error: Optional[str] = None
-    trace_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    result_summary: Optional[str] = Field(default=None, sa_column=Column(Text))
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
+    trace_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1243,7 +1319,7 @@ class HarnessAgentLoopRecord(SQLModel, table=True):
     owner_task_frame_record_id: Optional[str] = Field(default=None, index=True)
     skill_id: Optional[str] = Field(default=None, index=True)
     workspace_scope_id: Optional[str] = Field(default=None, index=True)
-    checkpoint_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    checkpoint_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     last_run_id: Optional[str] = Field(default=None, index=True)
     state_version: int = 1
     created_at: datetime = Field(default_factory=utc_now)
@@ -1273,15 +1349,15 @@ class HarnessTaskFrameRecord(SQLModel, table=True):
     sequence: int = 0
     skill_id: Optional[str] = Field(default=None, index=True)
     step_id: Optional[str] = Field(default=None, index=True)
-    user_intent: Optional[str] = None
-    requirements_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    slots_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    depends_on_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    user_intent: Optional[str] = Field(default=None, sa_column=Column(Text))
+    requirements_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    slots_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    depends_on_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     task_requirement_json: dict[str, Any] = Field(
-        default_factory=dict, sa_column=Column(JSON)
+        default_factory=dict, sa_column=Column(PortableJSON)
     )
-    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    error_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     state_version: int = 1
     attempt_no: int = 0
     lease_owner: Optional[str] = Field(default=None, index=True)
@@ -1306,12 +1382,12 @@ class HarnessRunRecord(SQLModel, table=True):
     lease_expires_at: Optional[datetime] = Field(default=None, index=True)
     action_count: int = 0
     task_requirement_json: dict[str, Any] = Field(
-        default_factory=dict, sa_column=Column(JSON)
+        default_factory=dict, sa_column=Column(PortableJSON)
     )
     capability_snapshot_json: dict[str, Any] = Field(
-        default_factory=dict, sa_column=Column(JSON)
+        default_factory=dict, sa_column=Column(PortableJSON)
     )
-    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -1342,11 +1418,11 @@ class HarnessTurnRecord(SQLModel, table=True):
     user_message_id: Optional[str] = Field(default=None, index=True)
     response_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON),
+        sa_column=Column(PortableJSON),
     )
     error_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON),
+        sa_column=Column(PortableJSON),
     )
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: Optional[datetime] = None
@@ -1398,13 +1474,13 @@ class HarnessInvocationRecord(SQLModel, table=True):
     )
     replayed_from_invocation_id: Optional[str] = Field(default=None, index=True)
     status: str = Field(default="started", index=True)
-    arguments_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    arguments_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    result_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     response_cache_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON),
+        sa_column=Column(PortableJSON),
     )
-    approval_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    approval_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
@@ -1418,8 +1494,8 @@ class Message(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     session_id: str = Field(index=True)
     role: str
-    content: str
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    content: str = Field(sa_column=Column(Text))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -1435,10 +1511,10 @@ class MessageFeedback(SQLModel, table=True):
     rating: str = Field(index=True)
     analysis_status: str = Field(default="pending", index=True)
     analysis_bucket: Optional[str] = Field(default=None, index=True)
-    analysis_reason: Optional[str] = None
-    analysis_summary: Optional[str] = None
+    analysis_reason: Optional[str] = Field(default=None, sa_column=Column(Text))
+    analysis_summary: Optional[str] = Field(default=None, sa_column=Column(Text))
     analysis_confidence: Optional[float] = None
-    analysis_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    analysis_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     analyzed_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -1476,15 +1552,15 @@ class EvolutionProposal(SQLModel, table=True):
     trigger_type: str = Field(default="feedback", index=True)
     risk_level: str = Field(default="medium", index=True)
     hypothesis: str = ""
-    rationale: str = ""
+    rationale: str = Field(default="", sa_column=Column(Text))
     expected_outcome: str = ""
-    source_feedback_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    evidence_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    candidate_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    diff_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
-    evaluation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    published_snapshot_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    error: Optional[str] = None
+    source_feedback_ids_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    evidence_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    candidate_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    diff_json: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    evaluation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    published_snapshot_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_by_user_id: str = Field(index=True)
     reviewed_by_user_id: Optional[str] = Field(default=None, index=True)
     created_at: datetime = Field(default_factory=utc_now)
@@ -1501,7 +1577,7 @@ class AgentEvent(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     session_id: str = Field(index=True)
     event_type: str = Field(index=True)
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -1514,9 +1590,9 @@ class MemoryRecord(SQLModel, table=True):
     username: Optional[str] = Field(default=None, index=True)
     session_id: Optional[str] = Field(default=None, index=True)
     kind: str = Field(default="conversation", index=True)
-    content: str
+    content: str = Field(sa_column=Column(Text))
     importance: float = 0.5
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1530,10 +1606,10 @@ class Team(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("team"), primary_key=True)
     tenant_id: str = Field(index=True)
     name: str
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
     owner_user_id: str = Field(index=True)
     # 预留:并发策略/竞标等团队级配置
-    config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    config_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     status: str = Field(default="active", index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -1573,7 +1649,7 @@ class TeamRun(SQLModel, table=True):
     status: str = Field(default="planning", index=True)
     synthesis_session_id: Optional[str] = Field(default=None, index=True)
     final_message_id: Optional[str] = Field(default=None, index=True)
-    error: Optional[str] = None
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     completed_at: Optional[datetime] = None
@@ -1593,18 +1669,18 @@ class TeamTask(SQLModel, table=True):
     team_run_id: Optional[str] = Field(default=None, index=True)
     source_turn_id: Optional[str] = Field(default=None, index=True)
     parent_task_id: Optional[str] = Field(default=None, index=True)
-    title: str
-    description: Optional[str] = None
+    title: str = Field(sa_column=Column(Text))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
     priority: str = Field(default="normal", index=True)
     status: str = Field(default="pending", index=True)
     created_by_user_id: Optional[str] = Field(default=None, index=True)
     created_by_tl: bool = False
     assignee_agent_id: Optional[str] = Field(default=None, index=True)
     session_id: Optional[str] = Field(default=None, index=True)
-    depends_on_task_ids_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    activation_condition_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    report_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    review_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    depends_on_task_ids_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
+    activation_condition_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    report_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
+    review_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     # 乐观锁版本号,人改判/验收并发时防覆盖
     version: int = 0
     created_at: datetime = Field(default_factory=utc_now)
@@ -1623,7 +1699,7 @@ class TeamTaskEvent(SQLModel, table=True):
     actor_type: str = Field(index=True)
     actor_id: Optional[str] = Field(default=None, index=True)
     event_type: str = Field(index=True)
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -1638,10 +1714,10 @@ class TeamWakeEvent(SQLModel, table=True):
     target_agent_id: str = Field(index=True)
     # trigger_type: task_assigned / task_report / task_rework / tl_message 等
     trigger_type: str = Field(index=True)
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     # status: pending -> claimed -> done / failed
     status: str = Field(default="pending", index=True)
-    error: Optional[str] = None
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1654,14 +1730,14 @@ class TeamBlackboardEntry(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("bbentry"), primary_key=True)
     team_id: str = Field(index=True)
     tenant_id: str = Field(index=True)
-    content: str
-    tags_json: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    content: str = Field(sa_column=Column(Text))
+    tags_json: list[str] = Field(default_factory=list, sa_column=Column(PortableJSON))
     # source_type: member(TL 裁决的成员建议) / leader / human(人直写)
     source_type: str = Field(default="human", index=True)
     source_agent_id: Optional[str] = Field(default=None, index=True)
     source_task_id: Optional[str] = Field(default=None, index=True)
     # 引用回链:如 {"task_id": ..., "task_title": ...}
-    citation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    citation_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(PortableJSON))
     # status: active / archived
     status: str = Field(default="active", index=True)
     pinned: bool = False
@@ -1678,14 +1754,14 @@ class TeamTaskBid(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: new_id("bid"), primary_key=True)
-    task_id: str = Field(index=True)
+    task_id: str = Field(max_length=64, index=True)
     team_id: str = Field(index=True)
     tenant_id: str = Field(index=True)
-    agent_id: str = Field(index=True)
+    agent_id: str = Field(max_length=64, index=True)
     round: int = 1
     # kind: statement(方案陈述) / rebuttal(反驳)
-    kind: str = Field(default="statement", index=True)
-    content: str
+    kind: str = Field(max_length=32, default="statement", index=True)
+    content: str = Field(sa_column=Column(Text))
     # TL 裁决后回写的分数与理由,未裁决前为 None
     score: Optional[float] = None
     score_rationale: Optional[str] = None
