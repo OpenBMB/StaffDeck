@@ -6,6 +6,10 @@ name: openGauss dialect smoke
 on:
   workflow_dispatch:
 
+# CodeQL(actions/missing-workflow-permissions):最小权限运行,仅需读取代码
+permissions:
+  contents: read
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
