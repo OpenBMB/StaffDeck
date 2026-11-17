@@ -327,9 +327,54 @@ class CapabilityHost:
         with self._invoke_lock:
             try:
                 with self.registry.work_lease() if self.registry else nullcontext():
-                    return self._invoke(inv)
+                    from app.core.execution_failure import blocked_handoff
+
+                    blocked = blocked_handoff(self.db, inv.context.session_id,
+                                              inv.context.task_frame_id)
+                    if blocked is not None:
+                        return ModuleResult.fail(
+                            "EXECUTION_REQUIRES_HUMAN", blocked.pending_question,
+                            extensions={"handoff_id": blocked.id}), None
+                    result, receipt = self._invoke(inv)
+                    return self._stop_after_failure(inv, result, receipt)
             except ModuleSdkError as exc:
-                return ModuleResult.fail(exc.code, exc.message), None
+                return self._stop_after_failure(inv, ModuleResult.fail(exc.code, exc.message), None)
+
+    def _stop_after_failure(self, inv, result, receipt):
+        from app.core.execution_failure import stop_execution
+        from app.db.models import ChatSession
+
+        data = result.data if isinstance(result.data, Mapping) else {}
+        unavailable = data.get("remote_async_ready") is False
+        failed = not result.success or data.get("success") is False
+        status = data.get("status")
+        uncertain = status in {"outcome_unknown", "expired"} if isinstance(status, str) else False
+        failed = failed or status == "failed"
+        # Invalid input can be corrected against the schema; it is not an
+        # executor failure and has not reached a business provider.
+        if (result.error or {}).get("code") == "INVALID_ARGUMENTS":
+            return result, receipt
+        if not (unavailable or failed or uncertain):
+            return result, receipt
+        session = self.db.get(ChatSession, inv.context.session_id)
+        if session is None:
+            return result, receipt
+        if (session.tenant_id, session.agent_id) != (inv.context.tenant_id, inv.context.agent_id):
+            raise PermissionDenied("任务失败接管的员工或租户身份不一致")
+        code = str((result.error or {}).get("code") or "")
+        uncertain = uncertain or (receipt is not None and receipt.status == "outcome_unknown")
+        uncertain = uncertain or "TIMEOUT" in code or code == "OUTCOME_UNKNOWN"
+        reason = str((result.error or {}).get("message") or data.get("detail")
+                     or ("远端未就绪" if unavailable else "执行调用失败"))
+        row = stop_execution(self.db, session, inv.context.task_frame_id,
+                             operation=inv.operation, reason=reason,
+                             outcome_unknown=uncertain)
+        self.db.commit()
+        from dataclasses import replace
+        return replace(result, extensions={**dict(result.extensions),
+                       "execution_stopped": True, "handoff_id": row.id,
+                       "next_action": "await_human",
+                       "message": row.pending_question}), receipt
 
     def _invoke(self, inv: ModuleInvocation) -> tuple[ModuleResult, Receipt | None]:
         if self.slot.snapshot.session_policy.get("read_only"):

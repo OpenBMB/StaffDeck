@@ -188,6 +188,12 @@ class ExecutionHost:
                         result, receipt = self.completion.submit(dict(arguments)), None
                 else:
                     result, receipt = host.invoke_proxy(name, arguments, ctx)
+                if result.extensions.get("execution_stopped") or (result.error or {}).get("code") == "EXECUTION_REQUIRES_HUMAN":
+                    self.control_blocked = {
+                        "code": "EXECUTION_REQUIRES_HUMAN",
+                        "message": str(result.extensions.get("message") or
+                                       (result.error or {}).get("message")),
+                    }
                 self.actions += 1
                 control = is_control_tool(name)
                 if control:
