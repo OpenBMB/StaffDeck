@@ -12,6 +12,7 @@ from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from app.core.execution_failure import escalate_external_failure
 from app.db.models import (
     ExternalBusinessTask,
     ExternalBusinessTaskEvent,
@@ -190,6 +191,7 @@ def apply_task_event(
             task.next_poll_at = None
     task.updated_at = now
     db.add(task)
+    escalate_external_failure(db, task)
     db.commit()
     if task.status in PERSISTED_TERMINAL_STATUSES:
         _prepare_sop_resume(db, task)
@@ -346,6 +348,7 @@ def poll_due_external_tasks(db: Session, *, dispatch=None) -> int:
         task.lease_expires_at = None
         task.updated_at = now
         db.add(task)
+        escalate_external_failure(db, task)
         db.commit()
         if task.status in PERSISTED_TERMINAL_STATUSES:
             _prepare_sop_resume(db, task)

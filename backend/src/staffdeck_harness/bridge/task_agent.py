@@ -474,6 +474,24 @@ class HarnessV3TaskAgent:
         engine_session = ""
 
         def finish(result):
+            from app.core.execution_failure import blocked_handoff, stop_execution
+            if result.status == "failed":
+                from app.db.models import ChatSession
+                failed_session = host.db.get(ChatSession, t.session_id)
+                if failed_session is not None:
+                    stop_execution(host.db, failed_session, requirement.task_frame_id,
+                                   operation="digital_employee.execute",
+                                   reason=str((result.error or {}).get("message") or result.reply_fragment),
+                                   outcome_unknown="TIMEOUT" in str((result.error or {}).get("code")))
+                    host.db.commit()
+            blocked = blocked_handoff(host.db, t.session_id, requirement.task_frame_id)
+            if blocked is not None:
+                result.status = "handoff"
+                result.reply_fragment = blocked.pending_question
+                result.task_summary = "执行已阻断，等待负责人或管理员人工接管"
+                result.error = {"code": "EXECUTION_REQUIRES_HUMAN",
+                                "handoff_id": blocked.id,
+                                "message": blocked.pending_question}
             result.action_count = max(result.action_count, execution_host.total_actions)
             result.capability_results = result.capability_results or list(host.results)
             result.citations = result.citations or list(host.citations)
@@ -599,6 +617,11 @@ class HarnessV3TaskAgent:
                             (execution_host.argument_repair or {}).get('phase') == 'sop_result'):
                         raise
                     outcome = ([], '', 'submission_blocked')
+                if (execution_host.control_blocked or {}).get("code") == "EXECUTION_REQUIRES_HUMAN":
+                    return finish(TaskExecutionResult(
+                        task_frame_id=requirement.task_frame_id, status="handoff",
+                        reply_fragment=execution_host.control_blocked["message"],
+                        action_count=execution_host.total_actions))
                 if (execution_host.control_blocked or
                         (execution_host.argument_repair or {}).get('phase') == 'sop_result'):
                     failure = repair_submission()
