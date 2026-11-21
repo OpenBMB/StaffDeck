@@ -763,7 +763,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
           <StatCard label="分桶" value={stats.buckets} className="basis-[220px]" />
         </div>
 
-        <QccConnectorCard canInstall={isEnterpriseAdmin(currentUser) && isOverallAgent}
+        <QccConnectorCard canInstall={isEnterpriseAdmin(currentUser)}
           onCatalogChanged={() => { void load(); }} />
         {visibleServers.length > 0 && (
           <div className="flex flex-col gap-[18px]">
