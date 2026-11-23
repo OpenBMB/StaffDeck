@@ -171,6 +171,23 @@ def test_parse_bid_award_requires_candidate_winner() -> None:
     assert parse_bid_award("没有块", candidates) is None
 
 
+def test_parse_bid_award_clamps_scores_to_zero_ten() -> None:
+    candidates = {"agent_a", "agent_b"}
+    reply = (
+        "```json\n"
+        '{"bid_award": {"winner_agent_id": "agent_a", '
+        '"scores": {"agent_a": {"score": 12.0, "rationale": "超出"}, '
+        '"agent_b": {"score": -3.0, "rationale": "负分"}}, '
+        '"comment": "甲更匹配"}}\n```'
+    )
+    award = parse_bid_award(reply, candidates)
+    assert award is not None
+    assert award["winner_agent_id"] == "agent_a"
+    # 与 parse_bid_scores 一致,裁决分数也截断到 0-10,避免污染血条(HP)与看板
+    assert award["scores"]["agent_a"] == {"score": 10.0, "rationale": "超出"}
+    assert award["scores"]["agent_b"] == {"score": 0.0, "rationale": "负分"}
+
+
 def test_parse_bid_scores() -> None:
     candidates = {"agent_a", "agent_b"}
     scores = parse_bid_scores(_score_reply(("agent_a", 9.0), ("agent_b", 8.0)), candidates)
