@@ -319,6 +319,12 @@ StaffDeck/
 广场资源是可复用模板。普通用户可将有权限的资源复制或绑定到自己的员工，原始资源仍由创建者与管理员权限保护。
 </details>
 
+<details>
+<summary><strong>之前部署的版本，怎么升级到最新 release？</strong></summary>
+
+客户端安装版：下载最新安装包覆盖安装即可，数据目录不受影响，首次启动时会自动完成数据库结构升级。源码部署：备份数据目录、`backend/skill_agent_loop.db` 和 `backend/.env`，更新代码后，用 `scripts/dev_up.sh` 重启；`staffdeck serve` 方式需先运行 `python3 prepare.py`。详细步骤见[升级指南](docs/upgrade-guide.md)（英文）。
+</details>
+
 ## 路线图
 
 - [ ] 群聊，多数字员工沟通/分工
