@@ -986,6 +986,8 @@ def _run_handoff_reply_command(
     binding: ChannelBinding,
     inbound: ChannelInbound,
     command: ChannelCommand,
+    *,
+    target: dict | None = None,
 ) -> str:
     """处理人通过渠道发送 /回复反馈 <内容> 回复人工转接通知。
 
@@ -1151,16 +1153,17 @@ def _run_handoff_reply_command(
         answered_by_user_id=answered_by,
         source=binding.channel,
     )
-    # 给处理人回一条确认(经 outbox 投递)。企业微信只接受 to_user_id;
-    # 飞书使用 receive_id + receive_id_type。
-    ack_target = (
-        {"to_user_id": inbound.from_user_id}
-        if binding.channel == "wecom"
-        else {
-            "receive_id_type": "open_id",
-            "receive_id": inbound.from_user_id,
-        }
-    )
+    # Preserve private acknowledgements on Feishu and WeCom. Other adapters
+    # need the inbound route, such as the DingTalk session webhook.
+    if binding.channel == "wecom":
+        ack_target = {"to_user_id": inbound.from_user_id}
+    elif binding.channel == "feishu":
+        ack_target = {"receive_id_type": "open_id", "receive_id": inbound.from_user_id}
+    else:
+        ack_target = dict(target or {})
+    ack_text = "已收到你的回复，正在恢复 SOP 执行。"
+    if not inbound.is_group or binding.channel in {"feishu", "wecom"}:
+        ack_text += f"回复预览：{reply_text[:120]}"
     db.add(
         ChannelDelivery(
             tenant_id=binding.tenant_id,
@@ -1169,7 +1172,7 @@ def _run_handoff_reply_command(
             message_id=None,
             target_json=ack_target,
             kind="handoff_ack",
-            text=f"已收到你的回复，正在恢复 SOP 执行。回复预览：{reply_text[:120]}",
+            text=ack_text,
             status="pending",
             next_attempt_at=utc_now(),
             idempotency_key=new_id("hreplyack"),
@@ -1404,7 +1407,7 @@ def _process_inbound(
             if command.kind in {"bind", "unbind"}:
                 reply = _run_bind_command(db, binding, inbound, command)
             elif command.kind == "handoff_reply":
-                reply = _run_handoff_reply_command(db, binding, inbound, command)
+                reply = _run_handoff_reply_command(db, binding, inbound, command, target=target)
             elif binding.team_id:
                 # 团队绑定:消息直路由团队 TL,员工列表/切换等指令无意义
                 reply = "该渠道已接入团队，消息由团队 TL 统一接收，员工切换类指令不可用。"
