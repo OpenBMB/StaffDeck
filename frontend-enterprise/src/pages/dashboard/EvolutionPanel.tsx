@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, notify } from '@/components/ui';
 import StaffdeckIcon from '@/components/StaffdeckIcon';
 import { api, ApiError, TENANT_ID } from '@/api/client';
@@ -63,27 +63,47 @@ const LEGACY_EVOLUTION_ERRORS: Record<string, string> = {
 
 export default function EvolutionPanel({ agentId }: { agentId: string }) {
   const { t } = useI18n();
-  const [rows, setRows] = useState<EvolutionProposal[]>([]);
+  const [proposalState, setProposalState] = useState<{ agentId: string; rows: EvolutionProposal[] }>({
+    agentId,
+    rows: [],
+  });
   const [instruction, setInstruction] = useState('');
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState('');
+  const currentAgentIdRef = useRef(agentId);
+  const loadSequenceRef = useRef(0);
+  currentAgentIdRef.current = agentId;
+
+  // 数据归属与当前员工不一致时不参与渲染，避免 effect 执行前出现上一位员工的候选。
+  const rows = proposalState.agentId === agentId ? proposalState.rows : [];
 
   const load = useCallback(async () => {
+    const requestedAgentId = agentId;
+    if (currentAgentIdRef.current !== requestedAgentId) return;
+    const loadSequence = ++loadSequenceRef.current;
     setLoading(true);
     try {
       const result = await api.get<EvolutionProposal[]>(
-        `/api/enterprise/agents/${encodeURIComponent(agentId)}/evolution/proposals?tenant_id=${encodeURIComponent(TENANT_ID)}`,
+        `/api/enterprise/agents/${encodeURIComponent(requestedAgentId)}/evolution/proposals?tenant_id=${encodeURIComponent(TENANT_ID)}`,
       );
-      setRows(result);
+      if (loadSequence !== loadSequenceRef.current || currentAgentIdRef.current !== requestedAgentId) return;
+      setProposalState({ agentId: requestedAgentId, rows: result });
     } catch (error) {
+      if (loadSequence !== loadSequenceRef.current || currentAgentIdRef.current !== requestedAgentId) return;
       notify.error(localizeEvolutionError(error, '加载自进化候选失败', t));
     } finally {
-      setLoading(false);
+      if (loadSequence === loadSequenceRef.current && currentAgentIdRef.current === requestedAgentId) {
+        setLoading(false);
+      }
     }
   }, [agentId, t]);
 
   useEffect(() => {
     void load();
+    return () => {
+      // 组件卸载或员工变化时，使所有尚未完成的旧请求失效。
+      loadSequenceRef.current += 1;
+    };
   }, [load]);
 
   const activeCount = useMemo(
