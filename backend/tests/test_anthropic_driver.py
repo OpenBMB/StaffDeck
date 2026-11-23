@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from anthropic import Anthropic
 import httpx
+import pytest
 
 from app.llm.client import LLMClient
 from app.llm.model_protocols import ModelApiProtocol
@@ -90,21 +91,28 @@ def test_anthropic_driver_maps_system_roles_images_and_usage() -> None:
     ]
 
 
-def test_anthropic_driver_omits_temperature_for_claude_five() -> None:
+@pytest.mark.parametrize("model", [
+    "claude-opus-5",
+    "claude-opus-4-7-20260401",
+    "claude-opus-4-8",
+    "claude-opus-4.8",
+])
+def test_anthropic_driver_omits_unsupported_temperature(model: str) -> None:
     response = SimpleNamespace(id="msg_5", content=[], stop_reason="end_turn", usage=None)
     messages = _Messages(response=response)
     driver = AnthropicMessagesDriver(SimpleNamespace(messages=messages))
 
-    driver.complete(
-        {
-            "model": "claude-opus-5",
-            "messages": [{"role": "user", "content": "hello"}],
-            "temperature": 0.2,
-            "max_tokens": 32,
-        }
-    )
+    request = {
+        "model": model,
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.2,
+        "max_tokens": 32,
+    }
 
-    assert "temperature" not in messages.calls[0]
+    driver.complete(request)
+    list(driver.stream(request))
+
+    assert all("temperature" not in call for call in messages.calls)
 
 
 def test_anthropic_driver_preserves_provider_error_diagnostics() -> None:
