@@ -2047,6 +2047,41 @@ def test_run_handoff_reply_command_matches_by_identity(monkeypatch) -> None:
             intake_mod.external_account_scope = original
 
 
+def test_dingtalk_group_handoff_ack_uses_webhook_without_repeating_the_reply(monkeypatch):
+    from dataclasses import replace
+
+    import app.channels.service_intake as intake
+    import app.core.handoff_reply_service as reply_service
+    from app.channels.service_routing import ChannelCommand
+
+    monkeypatch.setattr(intake, "external_account_scope", lambda db, binding: "")
+    monkeypatch.setattr(reply_service, "apply_handoff_reply", lambda *args, **kwargs: None)
+    with Session(_test_engine()) as db:
+        _seed_tenant(db)
+        binding = _feishu_binding()
+        binding.channel = "dingtalk"
+        identity = _channel_identity()
+        identity.channel = "dingtalk"
+        db.add(binding)
+        db.add(identity)
+        db.add(ChatSession(
+            id="session_dingtalk", tenant_id="tenant_demo", agent_id="agent_demo", status="handoff",
+        ))
+        db.add(_pending_handoff(handoff_id="handoff_dingtalk", session_id="session_dingtalk"))
+        db.commit()
+
+        inbound = replace(_inbound(event_id="dt_reply", text="/回复反馈 处理完成"), channel="dingtalk", is_group=True)
+        target = {"session_webhook": "https://dingtalk.test/hook"}
+        result = intake._run_handoff_reply_command(
+            db, binding, inbound, ChannelCommand(kind="handoff_reply", query="处理完成"), target=target,
+        )
+
+        assert result is intake._HANDOFF_REPLY_HANDLED
+        ack = db.exec(select(ChannelDelivery).where(ChannelDelivery.kind == "handoff_ack")).one()
+        assert ack.target_json == target
+        assert "处理完成" not in ack.text
+
+
 def test_run_handoff_reply_command_rejects_without_identity() -> None:
     """发送者无 ChannelIdentity(未绑定 StaffDeck 身份)时拒绝,不再用 contact_target 模糊匹配。"""
     import app.channels.service_intake as intake_mod
