@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
@@ -512,6 +514,56 @@ def test_sop_changes_remain_isolated_until_publish(monkeypatch) -> None:
     with Session(engine) as db:
         assert db.exec(select(Skill).where(Skill.skill_id == "expense_policy_v1")).first() is not None
         assert db.get(APISOPDraft, draft["id"]).status == "published"
+
+
+@pytest.mark.parametrize("already_renamed", [False, True])
+def test_public_sop_stays_visible_after_database_restart(monkeypatch, tmp_path, already_renamed) -> None:
+    from app.agents.branching import visible_skill_rows
+    from app.db import database
+    from app.db.models import AgentSkillBranch
+
+    client, source_engine, admin_token = _client(monkeypatch)
+    key = _tenant_key(client, admin_token, ["sops:read", "sops:write", "sops:publish"])
+    headers = {"Authorization": f"Bearer {key}"}
+    public_id = "sop_expense_policy"
+    created = client.post(
+        "/agents/agent_api/sops", headers=headers, json={"content": {**_skill_card(), "skill_id": public_id}}
+    )
+    assert created.status_code == 201, created.text
+    published = client.post(
+        f"/sops/{public_id}:publish?agent_id=agent_api",
+        headers=headers,
+        json={"draft_id": created.json()["id"]},
+    )
+    assert published.status_code == 200, published.text
+
+    with Session(source_engine) as db:
+        if already_renamed:
+            skill = db.exec(select(Skill).where(Skill.skill_id == public_id)).one()
+            skill.skill_id = "skill_expense_policy"
+            skill.content_json = {**skill.content_json, "skill_id": skill.skill_id}
+            db.add(skill)
+            db.add(AgentSkillBranch(
+                tenant_id="tenant_api", agent_id="agent_api", source_skill_id=skill.id,
+                skill_id=skill.skill_id, content_json=skill.content_json, status="inactive",
+            ))
+            db.commit()
+
+    db_path = tmp_path / "restart.db"
+    import sqlite3
+    with source_engine.connect() as conn, sqlite3.connect(db_path) as destination:
+        conn.connection.driver_connection.backup(destination)
+    restart_engine = create_engine(f"sqlite:///{db_path}")
+    monkeypatch.setattr(database, "engine", restart_engine)
+    monkeypatch.setattr(database, "database_url", f"sqlite:///{db_path}")
+    database.init_db()
+    database.init_db()
+
+    with Session(restart_engine) as db:
+        skill = db.exec(select(Skill).where(Skill.skill_id == public_id)).one()
+        assert skill.content_json["skill_id"] == public_id
+        visible = visible_skill_rows(db, "tenant_api", "agent_api", include_inactive=False)
+        assert public_id in {item.skill_id for item in visible}
 
 
 def test_rfc6902_supports_array_append_move_copy_and_test() -> None:
