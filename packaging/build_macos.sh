@@ -59,8 +59,9 @@ verify_bundle_arch() {
 
 sign_code() {
   local target="$1"
+  shift
   if [ -n "$MAC_SIGN_ID" ]; then
-    codesign --force --timestamp --options runtime --sign "$MAC_SIGN_ID" "$target"
+    codesign --force --timestamp --options runtime --sign "$MAC_SIGN_ID" "$@" "$target"
   else
     codesign --force --timestamp=none --sign - "$target" 2>/dev/null || true
   fi
@@ -75,15 +76,25 @@ sign_app_bundle() {
       if ! file -b "$item" | grep -q "Mach-O"; then
         continue
       fi
-      sign_code "$item"
+      case "$item" in
+        "$app/Contents/MacOS/staffdeck")
+          sign_code "$item" --entitlements "$REPO/packaging/macos-app.entitlements"
+          ;;
+        "$app/Contents/Resources/sandbox/bin/node")
+          sign_code "$item" --entitlements "$REPO/packaging/macos-node.entitlements"
+          ;;
+        *) sign_code "$item" ;;
+      esac
     done < <(python3 packaging/macho_candidates.py "$app")
+    # Bundle signing also signs the main executable.
+    sign_code "$app" --entitlements "$REPO/packaging/macos-app.entitlements"
   else
     echo "未配置 MAC_SIGN_ID，使用 ad-hoc 签名"
     find "$app/Contents/Frameworks" -type f -name "*.dylib" 2>/dev/null \
       -exec codesign --force --timestamp=none --sign - {} \; 2>/dev/null || true
     codesign --force --timestamp=none --sign - "$app/Contents/MacOS/staffdeck" 2>/dev/null || true
+    sign_code "$app"
   fi
-  sign_code "$app"
 }
 
 echo "==> [1/5] 构建前端"
