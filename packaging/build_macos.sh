@@ -69,6 +69,10 @@ sign_code() {
 
 sign_app_bundle() {
   local app="$1"
+  local node_entitlements="$REPO/packaging/macos-node.entitlements"
+  if [ "$ARCH" = "x86_64" ]; then
+    node_entitlements="$REPO/packaging/macos-intel-node.entitlements"
+  fi
   xattr -cr "$app" 2>/dev/null || true
   if [ -n "$MAC_SIGN_ID" ]; then
     echo "使用 Developer ID 签名"
@@ -81,7 +85,7 @@ sign_app_bundle() {
           sign_code "$item" --entitlements "$REPO/packaging/macos-app.entitlements"
           ;;
         "$app/Contents/Resources/sandbox/bin/node")
-          sign_code "$item" --entitlements "$REPO/packaging/macos-node.entitlements"
+          sign_code "$item" --entitlements "$node_entitlements"
           ;;
         *) sign_code "$item" ;;
       esac
@@ -179,6 +183,13 @@ if codesign --verify --deep --strict "$APP" 2>/dev/null; then
 else
   echo "警告：密封校验未过，双击可能无法打开"
 fi
+# A simple Node startup can pass before V8 allocates compiled-code pages.
+"$APP/Contents/Resources/sandbox/bin/node" -e '
+  function increment(value) { return value + 1 }
+  for (let i = 0; i < 100000; i++) {
+    if (increment(i) !== i + 1) process.exit(1)
+  }
+'
 backend/.venv/bin/python packaging/smoke_sandbox_runtime.py "$APP/Contents/Resources/sandbox"
 
 # 在当前 runner 的原生架构上真正启动 PyInstaller App。Intel CI 会在这里
