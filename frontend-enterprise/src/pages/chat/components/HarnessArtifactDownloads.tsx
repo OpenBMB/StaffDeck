@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import StaffdeckIcon from '@/components/StaffdeckIcon';
 import { notify } from '@/components/ui/app-toast';
 import { api } from '@/api/client';
+import { saveBlob } from '@/lib/download';
 import type { HarnessWorkspaceArtifact } from '@/types';
 
 import {
@@ -43,15 +44,13 @@ export default function HarnessArtifactDownloads({
     setDownloading(identity);
     try {
       const blob = await api.blob(artifactApiPath(artifact, tenantId, sessionId));
-      const objectUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = objectUrl;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(objectUrl);
-      notify.success(`已下载文件：${filename}`);
+      const outcome = await saveBlob(blob, filename);
+      if (outcome.status === 'saved') {
+        notify.success(`已保存文件：${filename}`);
+      } else if (outcome.status === 'browser') {
+        notify.success(`已下载文件：${filename}`);
+      }
+      // cancelled：用户自己关掉了保存面板，无需提示
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '文件下载失败');
     } finally {

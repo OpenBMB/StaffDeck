@@ -72,10 +72,51 @@ describe('Harness artifact downloads', () => {
     });
     expect(window.URL.createObjectURL).toHaveBeenCalled();
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
-    expect(window.URL.revokeObjectURL).toHaveBeenCalledWith('blob:artifact');
+    // 立刻 revoke 会让桌面壳来不及把 blob 字节交给原生保存，所以这里必须延后。
+    expect(window.URL.revokeObjectURL).not.toHaveBeenCalled();
     expect(mocks.notifySuccess).toHaveBeenCalledWith(
       expect.stringContaining('Q2 财务报告.txt'),
     );
+  });
+
+  it('saves through the desktop shell bridge instead of navigating the page', async () => {
+    const user = userEvent.setup();
+    // jsdom 的 Blob 没有 arrayBuffer()，原生保存路径需要它。
+    mocks.blob.mockResolvedValue({
+      type: 'text/plain',
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    } as unknown as Blob);
+    const postMessage = vi.fn((payload: Record<string, unknown>) => {
+      if (payload.phase !== 'end') return;
+      (
+        window as unknown as { __staffdeckDownloadResult?: (value: unknown) => void }
+      ).__staffdeckDownloadResult?.({ id: payload.id, status: 'saved', path: '/tmp/report' });
+    });
+    Object.defineProperty(window, 'webkit', {
+      configurable: true,
+      value: { messageHandlers: { staffdeckDownload: { postMessage } } },
+    });
+
+    try {
+      render(
+        <HarnessArtifactDownloads
+          artifacts={[artifact]}
+          tenantId="tenant demo"
+          sessionId="session demo"
+        />,
+      );
+      await user.click(screen.getByRole('button', { name: /Q2 财务报告\.txt$/ }));
+
+      await waitFor(() => {
+        expect(mocks.notifySuccess).toHaveBeenCalledWith('已保存文件：Q2 财务报告.txt');
+      });
+      // 走原生保存时不能再用 <a download>：正是那一步让 WKWebView 把整个界面导航成文件内容。
+      expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+      expect(window.URL.createObjectURL).not.toHaveBeenCalled();
+      expect(postMessage).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, 'webkit', { configurable: true, value: undefined });
+    }
   });
 
   it('keeps the action disabled without a persisted session', () => {
