@@ -381,3 +381,27 @@ def test_staffdeck_seed_archives_legacy_default_agent() -> None:
         assert row.metadata_json.get("hidden_from_staffdeck") is True
         assert row.metadata_json.get("is_default_employee") is True
         assert "agent_tenant_demo_default" not in listed_ids
+
+
+
+def test_demo_restart_keeps_gallery_profile_edits_and_deleted_sample_resources():
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as db:
+        seed_demo_data(db)
+        it = db.exec(select(AgentProfile).where(AgentProfile.name == "IT")).one()
+        it_id = it.id
+        it.name = "IT · edited"
+        it.persona_prompt = "Keep my instructions"
+        db.add(it)
+        tool = db.exec(select(Tool).where(Tool.tenant_id == "tenant_demo")).first()
+        assert tool is not None
+        deleted_name = tool.name
+        db.delete(tool)
+        db.commit()
+
+    with Session(engine) as db:
+        seed_demo_data(db)
+        assert db.get(AgentProfile, it_id).name == "IT · edited"
+        assert db.get(AgentProfile, it_id).persona_prompt == "Keep my instructions"
+        assert db.exec(select(Tool).where(Tool.name == deleted_name)).first() is None

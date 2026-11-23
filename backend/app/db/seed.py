@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app import paths
@@ -22,7 +23,7 @@ from app.db.models import (
 )
 from app.security.encryption import encrypt_secret
 from app.security.auth import hash_password
-from app.db.staffdeck_seed import seed_staffdeck_admin_gallery
+from app.db.staffdeck_seed import SEED_SOURCE, seed_staffdeck_admin_gallery
 
 
 ADAPTIVE_FLOW_RULE = (
@@ -913,6 +914,32 @@ def _seed_mcp_servers(session: Session) -> None:
         session.add(server)
 
 
+DEMO_CONTENT_SEED_MARKER = "staffdeck_demo_content_seed_v1"
+GALLERY_CONTENT_SEED_MARKER = "staffdeck_gallery_content_seed_v1"
+
+
+def _claim_seed_package(session: Session, marker: str) -> bool:
+    session.execute(text(
+        "CREATE TABLE IF NOT EXISTS app_data_migrations ("
+        "id VARCHAR PRIMARY KEY, applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    ))
+    result = session.execute(
+        text("INSERT INTO app_data_migrations (id) VALUES (:marker) ON CONFLICT (id) DO NOTHING"),
+        {"marker": marker},
+    )
+    return result.rowcount == 1
+
+
+def _already_seeded_gallery(session: Session, tenant_id: str) -> bool:
+    rows = session.exec(
+        select(AgentProfile.metadata_json).where(AgentProfile.tenant_id == tenant_id)
+    ).all()
+    return any(
+        isinstance(metadata, dict) and metadata.get("seed_source") == SEED_SOURCE
+        for metadata in rows
+    )
+
+
 def seed_demo_data(session: Session) -> None:
     settings = get_settings()
     if not session.get(Tenant, "tenant_demo"):
@@ -957,6 +984,46 @@ def seed_demo_data(session: Session) -> None:
 
     _ensure_seed_agents(session)
 
+    if _claim_seed_package(session, DEMO_CONTENT_SEED_MARKER) and not (
+        demo_user and demo_user.id == "user_demo"
+    ):
+        _seed_demo_content(session, settings.normalized_tool_base_url)
+    _normalize_seed_system_agents(session)
+    if (
+        _claim_seed_package(session, GALLERY_CONTENT_SEED_MARKER)
+        and not _already_seeded_gallery(session, "tenant_demo")
+        and not (demo_user and demo_user.id == "user_demo")
+    ):
+        seed_staffdeck_admin_gallery(session)
+
+    default_model = session.exec(
+        select(ModelConfig).where(
+            ModelConfig.tenant_id == "tenant_demo",
+            ModelConfig.is_default == True,  # noqa: E712
+        )
+    ).first()
+    if not default_model and settings.demo_model_api_key:
+        session.add(
+            ModelConfig(
+                tenant_id="tenant_demo",
+                name="Demo Qwen Compatible",
+                provider="openai_compatible",
+                api_protocol="openai_chat_completions",
+                base_url=settings.demo_model_base_url,
+                api_key_encrypted=encrypt_secret(settings.demo_model_api_key),
+                model=settings.demo_model_name,
+                temperature=0.2,
+                max_output_tokens=8192,
+                trust_status="legacy_trusted",
+                is_default=True,
+                enabled=True,
+            )
+        )
+
+    session.commit()
+
+
+def _seed_demo_content(session: Session, tool_base_url: str) -> None:
     for raw_content in (
         REFUND_SKILL,
         EXCHANGE_SKILL,
@@ -987,7 +1054,7 @@ def seed_demo_data(session: Session) -> None:
             _sync_demo_skill_if_stale(existing, content)
 
     for tool_config in DEMO_TOOLS:
-        tool_config = _tool_config_with_base_url(tool_config, settings.normalized_tool_base_url)
+        tool_config = _tool_config_with_base_url(tool_config, tool_base_url)
         tool = session.exec(
             select(Tool).where(Tool.tenant_id == "tenant_demo", Tool.name == tool_config["name"])
         ).first()
@@ -1028,45 +1095,20 @@ def seed_demo_data(session: Session) -> None:
     _seed_weather_general_skill(session)
     session.flush()
     _publish_seeded_system_resources(session)
-    seed_staffdeck_admin_gallery(session)
 
-    default_model = session.exec(
-        select(ModelConfig).where(
-            ModelConfig.tenant_id == "tenant_demo",
-            ModelConfig.is_default == True,  # noqa: E712
-        )
-    ).first()
-    if not default_model and settings.demo_model_api_key:
-        session.add(
-            ModelConfig(
-                tenant_id="tenant_demo",
-                name="Demo Qwen Compatible",
-                provider="openai_compatible",
-                api_protocol="openai_chat_completions",
-                base_url=settings.demo_model_base_url,
-                api_key_encrypted=encrypt_secret(settings.demo_model_api_key),
-                model=settings.demo_model_name,
-                temperature=0.2,
-                max_output_tokens=8192,
-                trust_status="legacy_trusted",
-                is_default=True,
-                enabled=True,
-            )
-        )
 
-    session.commit()
+def _normalize_seed_system_agents(session: Session) -> None:
+    tenant_id = "tenant_demo"
+    overall = session.get(AgentProfile, f"agent_{tenant_id}_overall")
+    if overall:
+        overall.metadata_json = _system_seed_metadata(overall.metadata_json or {})
+        session.add(overall)
+    _archive_seed_default_agent(session, tenant_id)
 
 
 def _publish_seeded_system_resources(session: Session) -> None:
     tenant_id = "tenant_demo"
     creator_metadata = _system_seed_metadata()
-
-    overall = session.get(AgentProfile, f"agent_{tenant_id}_overall")
-    if overall:
-        overall.metadata_json = _system_seed_metadata(overall.metadata_json or {})
-        session.add(overall)
-
-    _archive_seed_default_agent(session, tenant_id)
 
     seeded_skill_ids = {
         str(content["skill_id"])
