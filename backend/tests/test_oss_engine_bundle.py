@@ -77,3 +77,30 @@ def test_runtime_cache_accepts_a_symlinked_data_directory(tmp_path):
     cache=install_runtime(archive,tmp_path/'alias/data')
     assert cache.is_relative_to(real)
     assert (cache/'node_modules/dep/index.js').read_text()=='dependency'
+
+
+def test_runtime_extracts_a_long_dependency_path(tmp_path):
+    import hashlib
+    import io
+    import tarfile
+
+    from staffdeck_harness.distribution.runtime_bundle import (
+        _runtime_io_path,
+        install_runtime,
+    )
+
+    names = ("apps/cli/lib/bin.js", "node_modules/.pnpm/" + "/".join(["a" * 75] * 4))
+    archive = tmp_path / "harness-engine.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for name in names:
+            payload = name.encode()
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            tar.addfile(member, io.BytesIO(payload))
+    archive.with_suffix(".gz.sha256").write_text(hashlib.sha256(archive.read_bytes()).hexdigest())
+
+    target = install_runtime(archive, tmp_path / "user-data")
+    dependency = target / names[1]
+    assert len(str(dependency)) > 260
+    assert _runtime_io_path(dependency).read_text() == names[1]
+    assert install_runtime(archive, tmp_path / "user-data") == target
