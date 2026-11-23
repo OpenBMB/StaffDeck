@@ -2,7 +2,7 @@
 
 公开仓库直接构建 OSS 产品，不需要连接内部打包服务、企业权限中心或私有仓库。
 根目录的 `distribution/manifest.json` 定义公开产品默认值；构建时版本由 tag 或手工输入覆盖。
-运行时与各自的第三方许可证随源码包提供，仓库 LICENSE 保持 AGPL-3.0。
+运行时与各自的第三方许可证随源码包提供，仓库 LICENSE 使用 Apache-2.0。
 
 ## GitHub Actions
 

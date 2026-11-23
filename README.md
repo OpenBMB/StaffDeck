@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://staffdeck.openbmb.cn/"><img src="https://img.shields.io/badge/Website-staffdeck.openbmb.cn-FF6B35?style=flat-square&logo=googlechrome&logoColor=white" alt="Official Website"/></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_3.0-blue.svg?style=flat-square" alt="License"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square" alt="License"/></a>
   <a href="https://github.com/OpenBMB/StaffDeck/stargazers"><img src="https://img.shields.io/github/stars/OpenBMB/StaffDeck?style=flat-square" alt="Stars"/></a>
   <br/>
   <a href="#-Community"><img src="https://img.shields.io/badge/Discord-Join_Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
@@ -330,11 +330,7 @@ Roadmap priorities are driven by real deployment needs. Please open an [Issue](h
 
 # 💬 Community
 - For bugs and feature requests, please open a [GitHub Issues](https://github.com/OpenBMB/StaffDeck/issues)。
-- For business corporation, please contact:
-  ```
-  agentverse@modelbest.cn
-  ```
-  or fill out the [Feishu survey](https://modelbest.feishu.cn/share/base/form/shrcnLAF6EpCi8lXhTS3VYnWc4g)
+- We have temporarily paused business cooperation.
 - Join our community channels:
 
 <table width="100%">
@@ -395,7 +391,9 @@ When using StaffDeck in internal research or authorized public materials, cite:
 
 ## License
 
-This project is open source under the GNU Affero General Public License v3.0.
+This project is open source under the [Apache License 2.0](LICENSE).
+
+Bundled third-party components retain their respective licenses.
 
 ## Acknowledgments
 

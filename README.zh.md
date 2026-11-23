@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://staffdeck.openbmb.cn/"><img src="https://img.shields.io/badge/Website-staffdeck.openbmb.cn-FF6B35?style=flat-square&logo=googlechrome&logoColor=white" alt="Official Website"/></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_3.0-blue.svg?style=flat-square" alt="License"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square" alt="License"/></a>
   <a href="https://github.com/OpenBMB/StaffDeck/stargazers"><img src="https://img.shields.io/github/stars/OpenBMB/StaffDeck?style=flat-square" alt="Stars"/></a>
   <br/>
   <a href="#-联系我们"><img src="https://img.shields.io/badge/Discord-社群-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"/></a>
@@ -329,11 +329,7 @@ StaffDeck/
 
 # 💬 联系我们
 - 关于技术问题及功能请求，请提交 [GitHub Issues](https://github.com/OpenBMB/StaffDeck/issues)。
-- 商业授权请填写[飞书问卷](https://modelbest.feishu.cn/share/base/form/shrcnLAF6EpCi8lXhTS3VYnWc4g)
-- 为了商业合作，请联系：
-  ```
-  agentverse@modelbest.cn
-  ```
+- 我们暂时停止了商业合作。
 - 欢迎加入我们的社区与我们交流：
 
 <table width="100%">
@@ -393,7 +389,9 @@ StaffDeck/
 
 ## 许可证
 
-本项目基于 GNU Affero General Public License v3.0 开源。
+本项目基于 [Apache License 2.0](LICENSE) 开源。
+
+随附第三方组件保留各自的许可证。
 
 ## 致谢
 
