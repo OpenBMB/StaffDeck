@@ -32,3 +32,37 @@ def test_mock_api_accepts_internal_service_token() -> None:
 
     assert response.status_code == 200
     assert response.json()["found"] is True
+
+
+def test_mock_expense_quota_query_requires_internal_token() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    payload = {"employee_id": "E1001", "month": "2026-09"}
+
+    assert client.post("/api/mock/expense/quota_query", json=payload).status_code == 401
+    response = client.post(
+        "/api/mock/expense/quota_query",
+        json=payload,
+        headers={INTERNAL_SERVICE_HEADER: internal_service_token()},
+    )
+    assert response.status_code == 200
+    assert response.json()["found"] is True
+
+
+def test_mock_expense_quota_query_unknown_employee_via_http() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/mock/expense/quota_query",
+        json={"employee_id": "666", "month": "2026-09"},
+        headers={INTERNAL_SERVICE_HEADER: internal_service_token()},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["found"] is False
+    assert body["miss_reason"] == "employee_not_found"
+    assert "total_quota" not in body

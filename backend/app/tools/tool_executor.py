@@ -164,8 +164,18 @@ class ToolExecutor:
         """Execute HTTP while retaining the response status for async protocols."""
         if invalid := self._validate_http_arguments(tool, arguments):
             return HttpExecutionResponse(result=invalid)
+        url = tool.url
+        # Keep existing demo installs working without resetting customer tool settings.
+        if (
+            tool.id == "tool_ffcb6ab0306f412d"
+            and tool.name == "expense.quota_query"
+            and url == "http://58.57.119.30:52008/api/mock/expense/quota_query"
+        ):
+            url = "/api/mock/expense/quota_query"
+        if url.startswith("/api/mock/"):
+            url = f"{self.settings.normalized_tool_base_url}{url}"
         headers = self._request_headers(
-            tool.url,
+            url,
             self._resolve_headers(tool.headers_json or {}, tool.auth_json or {}),
         )
         headers.update(additional_headers or {})
@@ -176,13 +186,13 @@ class ToolExecutor:
         try:
             with httpx.Client(timeout=policy.timeout_seconds) as client:
                 if tool.method.upper() == "GET":
-                    request_url, request_kwargs = prepare_get_request(tool.url, arguments)
+                    request_url, request_kwargs = prepare_get_request(url, arguments)
                     response = client.request(
                         tool.method.upper(), request_url, headers=headers, **request_kwargs
                     )
                 else:
                     response = client.request(
-                        tool.method.upper(), tool.url, headers=headers, json=arguments
+                        tool.method.upper(), url, headers=headers, json=arguments
                     )
                 response.raise_for_status()
                 return HttpExecutionResponse(
