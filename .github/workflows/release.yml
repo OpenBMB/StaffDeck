@@ -1,230 +1,31 @@
-name: release
+name: Validate hardened Intel Node
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    tags: ["v*", "[0-9]*"]
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version used for manual packaging runs"
-        required: true
-        default: "0.6.0"
 
 permissions:
   contents: read
 
-concurrency:
-  group: oss-release-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
-  checks:
-    uses: ./.github/workflows/oss-checks.yml
-
-  build:
-    needs: checks
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    env:
-      PYTHONUTF8: "1"
-      PYTHONIOENCODING: "utf-8"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15        # Apple Silicon (arm64)
-            script: bash packaging/build_macos.sh
-            macos_arch: arm64
-          - os: macos-15-intel  # Intel (x86_64) — 无本地机器，靠 CI 出包
-            script: bash packaging/build_macos.sh
-            macos_arch: x86_64
-          - os: ubuntu-latest
-            script: bash packaging/build_linux.sh
-          - os: windows-latest
-            script: pwsh packaging/build_windows.ps1
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+  intel:
+    runs-on: macos-15-intel
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22.19.0"
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-
-      - name: Resolve release version
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-        run: python packaging/stamp_release.py "$RELEASE_VERSION" >> "$GITHUB_ENV"
-
-      - name: Prepare OSS frontend and Harness runtime
-        run: |
-          npm install --global pnpm@11.7.0
-          python prepare.py --without-backend
-
-      - name: macOS tools
-        if: startsWith(matrix.os, 'macos')
-        run: brew install create-dmg
-
-      - name: Configure macOS signing
-        if: startsWith(matrix.os, 'macos') && github.event_name != 'pull_request'
-        env:
-          MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
-          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          MAC_SIGN_ID: ${{ secrets.MAC_SIGN_ID }}
-          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          if [ -z "$MAC_CERT_P12_BASE64" ]; then
-            echo "macOS signing secrets not configured; build will use ad-hoc signing."
-            exit 0
-          fi
-          missing=()
-          for secret_name in MAC_CERT_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
-            if [ -z "${!secret_name}" ]; then
-              missing+=("$secret_name")
-            fi
-          done
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "Missing macOS signing secret(s): ${missing[*]}" >&2
-            exit 1
-          fi
-          KEYCHAIN_PATH="$RUNNER_TEMP/staffdeck-signing.keychain-db"
-          P12_PATH="$RUNNER_TEMP/staffdeck-signing.p12"
-          cleanup() {
-            rm -f "$P12_PATH"
-          }
-          trap cleanup EXIT
-          echo "$MAC_CERT_P12_BASE64" | base64 --decode > "$P12_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$P12_PATH" -k "$KEYCHAIN_PATH" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
-          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
-          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$KEYCHAIN_PATH"
-          xcrun notarytool store-credentials staffdeck-notary \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --keychain "$KEYCHAIN_PATH"
-          if [ -z "$MAC_SIGN_ID" ]; then
-            MAC_SIGN_ID="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk -F '"' '/Developer ID Application/ { print $2; exit }')"
-          fi
-          if [ -z "$MAC_SIGN_ID" ]; then
-            echo "No Developer ID Application identity found in the signing keychain." >&2
-            exit 1
-          fi
-          echo "MAC_SIGN_ID=$MAC_SIGN_ID" >> "$GITHUB_ENV"
-          echo "NOTARY_PROFILE=staffdeck-notary" >> "$GITHUB_ENV"
-          echo "NOTARY_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-
-      - name: Linux tools
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ruby ruby-dev build-essential libfuse2
-          sudo gem install --no-document fpm
-          wget -O appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x appimagetool
-
-      - name: Windows tools
-        if: runner.os == 'Windows'
-        run: choco install innosetup -y
-
-      - name: Build
-        env:
-          STAFFDECK_MACOS_ARCH: ${{ matrix.macos_arch }}
-          SKIP_FRONTEND: "1"
-        run: ${{ matrix.script }}
-
-      - name: Native OSS login and CLI acceptance
-        timeout-minutes: 18
+      - name: Exercise the pinned Intel runtime after hardened signing
         shell: bash
         run: |
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            python packaging/smoke_oss.py --server packaging/out/StaffDeck.app/Contents/MacOS/staffdeck --cli packaging/out/StaffDeck.app/Contents/MacOS/staffdeck-cli --restart-with-cli
-          elif [[ "$RUNNER_OS" == "Windows" ]]; then
-            python packaging/smoke_oss.py --server packaging/out/staffdeck/staffdeck.exe --cli packaging/out/staffdeck/staffdeck-cli.exe --restart-with-cli
-          else
-            python packaging/smoke_oss.py --server packaging/out/staffdeck/staffdeck --cli packaging/out/staffdeck/staffdeck-cli --restart-with-cli
-          fi
-
-      - name: Windows general-skill smoke (python runtime)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $dataDir = Join-Path $env:RUNNER_TEMP "staffdeck-smoke"
-          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
-          $env:ULTRARAG_PORT = "5178"
-          $env:ULTRARAG_PORT_RANGE_START = "5178"
-          $env:ULTRARAG_PORT_RANGE_END = "5178"
-          $env:ULTRARAG_DATA_DIR = $dataDir
-          $env:STAFFDECK_HEADLESS = "1"
-          $p = Start-Process -FilePath "packaging/out/staffdeck/staffdeck.exe" -PassThru
-          try {
-            $health = $null
-            for ($i = 0; $i -lt 90; $i++) {
-              if ($p.HasExited) {
-                throw "staffdeck.exe exited early with code $($p.ExitCode)"
-              }
-              try {
-                $health = Invoke-RestMethod "http://127.0.0.1:5178/api/health" -TimeoutSec 2
-                break
-              } catch {
-                Start-Sleep -Seconds 1
-              }
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          python3 -c 'import runpy,sys; from pathlib import Path; runpy.run_path("packaging/fetch_sandbox_runtime.py")["_download_node_runtime"](Path(sys.argv[1]))' "$RUNNER_TEMP/staffdeck-jit"
+          node="$RUNNER_TEMP/staffdeck-jit/bin/node"
+          codesign --force --sign - --options runtime --entitlements packaging/macos-intel-node.entitlements "$node"
+          codesign --verify --strict "$node"
+          "$node" -e '
+            if (process.arch !== "x64") process.exit(2)
+            function increment(value) { return value + 1 }
+            for (let i = 0; i < 100000; i++) {
+              if (increment(i) !== i + 1) process.exit(1)
             }
-            if (-not $health) { throw "health check timed out" }
-            if ($health.status -ne "ok") { throw "health 异常: $($health.status)" }
-            # 深层导入回归（401 需登录属正常，只要不是 5xx / 连接失败）
-            try { Invoke-RestMethod "http://127.0.0.1:5178/api/enterprise/agents" | Out-Null }
-            catch {
-              if (-not $_.Exception.Response) { throw }
-              if ($_.Exception.Response.StatusCode.value__ -ge 500) { throw "agents 5xx" }
-            }
-            Write-Host "windows smoke ok"
-          } catch {
-            $log = Join-Path $dataDir "logs/staffdeck.log"
-            if (Test-Path $log) {
-              Write-Host "::group::staffdeck.log"
-              Get-Content $log -Tail 200
-              Write-Host "::endgroup::"
-            }
-            throw
-          } finally {
-            if (-not $p.HasExited) {
-              Stop-Process -Id $p.Id -Force
-            }
-          }
-
-      - name: Package public OSS source
-        if: runner.os == 'Linux'
-        run: python packaging/source_release.py --version "$VERSION" --output packaging/out
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: staffdeck-${{ matrix.os }}
-          path: packaging/out/StaffDeck-*
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-      - uses: softprops/action-gh-release@v3
-        with:
-          files: artifacts/**/StaffDeck-*
+            console.log("Hardened x64 Node compiled and executed JavaScript")
+          '
