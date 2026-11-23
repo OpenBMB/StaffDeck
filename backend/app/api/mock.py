@@ -104,9 +104,35 @@ ARCHIVE_ORDER_CENTER = {
     }
 }
 
+EXPENSE_QUOTA_ROSTER = {
+    "E1001": {
+        "employee_name": "李明",
+        "department": "销售部",
+        "total_quota": Decimal("20000.00"),
+        "used": Decimal("6350.00"),
+    },
+    "E1002": {
+        "employee_name": "王芳",
+        "department": "市场部",
+        "total_quota": Decimal("15000.00"),
+        "used": Decimal("0.00"),
+    },
+    "E1003": {
+        "employee_name": "赵磊",
+        "department": "研发部",
+        "total_quota": Decimal("8000.00"),
+        "used": Decimal("8000.00"),
+    },
+}
+
 
 class MockOrderQueryRequest(BaseModel):
     order_id: str
+
+
+class MockExpenseQuotaQueryRequest(BaseModel):
+    employee_id: str
+    month: str | None = None
 
 
 class MockOrderRefundRequest(BaseModel):
@@ -174,6 +200,35 @@ def mock_order_archive_query(request: MockOrderQueryRequest) -> dict[str, Any]:
     if not record:
         return _order_miss(order_id, "archive_order_center")
     return _order_hit(order_id, "archive_order_center", record)
+
+
+@router.post("/expense/quota_query")
+def mock_expense_quota_query(request: MockExpenseQuotaQueryRequest) -> dict[str, Any]:
+    employee_id = _normalize_employee_id(request.employee_id)
+    month = _normalize_month(request.month)
+    if not employee_id:
+        return _employee_miss(request.employee_id, month, "employee_id_required")
+    record = EXPENSE_QUOTA_ROSTER.get(employee_id)
+    if not record:
+        return _employee_miss(employee_id, month, "employee_not_found")
+    remaining = record["total_quota"] - record["used"]
+    return {
+        "found": True,
+        "source": "mock_expense_quota_roster",
+        "employee_id": employee_id,
+        "employee_name": record["employee_name"],
+        "department": record["department"],
+        "month": month,
+        "total_quota": float(record["total_quota"]),
+        "used": float(record["used"]),
+        "remaining": float(remaining),
+        "currency": "CNY",
+        "message": (
+            f"工号 {employee_id}（{record['employee_name']}）{month} 报销总额度 "
+            f"{record['total_quota']:.2f} CNY，已用 {record['used']:.2f} CNY，"
+            f"剩余 {remaining:.2f} CNY。"
+        ),
+    }
 
 
 @router.post("/order/refund")
@@ -474,6 +529,37 @@ def _order_miss(order_id: str, source: str) -> dict[str, Any]:
         "results": [],
         "miss_reason": "source_miss",
         "hint": "当前订单中心未命中，可尝试其他已配置的订单查询工具。",
+    }
+
+
+def _normalize_employee_id(value: str) -> str:
+    normalized = _normalize_id(value)
+    # Demo roster IDs are E-prefixed; accept the bare number form users often type.
+    if normalized.isdigit():
+        return f"E{normalized}"
+    return normalized
+
+
+def _normalize_month(value: str | None) -> str:
+    text = (value or "").strip()
+    if len(text) >= 7 and text[4] == "-" and text[:4].isdigit() and text[5:7].isdigit():
+        return text[:7]
+    return datetime.now(UTC).strftime("%Y-%m")
+
+
+def _employee_miss(employee_id: str, month: str, miss_reason: str) -> dict[str, Any]:
+    if miss_reason == "employee_id_required":
+        message = "未提供员工工号，无法查询报销额度。"
+    else:
+        message = f"未找到工号为 {employee_id} 的员工记录，无法查询报销额度。"
+    return {
+        "found": False,
+        "source": "mock_expense_quota_roster",
+        "employee_id": employee_id,
+        "month": month,
+        "miss_reason": miss_reason,
+        "message": message,
+        "hint": "可尝试使用 E1001、E1002 或 E1003 作为 mock 员工工号。",
     }
 
 
