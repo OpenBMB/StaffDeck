@@ -660,9 +660,10 @@ def _migrate_sqlite_skill_schema() -> None:
                     },
                 )
         if "skills" in tables:
-            _normalize_existing_skill_rows(conn, legacy_id_prefix)
+            public_skill_ids = _restore_public_skill_ids(conn, tables, legacy_id_prefix)
+            _normalize_existing_skill_rows(conn, legacy_id_prefix, public_skill_ids)
             if "skill_versions" in tables:
-                _normalize_existing_skill_version_rows(conn, legacy_id_prefix)
+                _normalize_existing_skill_version_rows(conn, legacy_id_prefix, public_skill_ids)
                 _seed_skill_versions(conn)
             _normalize_agent_branch_rows(conn, tables)
             _seed_agent_branch_state(conn, inspector, tables)
@@ -1757,10 +1758,71 @@ def _migrate_skill_content(value: object, skill_id: str) -> dict[str, object]:
     return _ensure_skill_graph(content)
 
 
-def _normalize_existing_skill_rows(conn, legacy_id_prefix: str) -> None:
-    rows = conn.execute(text("SELECT id, skill_id, content_json FROM skills")).mappings().all()
+def _restore_public_skill_ids(
+    conn, tables: set[str], legacy_id_prefix: str
+) -> set[tuple[str, str]]:
+    """Preserve public SOP IDs and recover aliases produced by the legacy migration."""
+    if "api_sop_drafts" not in tables:
+        return set()
+    public_ids = {
+        (row["tenant_id"], row["skill_id"])
+        for row in conn.execute(text("SELECT DISTINCT tenant_id, skill_id FROM api_sop_drafts")).mappings()
+    }
+    if "agent_skill_branches" not in tables:
+        return public_ids
+
+    candidates = conn.execute(text("""
+        SELECT DISTINCT s.id, s.tenant_id, s.skill_id, s.content_json, d.skill_id AS public_id
+        FROM skills s
+        JOIN agent_skill_branches b
+          ON b.tenant_id = s.tenant_id AND b.source_skill_id = s.id AND b.status = 'active'
+        JOIN api_sop_drafts d
+          ON d.tenant_id = b.tenant_id AND d.agent_id = b.agent_id
+          AND d.skill_id = b.skill_id AND d.status = 'published'
+        WHERE d.skill_id != s.skill_id
+    """)).mappings().all()
+    for row in candidates:
+        tenant, alias, original = row["tenant_id"], row["skill_id"], row["public_id"]
+        if alias != _normalize_skill_identifier(original, legacy_id_prefix):
+            continue
+        if (tenant, alias) in public_ids:
+            continue
+        keys = {"tenant": tenant, "alias": alias, "original": original}
+        in_use = conn.execute(text("""
+            SELECT 1 FROM skills WHERE tenant_id = :tenant AND skill_id = :original
+            UNION ALL
+            SELECT 1 FROM agent_skill_branches
+             WHERE tenant_id = :tenant AND skill_id = :alias AND status = 'active'
+            LIMIT 1
+        """), keys).first()
+        if in_use:
+            continue
+
+        conn.execute(text("UPDATE skills SET skill_id = :original, content_json = :content WHERE id = :id"), {
+            "original": original, "id": row["id"],
+            "content": json.dumps(_migrate_skill_content(row["content_json"], original), ensure_ascii=False),
+        })
+        if "skill_versions" in tables:
+            conn.execute(text("""
+                UPDATE skill_versions AS v SET skill_id = :original
+                WHERE v.tenant_id = :tenant AND v.skill_id = :alias
+                AND NOT EXISTS (
+                    SELECT 1 FROM skill_versions existing
+                    WHERE existing.tenant_id = :tenant AND existing.skill_id = :original
+                      AND existing.version = v.version
+                )
+            """), keys)
+    return public_ids
+
+
+def _normalize_existing_skill_rows(
+    conn, legacy_id_prefix: str, public_skill_ids: set[tuple[str, str]]
+) -> None:
+    rows = conn.execute(text("SELECT id, tenant_id, skill_id, content_json FROM skills")).mappings().all()
     for row in rows:
-        skill_id = _normalize_skill_identifier(row.get("skill_id"), legacy_id_prefix)
+        skill_id = row["skill_id"]
+        if (row["tenant_id"], skill_id) not in public_skill_ids:
+            skill_id = _normalize_skill_identifier(skill_id, legacy_id_prefix)
         if not skill_id:
             continue
         content = _migrate_skill_content(row.get("content_json"), skill_id)
@@ -1771,8 +1833,8 @@ def _normalize_existing_skill_rows(conn, legacy_id_prefix: str) -> None:
             )
             continue
         existing = conn.execute(
-            text("SELECT id FROM skills WHERE skill_id = :skill_id AND id != :id"),
-            {"skill_id": skill_id, "id": row["id"]},
+            text("SELECT id FROM skills WHERE tenant_id = :tenant AND skill_id = :skill_id AND id != :id"),
+            {"tenant": row["tenant_id"], "skill_id": skill_id, "id": row["id"]},
         ).first()
         if existing:
             continue
@@ -1786,10 +1848,14 @@ def _normalize_existing_skill_rows(conn, legacy_id_prefix: str) -> None:
         )
 
 
-def _normalize_existing_skill_version_rows(conn, legacy_id_prefix: str) -> None:
-    rows = conn.execute(text("SELECT id, skill_id, content_json FROM skill_versions")).mappings().all()
+def _normalize_existing_skill_version_rows(
+    conn, legacy_id_prefix: str, public_skill_ids: set[tuple[str, str]]
+) -> None:
+    rows = conn.execute(text("SELECT id, tenant_id, skill_id, content_json FROM skill_versions")).mappings().all()
     for row in rows:
-        skill_id = _normalize_skill_identifier(row.get("skill_id"), legacy_id_prefix)
+        skill_id = row["skill_id"]
+        if (row["tenant_id"], skill_id) not in public_skill_ids:
+            skill_id = _normalize_skill_identifier(skill_id, legacy_id_prefix)
         if not skill_id:
             continue
         content = _migrate_skill_content(row.get("content_json"), skill_id)
