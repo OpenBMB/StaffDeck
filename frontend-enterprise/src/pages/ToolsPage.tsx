@@ -732,7 +732,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
               )}
               {!isOverallAgent && (
                 <DropdownMenuItem className={MENU_ITEM_CLASS} onSelect={() => handleCreateAction('plaza')}>
-                  <IconTool className="size-[14px]" />
+                  <Copy />
                   从广场复制
                 </DropdownMenuItem>
               )}
