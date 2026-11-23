@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "FastAPI MVP for an enterprise Skill Agent Loop service"
 requires-python = ">=3.11"
 dependencies = [
+  "alembic>=1.13",
   "anthropic>=0.117.0,<0.121.0",
   # cryptography 49 macOS wheels dynamically link their bundled OpenSSL. PyInstaller
   # can then select Python's older libssl.3.dylib with the same basename, producing
@@ -40,6 +41,17 @@ dev = [
   "pytest-asyncio>=0.23.0",
   "ruff>=0.5.0"
 ]
+# 非 SQLite 驱动按需安装(默认 SQLite 的桌面端不背额外驱动二进制)
+postgres = [
+  "psycopg[binary]>=3.1"
+]
+mysql = [
+  "pymysql>=1.1"
+]
+# 达梦:除 dmPython 驱动外还需部署方提供 SQLAlchemy 达梦方言插件(本仓库未预装/未验证)
+dm = [
+  "dmPython>=2.5"
+]
 packaging = [
   "pyinstaller>=6.6.0",
   "certifi>=2024.2.2",
@@ -68,7 +80,12 @@ include = ["app*", "mock_servers*", "staffdeck_harness*", "staffdeck*"]
 
 [tool.setuptools.package-data]
 staffdeck = ["py.typed", "skills/staffdeck-cli/SKILL.md"]
-app = ["db/seed_fixtures/*.json"]
+app = [
+  "db/seed_fixtures/*.json",
+  "db/migrations/*.py",
+  "db/migrations/*.mako",
+  "db/migrations/versions/*.py",
+]
 
 [tool.ruff]
 line-length = 100

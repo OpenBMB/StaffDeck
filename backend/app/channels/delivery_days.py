@@ -7,6 +7,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import HTTPException
 from sqlalchemy import Date, cast, func
 
+from app.config import get_settings
+from app.db.dialect import get_dialect
+
 
 def server_timezone():
     candidates = []
@@ -47,7 +50,10 @@ def delivery_day_bucket(db):
         return func.date(ChannelDelivery.created_at, 'localtime')
     if dialect == 'postgresql':
         # Runtime timestamps are UTC-naive; convert UTC -> named server timezone
-        # before taking the date, including historical DST offsets.
-        return cast(func.timezone(server_timezone(), func.timezone('UTC', ChannelDelivery.created_at)), Date)
-    raise HTTPException(503, {'code':'STORAGE_DIALECT_UNSUPPORTED',
-                             'message':'当前存储不支持投递日志日期分组'})
+        # before taking the date, including historical DST offsets. APP_TIMEZONE
+        # (应用时区)只对 PostgreSQL 日分桶生效,未配置时回退服务器本地时区。
+        tz = (get_settings().app_timezone or '').strip() or server_timezone()
+        return cast(func.timezone(tz, func.timezone('UTC', ChannelDelivery.created_at)), Date)
+    # 其它方言:方言助手兜底(标准 SQL cast(col, Date),按数据库服务器时区取日)。
+    # 未注册后端(MySQL/达梦等)同样可用,不再一律 503。
+    return get_dialect(dialect).day_bucket(ChannelDelivery.created_at)

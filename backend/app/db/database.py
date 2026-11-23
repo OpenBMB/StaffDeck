@@ -1,15 +1,20 @@
 import hashlib
 import json
+import logging
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import Engine, inspect, text
+from sqlalchemy import Engine, func, inspect, text
+from sqlalchemy.engine import make_url
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import get_settings
 from app.db.database_path import normalize_database_url
+from app.db.dialect import ensure_driver_available, get_dialect
 from app.db.models import new_id, utc_now
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_database_url(url: str) -> str:
@@ -20,8 +25,15 @@ def _normalize_database_url(url: str) -> str:
 settings = get_settings()
 
 database_url = _normalize_database_url(settings.database_url)
-connect_args = {"check_same_thread": False, "timeout": 30} if database_url.startswith("sqlite") else {}
-engine: Engine = create_engine(database_url, echo=False, connect_args=connect_args)
+_parsed_url = make_url(database_url)
+# 可选驱动缺失时先给出安装指引(create_engine 会在 import DBAPI 时报更晦涩的错误)
+ensure_driver_available(_parsed_url)
+# 引擎创建参数由方言提供者收口(SQLite=check_same_thread/timeout,行为不变)
+_dialect = get_dialect(_parsed_url.get_backend_name())
+engine: Engine = create_engine(database_url, echo=False, **_dialect.engine_kwargs(database_url))
+
+# Alembic 迁移目录(app 包内,按本文件位置解析为绝对路径,不依赖执行时 CWD)
+_ALEMBIC_DIR = Path(__file__).resolve().parent / "migrations"
 
 _DEFAULT_MODEL_OUTPUT_LIMIT_MIGRATION_ID = "20260712_default_model_output_tokens_8192"
 _LEGACY_DEFAULT_MODEL_OUTPUT_TOKENS = 2048
@@ -62,11 +74,119 @@ _CAPABILITY_SCOPE_TABLES = (
 def init_db() -> None:
     import app.db.models  # noqa: F401
 
+    _ensure_driver_available()
     _configure_sqlite_runtime()
-    SQLModel.metadata.create_all(engine)
-    _migrate_sqlite_skill_schema()
+    if engine.url.get_backend_name() == "sqlite":
+        # SQLite 行为保持不变:create_all + 启动期存量 schema 迁移
+        SQLModel.metadata.create_all(engine)
+        _migrate_sqlite_skill_schema()
+    else:
+        # 非 SQLite 后端:全新库 create_all + 基线标记,存量库统一走 Alembic
+        _prepare_non_sqlite_schema(engine)
+    _validate_default_model_invariant()
+    _warn_backend_constraints()
     if settings.startup_orphan_cleanup_enabled:
         _purge_orphaned_chat_sessions()
+
+
+def _ensure_driver_available() -> None:
+    """可选数据库驱动(PG/MySQL/达梦)缺失时在启动处给出明确安装指引。"""
+    ensure_driver_available(engine.url)
+
+
+def _alembic_config(database_url: str):
+    """构造指向本仓库 backend/alembic 的 Alembic Config(惰性 import)。
+
+    URL 通过 main option 传给 env.py(优先于应用配置);ConfigParser 会把 ``%``
+    当插值符号,URL 中的百分号(如密码里的 %xx)需先转义,读取时会还原。
+    """
+    from alembic.config import Config
+
+    config = Config()
+    config.set_main_option("script_location", str(_ALEMBIC_DIR))
+    config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+    return config
+
+
+def _prepare_non_sqlite_schema(engine: Engine) -> None:
+    """非 SQLite 后端:用 Alembic 建立/升级 schema(替代"仅全新库初始化")。
+
+    三种存量情形:
+    1. 全新空库(无应用表、无 alembic_version):create_all 建当前 schema
+       (含 models.py 的按方言 DDL 事件,如部分唯一索引),再 stamp 基线 head;
+    2. 已有应用表但无 alembic_version:视为基线等价的老库,stamp head 并告警,
+       避免重复建表;此后升级走 alembic revision;
+    3. 已有 alembic_version:upgrade head 应用未执行的迁移。
+    """
+    try:
+        from alembic import command
+    except ImportError as exc:  # pragma: no cover - 依赖缺失时的明确指引
+        raise RuntimeError(
+            "非 SQLite 数据库后端需要 Alembic 迁移组件:pip install alembic"
+        ) from exc
+
+    backend = engine.url.get_backend_name()
+    tables = set(inspect(engine).get_table_names())
+    config = _alembic_config(engine.url.render_as_string(hide_password=False))
+
+    if "alembic_version" in tables:
+        command.upgrade(config, "head")
+        logger.info("数据库后端 %s 已用 Alembic 升级到 head", backend)
+        return
+
+    if tables:
+        logger.warning(
+            "数据库后端 %s 已有应用表但缺少 alembic_version:按基线标记为 head;"
+            "请确认既有 schema 与当前版本一致,后续升级走 alembic upgrade",
+            backend,
+        )
+        command.stamp(config, "head")
+        return
+
+    SQLModel.metadata.create_all(engine)
+    command.stamp(config, "head")
+    logger.info("数据库后端 %s 为全新空库:create_all 建表后按基线标记 head", backend)
+
+
+def _validate_default_model_invariant() -> None:
+    """不支持部分唯一索引的后端:启动校验"每租户至多一条默认模型"未被破坏。
+
+    该类后端不会创建 uq_model_configs_tenant_default(见 models.py 的按方言 DDL),
+    约束退化为代码层维护(默认切换在同事务先清后设)+ 此处启动兜底。
+    """
+    if _dialect.supports_partial_index:
+        return
+    from app.db.models import ModelConfig
+
+    with Session(engine) as db:
+        duplicates = db.exec(
+            select(ModelConfig.tenant_id)
+            .where(ModelConfig.is_default == True)  # noqa: E712
+            .group_by(ModelConfig.tenant_id)
+            .having(func.count() > 1)
+        ).all()
+    if duplicates:
+        raise RuntimeError(
+            "当前数据库后端不支持部分唯一索引,且检测到以下租户存在多条默认模型: "
+            f"{sorted(duplicates)};请人工清理至每租户至多一条后再启动"
+        )
+
+
+def _warn_backend_constraints() -> None:
+    """非 SQLite 后端的显式约束与配置陷阱告警(启动期一次性)。"""
+    backend = engine.url.get_backend_name()
+    if backend == "sqlite":
+        if (get_settings().app_timezone or "").strip():
+            logger.warning(
+                "app_timezone 对 SQLite 不生效(日分桶恒为服务器本地时区),该配置将被忽略"
+            )
+        return
+    logger.warning(
+        "数据库后端 %s 使用 Alembic 管理 schema:启动时自动 upgrade 到 head"
+        "(全新空库为 create_all + 基线标记;既有库无版本表时按基线标记);"
+        "后续 models 变更需配套 alembic revision,不要依赖 create_all 补列",
+        backend,
+    )
 
 
 def _purge_orphaned_chat_sessions() -> None:

@@ -286,6 +286,35 @@ Digital employees can serve users directly over IM channels: users chat with emp
 - Channel credentials (bot tokens/secrets) are stored Fernet-encrypted and never returned by any API;
 - Binding management is restricted to admins or the binding creator; mounting an employee exposes it to all users of that channel — grant with care.
 
+## Database Backends
+
+StaffDeck keeps all state in one SQL database and defaults to local SQLite (zero setup). The data layer is dialect-pluggable: business code goes through SQLAlchemy ORM, and the few dialect-specific points (day bucketing, JSON config patching, process/advisory locks, partial indexes) are centralized in `backend/app/db/dialect.py`.
+
+| Backend | Status | Notes |
+| --- | --- | --- |
+| SQLite (default) | Supported | File database; connector/binding process locks are file locks placed next to the DB file. Schema changes use the built-in startup migrations (behavior unchanged). |
+| PostgreSQL | Experimental | Full feature set via the `postgresql` dialect. Install the optional driver first: `pip install "skill-agent-loop-backend[postgres]"`, then set `DATABASE_URL="postgresql+psycopg://user:pass@host:5432/dbname"` in `backend/.env`. Existing databases are upgraded with Alembic (see below). |
+| openGauss (高斯) | Experimental | Uses the PostgreSQL protocol through a small compatibility dialect (`opengauss+psycopg://user:pass@host:5432/postgres`, same `[postgres]` driver) that handles the openGauss version string and forces `client_encoding=utf8`. Full dialect capabilities including the partial unique index and session advisory locks; existing databases are upgraded with Alembic. Verified against openGauss 5.0 (Docker). |
+| MySQL 8.x | Experimental | Install the optional driver: `pip install "skill-agent-loop-backend[mysql]"` (PyMySQL), then set `DATABASE_URL="mysql+pymysql://user:pass@host:3306/dbname?charset=utf8mb4"`. No partial unique indexes: the "one default model per tenant" invariant is enforced in code plus a startup check. The connector single-instance guard uses `GET_LOCK()` named locks. JSON columns stay native JSON; long-text columns are `TEXT`/`MEDIUMTEXT` (no silent VARCHAR(255) truncation). Verified against MySQL 8.4. |
+| Dameng (达梦) | Adapter needed | Requires the `dmPython` driver plus a third-party SQLAlchemy Dameng dialect plugin (not bundled or verified by this repository). JSON columns degrade to CLOB via `PortableJSON`, long-text columns are `TEXT`. Without a native advisory-lock implementation the connector lock fails loudly at startup instead of silently mis-locking. |
+
+### Database migrations (non-SQLite)
+
+SQLite keeps its existing startup path (`create_all` plus the built-in migrations). Non-SQLite backends are managed by Alembic, so existing schemas can be upgraded across releases:
+
+- fresh database: `init_db` creates the schema with `create_all` (including dialect-specific DDL such as the partial unique index) and stamps the baseline revision;
+- existing schema without `alembic_version`: stamped at head with a warning — review schema compatibility manually before upgrading;
+- database with `alembic_version`: `init_db` runs `alembic upgrade head` at startup.
+
+To add a schema change: update the models, then run `cd backend && DATABASE_URL=... .venv/bin/python -m alembic revision --autogenerate -m "..."` and commit the new revision. Migration scripts live in `backend/app/db/migrations/` and are shipped with the wheel and the bundled app.
+
+Limitations when running on PostgreSQL/MySQL/openGauss:
+
+- **Single-writer startup**: run only one application worker during first boot/upgrades — concurrent `create_all` + demo seeding from multiple workers can race (DuplicateTable / unique conflicts). Initialize once with a single worker.
+- `APP_TIMEZONE` only affects PostgreSQL day bucketing; on SQLite, day buckets always use the server's local timezone (setting it there logs a warning and is ignored).
+- Run exactly one connector process per database — the single-instance guard uses a session-scoped PostgreSQL/openGauss advisory lock (dedicated autocommit connection) or a MySQL `GET_LOCK()` named lock, with periodic liveness checks (channel services degrade and stop if the lock is lost).
+- MySQL/Dameng have no partial unique index for the "one default model per tenant" rule: it is enforced in code plus a startup validation, not by a database constraint.
+
 ## Project Structure
 
 ```text

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     startup_orphan_cleanup_enabled: bool = True
     app_name: str = "Skill Agent Loop Service"
     database_url: str = "sqlite:///./skill_agent_loop.db"
+    # 应用时区(如 Asia/Shanghai):仅 PostgreSQL 日分桶换算使用;留空=服务器本地固定偏移。
+    # SQLite 恒为服务器本地时区,配置了也不生效(启动时会告警)。
+    app_timezone: str = ""
     app_secret: str = "change-me-in-development"
     demo_model_base_url: str = "http://localhost:52010/v1"
     demo_model_name: str = "qwen3.6-27b"

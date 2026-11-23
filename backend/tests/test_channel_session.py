@@ -1,27 +1,20 @@
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine, text
+from sqlmodel import Session, SQLModel, create_engine
 
 from app.channels.service_session import find_or_create_channel_session
 from app.db.models import ChannelBinding, ChatSession, Tenant, User
 
 
-def _test_engine(with_unique_index: bool = False):
+def _test_engine():
+    # 唯一索引 uq_sessions_agent_channel_extconv 已由 models.py 并入 create_all
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     SQLModel.metadata.create_all(engine)
-    if with_unique_index:
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "CREATE UNIQUE INDEX uq_sessions_agent_channel_extconv "
-                    "ON sessions(agent_id, channel, channel_binding_id, external_conv_id)"
-                )
-            )
     return engine
 
 
@@ -62,7 +55,7 @@ def test_create_then_reuse_channel_session() -> None:
 
 
 def test_user_mismatch_archives_legacy_session_and_starts_clean() -> None:
-    engine = _test_engine(with_unique_index=True)
+    engine = _test_engine()
     with Session(engine) as db:
         binding, old_user = _seed(db)
         new_user = User(
@@ -136,7 +129,7 @@ def test_channel_target_json_roundtrip() -> None:
 
 
 def test_unique_index_rejects_duplicate_anchor() -> None:
-    engine = _test_engine(with_unique_index=True)
+    engine = _test_engine()
     with Session(engine) as db:
         binding, user = _seed(db)
         first = find_or_create_channel_session(db, binding, user, "agent_1", "wechat_p2p_wxid_1", "hi")
@@ -160,7 +153,7 @@ def test_unique_index_rejects_duplicate_anchor() -> None:
 
 
 def test_web_sessions_coexist_under_unique_index() -> None:
-    engine = _test_engine(with_unique_index=True)
+    engine = _test_engine()
     with Session(engine) as db:
         _seed(db)
         # channel 为 NULL 的 web 会话在唯一索引下互不相等,可重复存在
