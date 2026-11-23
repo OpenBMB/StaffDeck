@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, wait
 from copy import deepcopy
+from threading import BoundedSemaphore, Thread
+from time import monotonic
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Request, Response
@@ -23,7 +26,9 @@ from app.db.models import (
 from app.public_api.auth import PublicPrincipal, enforce_agent_access, require_scopes
 from app.public_api.errors import PublicAPIError
 from app.public_api.idempotency import replay_idempotent_response, store_idempotent_response
-from app.public_api.jobs import create_job, job_read, register_job_handler, update_job
+from app.public_api.jobs import (
+    create_job, ensure_not_cancelled, job_read, register_job_handler, update_job,
+)
 from app.public_api.json_patch import JSONPatchError, apply_json_patch
 from app.public_api.schemas import (
     SOPGenerateRequest,
@@ -34,10 +39,12 @@ from app.public_api.schemas import (
 from app.public_api.sessions import ensure_public_agent
 from app.public_api.utils import etag_for
 from app.skills import SkillDistiller, SkillEditor
+from app.skills.llm_limits import skill_model_config
 from app.skills.skill_schema import (
     SkillCard,
     SkillCreateRequest,
     SkillDistillRequest,
+    SkillDistillResponse,
     SkillRewriteRequest,
     SkillUpdateRequest,
     skill_card_from_persisted,
@@ -320,6 +327,44 @@ def generate_sop(
     return payload
 
 
+_DISTILL_TIMEOUT_SECONDS = 180.0
+_DISTILL_SLOT = BoundedSemaphore()
+
+
+def _run_public_distillation(db, job, request, model) -> SkillDistillResponse:
+    # A slow provider must not hold the shared job executor indefinitely.
+    # Keep at most one provider call outstanding, even if its job times out.
+    if not _DISTILL_SLOT.acquire(blocking=False):
+        raise PublicAPIError(503, "SOP_GENERATION_BUSY", "Another SOP generation is in progress.")
+
+    result: Future[SkillDistillResponse] = Future()
+
+    def distill() -> None:
+        try:
+            result.set_result(SkillDistiller().distill(request, model))
+        except BaseException as exc:
+            result.set_exception(exc)
+        finally:
+            _DISTILL_SLOT.release()
+
+    try:
+        Thread(target=distill, name="public-sop-distillation", daemon=True).start()
+    except BaseException:
+        _DISTILL_SLOT.release()
+        raise
+
+    deadline = monotonic() + _DISTILL_TIMEOUT_SECONDS
+    while True:
+        ensure_not_cancelled(db, job)
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise PublicAPIError(504, "SOP_GENERATION_TIMEOUT", "The model did not finish SOP generation in time.")
+        completed, _ = wait([result], timeout=min(0.5, remaining))
+        if completed:
+            ensure_not_cancelled(db, job)
+            return result.result()
+
+
 @register_job_handler("sop.generate")
 def execute_sop_generate(db: Session, job: APIJob) -> dict[str, Any]:
     payload = dict(job.request_json or {})
@@ -333,7 +378,14 @@ def execute_sop_generate(db: Session, job: APIJob) -> dict[str, Any]:
         model_config_id=payload.get("model_config_id"),
     )
     model = internal_skills._get_request_model(db, job.tenant_id, request.model_config_id)
-    result = SkillDistiller().distill(internal_skills._with_available_tools(db, request), model)
+    ensure_not_cancelled(db, job)
+    try:
+        result = _run_public_distillation(
+            db, job, internal_skills._with_available_tools(db, request), skill_model_config(model)
+        )
+    except PublicAPIError:
+        ensure_not_cancelled(db, job)
+        raise
     row = _new_draft(
         db,
         tenant_id=job.tenant_id,

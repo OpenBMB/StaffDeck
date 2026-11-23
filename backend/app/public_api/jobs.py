@@ -525,6 +525,12 @@ def _require_job_scope(principal: PublicPrincipal, row: APIJob, action: str) -> 
     candidates = [f"jobs:{action}", f"{public_namespace}:{action}"]
     if namespace == "run":
         candidates.append(f"runs:{action}")
+    if (
+        namespace == "sop" and action == "cancel"
+        and principal.credential_id == row.credential_id
+        and principal.can("sops:write")
+    ):
+        return
     if not any(principal.can(scope) for scope in candidates):
         raise PublicAPIError(403, "INSUFFICIENT_SCOPE", f"One of {', '.join(candidates)} is required.")
 
