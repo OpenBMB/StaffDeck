@@ -654,11 +654,13 @@ def _anthropic_request(request: dict[str, Any]) -> dict[str, Any]:
         "messages": converted,
         "max_tokens": request["max_tokens"],
     }
-    # LLM Center's Claude 5 deployments reject the legacy sampling field.
-    # Keep temperature for older Anthropic-compatible deployments.
+    # Opus 4.7/4.8 and Claude 5 gateways reject explicit sampling values.
     temperature = request.get("temperature")
-    model = str(request.get("model") or "")
-    if temperature is not None and not re.match(r"^claude-(?:sonnet|opus)-5(?:$|[-:])", model):
+    model = str(request.get("model") or "").lower()
+    removes_temperature = re.match(
+        r"^claude-(?:(?:sonnet|opus)-5|opus-4[-.][78])(?:$|[-:.])", model
+    )
+    if temperature is not None and not removes_temperature:
         payload["temperature"] = temperature
     system = "\n\n".join(part for part in system_parts if part)
     if system:
