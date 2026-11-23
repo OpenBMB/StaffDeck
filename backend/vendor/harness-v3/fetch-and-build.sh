@@ -8,7 +8,7 @@
 # target already has apps/cli/lib/bin.js unless FORCE=1.
 set -euo pipefail
 TARGET="${1:?target dir}"
-REF="${2:-v0.1.2-alpha.2}"
+REF="${2:-dsh-v0.1.2-alpha.2}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ -f "$TARGET/apps/cli/lib/bin.js" && "${FORCE:-0}" != "1" ]]; then
