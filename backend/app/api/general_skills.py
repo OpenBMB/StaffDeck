@@ -90,7 +90,11 @@ CLAWHUB_HOSTS = {"clawhub.ai", "www.clawhub.ai"}
 SKILLHUB_HOSTS = {"skillhub.ai", "www.skillhub.ai"}
 REMOTE_SKILLHUB_HOSTS = CLAWHUB_HOSTS | SKILLHUB_HOSTS
 CLAWHUB_DOWNLOAD_ENDPOINT = "https://wry-manatee-359.convex.site/api/v1/download"
-LOCAL_REFERENCE_PATTERN = re.compile(r"(?<![\w./-])(?:\./)?references/[^\s`'\"<>|]+")
+# Keep parentheses in candidate paths; they can be part of real file names.
+LOCAL_REFERENCE_PATTERN = re.compile(
+    r"(?<![\w./-])(?:`(?P<quoted>(?:\./)?references/[^\s`]+)`"
+    r"|(?P<bare>(?:\./)?references/[^\s`'\"<>|]+))"
+)
 
 
 def _agent_id_or_none(agent_id: object | None) -> str | None:
@@ -1210,19 +1214,83 @@ def _replace_skill_markdown_in_package(
     return updated
 
 
+def _normalize_local_reference_path(path: str) -> str:
+    path = unquote(path).replace("\\", "/")
+    path = path.split("#", 1)[0].split("?", 1)[0]
+    return path.removeprefix("./").strip("/")
+
+
+def _full_width_parenthesis_ends(text: str) -> dict[int, int]:
+    ends: dict[int, int] = {}
+    openings: list[int] = []
+    for index, char in enumerate(text):
+        if char in "\r\n":
+            openings.clear()
+        if char == "（":
+            openings.append(index)
+        elif char == "）" and openings:
+            ends[openings.pop()] = index
+    return ends
+
+
+def _bare_reference_path(match: re.Match[str], parenthesis_ends: dict[int, int]) -> str:
+    path = match.group("bare")
+    preceding = match.string[max(0, match.start() - 2) : match.start()]
+    if preceding == "](":
+        depth = 0
+        for index, char in enumerate(path):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                if depth == 0:
+                    return path[:index]
+                depth -= 1
+        return path
+    if preceding.endswith(("`", "<")):
+        return path
+
+    # Only a group crossing the whitespace boundary can be an annotation.
+    # A balanced group, including one followed by a file extension, stays literal.
+    if match.end() < len(match.string) and match.string[match.end()].isspace():
+        for index, char in enumerate(path):
+            if char != "（":
+                continue
+            end = parenthesis_ends.get(match.start() + index)
+            if end is not None and end >= match.end():
+                following = match.string[end + 1 : end + 3]
+                if not re.match(r"[\w/\\-]|\.\w", following):
+                    path = path[:index]
+                break
+
+    closing_delimiters = {")": "(", "]": "[", "}": "{", "）": "（"}
+    unmatched_closers = {
+        closer: path.count(closer) - path.count(opener)
+        for closer, opener in closing_delimiters.items()
+    }
+    path = path.rstrip(".,;:!?，。；：！？")
+    while path and path[-1] in closing_delimiters:
+        closer = path[-1]
+        if unmatched_closers[closer] <= 0:
+            break
+        unmatched_closers[closer] -= 1
+        path = path[:-1].rstrip(".,;:!?，。；：！？")
+    return path
+
+
 def _validate_skill_package_references(files: list[GeneralSkillFile]) -> None:
     skill_file = _find_skill_file(files)
     if skill_file is None:
         return
     package_paths = {file.path.replace("\\", "/").lstrip("./") for file in files}
+    parenthesis_ends = _full_width_parenthesis_ends(skill_file.content)
     referenced_paths: set[str] = set()
     for match in LOCAL_REFERENCE_PATTERN.finditer(skill_file.content):
-        raw_path = unquote(match.group(0)).replace("\\", "/")
-        raw_path = raw_path.split("#", 1)[0].split("?", 1)[0]
-        raw_path = raw_path.rstrip(")]}.,;:!?，。；：！？")
-        if any(marker in raw_path for marker in ("*", "{", "}")):
+        quoted_path = match.group("quoted")
+        normalized = _normalize_local_reference_path(quoted_path or match.group("bare"))
+        if quoted_path is None and normalized not in package_paths:
+            normalized = _normalize_local_reference_path(_bare_reference_path(match, parenthesis_ends))
+        if any(marker in normalized for marker in ("*", "{", "}")):
             continue
-        normalized = raw_path.removeprefix("./").strip("/")
         if normalized and not normalized.endswith("/"):
             referenced_paths.add(normalized)
     missing = sorted(referenced_paths - package_paths)
