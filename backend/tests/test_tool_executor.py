@@ -907,3 +907,38 @@ def _test_session():
     )
     SQLModel.metadata.create_all(engine)
     return Session(engine)
+
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_http_tool_rejects_invalid_arguments_before_any_side_effect(monkeypatch, detached):
+    def unexpected_request(*args, **kwargs):
+        pytest.fail("An invalid tool call reached the HTTP client")
+
+    monkeypatch.setattr("app.tools.tool_executor.httpx.Client", unexpected_request)
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(Tool(
+            id="tool_strict",
+            tenant_id="tenant_demo",
+            name="strict.lookup",
+            method="POST",
+            url="https://provider.test/lookup",
+            input_schema={
+                "type": "object",
+                "properties": {"payload": {"type": "object", "required": ["employee"]}},
+                "required": ["payload"],
+            },
+            config_json={"execution": {"execution_mode": "detached"}} if detached else {},
+        ))
+        db.commit()
+
+        result = ToolExecutor(db).execute(
+            "tenant_demo", ToolCall(name="strict.lookup", arguments={"payload": {}}), user_id="user_1",
+        )
+
+        assert not result.success
+        assert result.error.code == "SCHEMA_INVALID"
+        assert "$.payload" in result.error.message
+        from app.db.models import ExternalBusinessTask
+        assert db.exec(select(ExternalBusinessTask)).first() is None

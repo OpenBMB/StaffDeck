@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
 from datetime import timedelta
+from itertools import islice
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
+from referencing import Registry
+from referencing.exceptions import Unresolvable
 from sqlmodel import Session, select
 
 from app.agents.branching import visible_tool_rows
@@ -21,6 +27,8 @@ from app.tools.external_tasks import callback_token_hash, new_callback_token
 from app.tools.http_request import prepare_get_request
 from app.tools.mcp_client import MCPClientError, execute_mcp_tool, execute_mcp_tool_result
 from app.tools.tool_schema import MCPAppDescriptor, ToolCall, ToolError, ToolResult
+
+logger = logging.getLogger(__name__)
 
 SECRET_PATTERN = re.compile(r"\$\{secret\.([A-Z0-9_]+)\}")
 
@@ -154,6 +162,8 @@ class ToolExecutor:
         additional_headers: dict[str, str] | None = None,
     ) -> HttpExecutionResponse:
         """Execute HTTP while retaining the response status for async protocols."""
+        if invalid := self._validate_http_arguments(tool, arguments):
+            return HttpExecutionResponse(result=invalid)
         headers = self._request_headers(
             tool.url,
             self._resolve_headers(tool.headers_json or {}, tool.auth_json or {}),
@@ -245,6 +255,8 @@ class ToolExecutor:
                 if existing.user_id != user_id or existing.request_json != arguments:
                     return self._error(tool.name, "IDEMPOTENCY_CONFLICT", "该调用标识已经用于其他请求，本次未执行。")
                 return self._detached_acceptance_result(tool, existing)
+        if invalid := self._validate_http_arguments(tool, arguments):
+            return invalid
         callback_token = new_callback_token()
         status_url = str(execution.get("status_url") or "").strip() or None
         poll_interval_seconds = max(
@@ -565,6 +577,26 @@ class ToolExecutor:
             return os.getenv(match.group(1), "")
 
         return SECRET_PATTERN.sub(repl, value)
+
+    def _validate_http_arguments(self, tool: Tool, arguments: dict[str, Any]) -> ToolResult | None:
+        schema = tool.input_schema
+        if not schema:
+            return None
+        if not isinstance(schema, dict):
+            logger.warning("Ignoring non-object HTTP input schema for tool %s", tool.id)
+            return None
+        try:
+            Draft202012Validator.check_schema(schema)
+            # Only local references are available during tool execution.
+            validator = Draft202012Validator(schema, registry=Registry())
+            errors = list(islice(validator.iter_errors(arguments), 5))
+        except (SchemaError, Unresolvable, ValueError, TypeError, RecursionError):
+            logger.warning("Ignoring invalid or unresolved HTTP input schema for tool %s", tool.id)
+            return None
+        if not errors:
+            return None
+        details = ", ".join(f"{error.json_path} ({error.validator})" for error in errors)
+        return self._error(tool.name, "SCHEMA_INVALID", f"工具参数不符合 input_schema：{details}。")
 
     def _error(self, tool_name: str, code: str, message: str) -> ToolResult:
         return ToolResult(
