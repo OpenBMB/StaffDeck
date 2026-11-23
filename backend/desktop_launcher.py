@@ -27,6 +27,9 @@ DEFAULT_PORT_RANGE_END = 5199
 _MACOS_DELEGATE_REF = None
 _MACOS_INSTANCE_LOCK_HANDLE = None
 _MACOS_WINDOW_CLASS = None
+_MACOS_UI_DELEGATE_CLASS = None
+# WKWebView 对 UIDelegate 是弱引用，模块级引用保证 JS 面板代理不被 GC 掉。
+_MACOS_UI_DELEGATE_REF = None
 MACOS_DRAG_REGION_LEFT_INSET = 360
 MACOS_DRAG_REGION_RIGHT_INSET = 260
 MACOS_DRAG_REGION_HEIGHT = 32
@@ -440,6 +443,91 @@ def preload_server_app(cfg: dict) -> None:
     cfg["app"] = getattr(module, attribute_name)
 
 
+def _macos_first_button_return(AppKit) -> int:
+    return getattr(AppKit, "NSAlertFirstButtonReturn", 1000)
+
+
+def _macos_message_panel(AppKit, message: object, buttons: tuple[str, ...]) -> int:
+    """Show a modal panel for a JS alert/confirm and return the clicked button constant."""
+    alert = AppKit.NSAlert.alloc().init()
+    alert.setMessageText_(APP_NAME)
+    # JS 允许空消息，NSAlert 空文案会渲染成一块空白，这里给个兜底。
+    alert.setInformativeText_(str(message) if message else APP_NAME)
+    for title in buttons:
+        alert.addButtonWithTitle_(title)
+    return alert.runModal()
+
+
+def _macos_text_input_panel(AppKit, prompt: object, default_text: object):
+    """Show a modal text field for window.prompt; None means the user cancelled."""
+    alert = AppKit.NSAlert.alloc().init()
+    alert.setMessageText_(APP_NAME)
+    alert.setInformativeText_(str(prompt) if prompt else APP_NAME)
+    alert.addButtonWithTitle_("确定")
+    alert.addButtonWithTitle_("取消")
+    field = AppKit.NSTextField.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 260, 24))
+    field.setStringValue_("" if default_text is None else str(default_text))
+    alert.setAccessoryView_(field)
+    alert.window().setInitialFirstResponder_(field)
+    if alert.runModal() != _macos_first_button_return(AppKit):
+        return None
+    return str(field.stringValue() or "")
+
+
+def _complete_js_dialog(completion_handler, *args) -> None:
+    if completion_handler is not None:
+        completion_handler(*args)
+
+
+def _macos_ui_delegate_class(AppKit):
+    """Build the WKUIDelegate that answers JS alert/confirm/prompt panels.
+
+    WebKit 只有在 WebView 带 UIDelegate 时才会回调面板请求，否则 request 会被
+    直接丢弃：window.confirm() 静默返回 false，前端表现为「点了确认毫无反应、
+    请求也没发出」。这里补齐三个面板回调，让打包态壳与浏览器行为一致。
+    """
+    global _MACOS_UI_DELEGATE_CLASS
+    if _MACOS_UI_DELEGATE_CLASS is not None:
+        return _MACOS_UI_DELEGATE_CLASS
+
+    class StaffDeckWebViewUIDelegate(AppKit.NSObject):
+        def webView_runJavaScriptAlertPanelWithMessage_initiatedByFrame_completionHandler_(  # noqa: N802
+            self,
+            _webview,
+            message,
+            _frame,
+            completion_handler,
+        ):
+            _macos_message_panel(AppKit, message, ("好",))
+            _complete_js_dialog(completion_handler)
+
+        def webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_(  # noqa: N802
+            self,
+            _webview,
+            message,
+            _frame,
+            completion_handler,
+        ):
+            clicked = _macos_message_panel(AppKit, message, ("确定", "取消"))
+            _complete_js_dialog(completion_handler, clicked == _macos_first_button_return(AppKit))
+
+        def webView_runJavaScriptTextInputPanelWithPrompt_defaultText_initiatedByFrame_completionHandler_(  # noqa: N802
+            self,
+            _webview,
+            prompt,
+            default_text,
+            _frame,
+            completion_handler,
+        ):
+            _complete_js_dialog(
+                completion_handler,
+                _macos_text_input_panel(AppKit, prompt, default_text),
+            )
+
+    _MACOS_UI_DELEGATE_CLASS = StaffDeckWebViewUIDelegate
+    return _MACOS_UI_DELEGATE_CLASS
+
+
 def _create_macos_webview_window(AppKit, Foundation, WebKit, target: str):
     """Create the native macOS window used by both arm64 and x86_64 bundles."""
     try:
@@ -453,6 +541,7 @@ def _create_macos_webview_window(AppKit, Foundation, WebKit, target: str):
     )
 
     global _MACOS_WINDOW_CLASS
+    global _MACOS_UI_DELEGATE_REF
     if _MACOS_WINDOW_CLASS is None:
 
         class StaffDeckWindow(AppKit.NSWindow):
@@ -504,6 +593,9 @@ def _create_macos_webview_window(AppKit, Foundation, WebKit, target: str):
 
     webview = WebKit.WKWebView.alloc().initWithFrame_(window.contentView().bounds())
     webview.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
+    # 缺 UIDelegate 时 JS 的 alert/confirm/prompt 会被 WebKit 静默丢弃。
+    _MACOS_UI_DELEGATE_REF = _macos_ui_delegate_class(AppKit).alloc().init()
+    webview.setUIDelegate_(_MACOS_UI_DELEGATE_REF)
     page_url = Foundation.NSURL.URLWithString_(target)
     if page_url is None:
         raise RuntimeError(f"Invalid StaffDeck window URL: {target!r}")

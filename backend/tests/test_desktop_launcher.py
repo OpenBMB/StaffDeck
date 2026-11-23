@@ -367,6 +367,9 @@ def test_macos_window_embeds_local_ui() -> None:
         def setAutoresizingMask_(self, mask):
             events["autoresizing_mask"] = mask
 
+        def setUIDelegate_(self, delegate):
+            events["ui_delegate"] = delegate
+
         def bounds(self):
             return type(
                 "Bounds",
@@ -387,8 +390,18 @@ def test_macos_window_embeds_local_ui() -> None:
         def requestWithURL_(url):
             return f"request:{url}"
 
+    class FakeNSObject:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def init(self):
+            return self
+
     class FakeAppKit:
         NSWindow = FakeWindow
+        NSObject = FakeNSObject
+        NSAlertFirstButtonReturn = 1000
         NSEventTypeLeftMouseDown = 1
         NSWindowStyleMaskTitled = 1
         NSWindowStyleMaskClosable = 2
@@ -417,7 +430,11 @@ def test_macos_window_embeds_local_ui() -> None:
         WKWebView = FakeWebView
 
     original_window_class = desktop_launcher._MACOS_WINDOW_CLASS
+    original_ui_delegate_class = desktop_launcher._MACOS_UI_DELEGATE_CLASS
+    original_ui_delegate_ref = desktop_launcher._MACOS_UI_DELEGATE_REF
     desktop_launcher._MACOS_WINDOW_CLASS = None
+    desktop_launcher._MACOS_UI_DELEGATE_CLASS = None
+    desktop_launcher._MACOS_UI_DELEGATE_REF = None
     try:
         window, webview = desktop_launcher._create_macos_webview_window(
             FakeAppKit,
@@ -433,6 +450,10 @@ def test_macos_window_embeds_local_ui() -> None:
     assert webview is events["content_view"]
     assert events["request"] == "request:url:http://127.0.0.1:5173/chat/"
     assert events["title"] == "StaffDeck"
+    assert isinstance(events["ui_delegate"], FakeNSObject)
+    assert events["ui_delegate"] is desktop_launcher._MACOS_UI_DELEGATE_REF
+    desktop_launcher._MACOS_UI_DELEGATE_CLASS = original_ui_delegate_class
+    desktop_launcher._MACOS_UI_DELEGATE_REF = original_ui_delegate_ref
     assert events["window_init"][1] & FakeAppKit.NSWindowStyleMaskFullSizeContentView
     assert events["title_visibility"] == FakeAppKit.NSWindowTitleHidden
     assert events["titlebar_transparent"] is True
@@ -580,3 +601,221 @@ def test_frozen_server_disables_api_access_logging(monkeypatch) -> None:
 
     assert calls[0][1]["access_log"] is False
     assert calls[0][1]["log_config"] is None
+
+
+class _FakeObjCObject:
+    """Minimal NSObject stand-in so delegate classes can be built without PyObjC."""
+
+    @classmethod
+    def alloc(cls):
+        return cls()
+
+    def init(self):
+        return self
+
+
+def _fake_dialog_appkit(events: dict) -> type:
+    """Fake AppKit surface used by the JS dialog panels (alert/confirm/prompt)."""
+
+    class FakeAlertWindow:
+        def __init__(self, alert):
+            self._alert = alert
+
+        def setInitialFirstResponder_(self, view):
+            self._alert.first_responder = view
+
+    class FakeAlert:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def init(self):
+            self.buttons: list[str] = []
+            self.accessory = None
+            self.first_responder = None
+            self.message = None
+            self.informative = None
+            events.setdefault("alerts", []).append(self)
+            return self
+
+        def setMessageText_(self, text):
+            self.message = text
+
+        def setInformativeText_(self, text):
+            self.informative = text
+
+        def addButtonWithTitle_(self, title):
+            self.buttons.append(title)
+
+        def setAccessoryView_(self, view):
+            self.accessory = view
+
+        def window(self):
+            return FakeAlertWindow(self)
+
+        def runModal(self):
+            return events["modal_result"]
+
+    class FakeTextField:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithFrame_(self, frame):
+            self.frame = frame
+            self._value = ""
+            return self
+
+        def setStringValue_(self, value):
+            self._value = value
+
+        def stringValue(self):
+            return self._value
+
+    class FakeAppKit:
+        NSObject = _FakeObjCObject
+        NSAlert = FakeAlert
+        NSTextField = FakeTextField
+        NSAlertFirstButtonReturn = 1000
+        NSAlertSecondButtonReturn = 1001
+
+        @staticmethod
+        def NSMakeRect(x, y, width, height):
+            return (x, y, width, height)
+
+    return FakeAppKit
+
+
+def _build_macos_ui_delegate(monkeypatch, events: dict):
+    appkit = _fake_dialog_appkit(events)
+    monkeypatch.setattr(desktop_launcher, "_MACOS_UI_DELEGATE_CLASS", None)
+    delegate_class = desktop_launcher._macos_ui_delegate_class(appkit)
+    return appkit, delegate_class.alloc().init()
+
+
+def test_macos_js_confirm_panel_reports_confirm_click(monkeypatch) -> None:
+    events = {"modal_result": 1000}
+    _appkit, delegate = _build_macos_ui_delegate(monkeypatch, events)
+
+    answers: list[object] = []
+    delegate.webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_(
+        None,
+        "确认归档该黑板条目？归档后不再展示。",
+        None,
+        answers.append,
+    )
+
+    assert answers == [True]
+    assert events["alerts"][0].buttons == ["确定", "取消"]
+    assert events["alerts"][0].message == "StaffDeck"
+    assert events["alerts"][0].informative == "确认归档该黑板条目？归档后不再展示。"
+
+
+def test_macos_js_confirm_panel_reports_cancel_click(monkeypatch) -> None:
+    events = {"modal_result": 1001}
+    _appkit, delegate = _build_macos_ui_delegate(monkeypatch, events)
+
+    answers: list[object] = []
+    delegate.webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_(
+        None,
+        "确认？",
+        None,
+        answers.append,
+    )
+
+    assert answers == [False]
+
+
+def test_macos_js_alert_panel_completes_without_arguments(monkeypatch) -> None:
+    events = {"modal_result": 1000}
+    _appkit, delegate = _build_macos_ui_delegate(monkeypatch, events)
+
+    calls: list[tuple] = []
+    delegate.webView_runJavaScriptAlertPanelWithMessage_initiatedByFrame_completionHandler_(
+        None,
+        "注意：服务即将重启",
+        None,
+        lambda *args: calls.append(args),
+    )
+
+    assert calls == [()]
+    assert events["alerts"][0].buttons == ["好"]
+
+
+def test_macos_js_prompt_panel_returns_text_and_cancellation(monkeypatch) -> None:
+    events = {"modal_result": 1000}
+    _appkit, delegate = _build_macos_ui_delegate(monkeypatch, events)
+
+    answers: list[object] = []
+    delegate.webView_runJavaScriptTextInputPanelWithPrompt_defaultText_initiatedByFrame_completionHandler_(
+        None,
+        "请输入名称",
+        "默认值",
+        None,
+        answers.append,
+    )
+
+    alert = events["alerts"][0]
+    assert answers == ["默认值"]
+    assert alert.accessory.stringValue() == "默认值"
+    assert alert.first_responder is alert.accessory
+
+    events["modal_result"] = 1001
+    answers.clear()
+    delegate.webView_runJavaScriptTextInputPanelWithPrompt_defaultText_initiatedByFrame_completionHandler_(
+        None,
+        "请输入名称",
+        "",
+        None,
+        answers.append,
+    )
+    assert answers == [None]
+
+
+def test_macos_js_panel_falls_back_to_app_name_for_empty_message(monkeypatch) -> None:
+    events = {"modal_result": 1000}
+    _appkit, delegate = _build_macos_ui_delegate(monkeypatch, events)
+
+    delegate.webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_(
+        None,
+        "",
+        None,
+        None,
+    )
+
+    assert events["alerts"][0].informative == "StaffDeck"
+
+
+def test_macos_js_panels_tolerate_missing_completion_handler(monkeypatch) -> None:
+    events = {"modal_result": 1000}
+    _appkit, delegate = _build_macos_ui_delegate(monkeypatch, events)
+
+    delegate.webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_(
+        None, "确认？", None, None
+    )
+    delegate.webView_runJavaScriptTextInputPanelWithPrompt_defaultText_initiatedByFrame_completionHandler_(
+        None, "名称", None, None, None
+    )
+
+    assert len(events["alerts"]) == 2
+
+
+def test_macos_ui_delegate_registers_webkit_panel_selectors() -> None:
+    """PyObjC 只把能解析成 selector 的方法名注册给 ObjC，名字写错等于没修。"""
+    pytest.importorskip("AppKit")
+    pytest.importorskip("WebKit")
+    import AppKit
+
+    delegate_class = desktop_launcher._macos_ui_delegate_class(AppKit)
+    delegate = delegate_class.alloc().init()
+
+    for selector in (
+        b"webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:",
+        b"webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:",
+        (
+            b"webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:"
+            b"completionHandler:"
+        ),
+    ):
+        assert delegate.respondsToSelector_(selector)
+
