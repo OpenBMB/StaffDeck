@@ -38,6 +38,7 @@ LARK_PACKAGING_SMOKE_IMPORTS = (
     ("lark_channel", "EventDispatcherHandler"),
     ("lark_channel.ws.client", "Client"),
     ("lark_channel.ws.pb.pbbp2_pb2", "Frame"),
+    ("app.channels.feishu_runtime", "run_feishu_runtime"),
 )
 
 
@@ -179,7 +180,9 @@ def _redirect_logs_when_frozen() -> None:
 
 
 def _run_packaging_smoke() -> int:
-    from feishu_connector_worker import SDK_CONTRACT_VERSION
+    from feishu_connector_worker import SDK_CONTRACT_VERSION, configure_frozen_ca_bundle
+
+    configure_frozen_ca_bundle()
 
     actual_version = importlib_metadata.version("lark-channel-sdk")
     if actual_version != SDK_CONTRACT_VERSION:

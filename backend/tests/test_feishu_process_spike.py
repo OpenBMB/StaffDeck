@@ -1362,3 +1362,22 @@ def test_reconfigure_parent_crash_windows_recover_database_generation(
         assert record.spec.config_revision == expected_revision
     finally:
         assert replacement.stop(timeout=3.0)
+
+
+
+def test_frozen_connector_uses_bundled_ca_only_without_default_roots(monkeypatch):
+    from types import SimpleNamespace
+
+    import certifi
+    import feishu_connector_worker as worker
+
+    monkeypatch.setattr(worker.sys, "frozen", True, raising=False)
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    monkeypatch.setattr(worker.ssl, "get_default_verify_paths", lambda: SimpleNamespace(cafile=None))
+    worker.configure_frozen_ca_bundle()
+    assert worker.os.environ["SSL_CERT_FILE"] == certifi.where()
+
+    monkeypatch.setenv("SSL_CERT_FILE", "custom.pem")
+    worker.configure_frozen_ca_bundle()
+    assert worker.os.environ["SSL_CERT_FILE"] == "custom.pem"

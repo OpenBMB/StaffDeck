@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 import os
 import sqlite3
+import ssl
 import sys
 import threading
 import time
@@ -272,6 +273,23 @@ def _load_runtime(path: str) -> Callable[[ConnectorChildSpec, ChildControl, Fram
     return runtime
 
 
+def configure_frozen_ca_bundle() -> None:
+    """Use bundled CA roots when the packaged OpenSSL path does not exist."""
+    if not getattr(sys, "frozen", False):
+        return
+    if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
+        return
+    if ssl.get_default_verify_paths().cafile:
+        return
+
+    import certifi
+
+    bundle = certifi.where()
+    if not Path(bundle).is_file():
+        raise RuntimeError("The bundled CA certificate file is missing")
+    os.environ["SSL_CERT_FILE"] = bundle
+
+
 def connector_child_entry(spec: ConnectorChildSpec, connection) -> None:
     lock = BindingProcessLock(Path(spec.binding_lock_path))
     if not lock.acquire():
@@ -294,6 +312,8 @@ def connector_child_entry(spec: ConnectorChildSpec, connection) -> None:
     try:
         control.start()
         watchdog.start()
+        if spec.runtime_path == PRODUCTION_RUNTIME:
+            configure_frozen_ca_bundle()
         control.emit("READY")
         _load_runtime(spec.runtime_path)(spec, control, watchdog)
         control.emit("STOPPED")
