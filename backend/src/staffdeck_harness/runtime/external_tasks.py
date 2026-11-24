@@ -23,7 +23,8 @@ def local_definition(db, inv, *, active_sop_id=None):
     if denied is not None:
         raise ModuleSdkError(denied.error.message, code=denied.error.code)
     return HttpTaskDefinition(row.name, row.url, row.method, row.headers_json or {},
-        row.auth_json or {}, (row.config_json or {}).get("execution") or {})
+        row.auth_json or {}, (row.config_json or {}).get("execution") or {},
+        input_schema=row.input_schema or {})
 
 
 def transient_tool(definition, tenant_id, tool_id):
@@ -37,7 +38,7 @@ def transient_tool(definition, tenant_id, tool_id):
     return ResolvedHttpTool(id=tool_id, tenant_id=tenant_id, name=definition.name,
         method=definition.method, url=definition.url,
         headers_json=dict(definition.headers), auth_json=dict(definition.auth),
-        config_json={"execution": policy})
+        config_json={"execution": policy}, input_schema=dict(definition.input_schema))
 
 
 def execute_http(inv, authorized, *, db, active_sop_id=None, active_node_id=None,
