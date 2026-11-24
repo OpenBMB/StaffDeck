@@ -447,7 +447,10 @@ export default function SkillsPage({
     }
     setImportLoading(true);
     try {
-      const result = await api.post<{ imported: Array<Record<string, unknown>>; missing: Array<Record<string, unknown>> }>(
+      const result = await api.post<{
+        imported: Array<{ name?: string; dependency_warning?: string }>;
+        missing: Array<Record<string, unknown>>;
+      }>(
         `/api/enterprise/agents/${agentId}/resources/import`,
         {
           tenant_id: TENANT_ID,
@@ -459,6 +462,12 @@ export default function SkillsPage({
       const importedCount = result.imported?.length || 0;
       const missingCount = result.missing?.length || 0;
       notify.success(`已复制 ${importedCount} 个 SOP${missingCount ? `，${missingCount} 个未复制` : ''}`);
+      for (const item of result.imported ?? []) {
+        if (item.dependency_warning) {
+          const name = item.name || 'SOP';
+          notify.warning(`${name} 已复制，配置所需资源后可启用。${item.dependency_warning}`);
+        }
+      }
       setImportOpen(false);
       await load();
     } catch (error) {
@@ -540,10 +549,14 @@ export default function SkillsPage({
   async function syncFromOverall(row: SkillRead) {
     if (!agentId) return;
     try {
-      await api.post(
+      const result = await api.post<{ dependency_warning?: string }>(
         `/api/enterprise/agents/${agentId}/skills/${encodeURIComponent(row.skill_id)}/sync-from-overall?tenant_id=${TENANT_ID}`,
       );
-      notify.success('已从广场同步');
+      if (result?.dependency_warning) {
+        notify.warning(`${row.name} 已复制，配置所需资源后可启用。${result.dependency_warning}`);
+      } else {
+        notify.success('已从广场同步');
+      }
       await load();
     } catch (error) {
       notify.error(error instanceof Error ? error.message : '同步失败');

@@ -94,7 +94,9 @@ router = APIRouter(
 )
 
 
-def validate_published_sop(db: Session, tenant_id: str, agent_id: str | None, sop_id: str) -> None:
+def validate_published_sop(
+    db: Session, tenant_id: str, agent_id: str | None, sop_id: str, *, gallery_template: bool = False
+) -> None:
     """Validate the published instance through the same module sources/compiler as runtime."""
     from app.config import get_settings
     from staffdeck_harness.composition.sources import validate_configuration
@@ -103,7 +105,10 @@ def validate_published_sop(db: Session, tenant_id: str, agent_id: str | None, so
     from staffdeck_harness.modules.registry import get_registry
     db.flush()
     try:
-        validate_configuration(get_registry(get_settings()), db, SourceContext(tenant_id, agent_id), sop_id=sop_id)
+        validate_configuration(
+            get_registry(get_settings()), db, SourceContext(tenant_id, agent_id),
+            sop_id=sop_id, gallery_template=gallery_template,
+        )
     except (ModuleSdkError, ValueError, LookupError) as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"SOP 模块装配无效：{exc}") from exc

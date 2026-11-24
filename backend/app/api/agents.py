@@ -690,6 +690,8 @@ def _import_agent_resources_once(
     _ensure_can_copy_from_agent(source_agent, user)
     if source_agent.id == target_agent.id:
         raise HTTPException(status_code=400, detail="Source and target agent cannot be the same")
+    if target_agent.is_overall and request.resource_type not in {"skill", "knowledge_base"}:
+        raise HTTPException(status_code=400, detail="此导入入口仅支持发布 SOP 和知识库到广场")
     resource_ids = _dedupe_ids(request.resource_ids)
     if not resource_ids:
         raise HTTPException(status_code=400, detail="No resources selected")
@@ -717,10 +719,13 @@ def _import_agent_resources_once(
         if block_reason:
             missing.append({"resource_id": identifier, "reason": block_reason})
             continue
+        dependency_warning = None
         if target_agent.is_overall:
-            _import_resource_to_overall(
+            if not _import_resource_to_overall(
                 db, request.tenant_id, source_agent, request.resource_type, resolved
-            )
+            ):
+                missing.append({"resource_id": identifier, "reason": "sop_branch_not_found"})
+                continue
         else:
             resolved = _upsert_imported_resource_binding(
                 db,
@@ -731,12 +736,17 @@ def _import_agent_resources_once(
                 resolved,
                 source_binding,
             )
+            if source_agent.is_overall and isinstance(resolved, Skill):
+                dependency_warning = _check_gallery_sop_copy(
+                    db, request.tenant_id, target_agent.id, resolved
+                )
         imported.append(
             {
                 "resource_type": request.resource_type,
                 "resource_id": resolved.id,
                 "display_id": _resource_display_id(request.resource_type, resolved),
                 "name": getattr(resolved, "name", getattr(resolved, "slug", resolved.id)),
+                **({"dependency_warning": dependency_warning} if dependency_warning else {}),
             }
         )
     db.commit()
@@ -781,8 +791,12 @@ def sync_agent_skill_from_overall(
             status_code=400, detail="Disabled SOP cannot be learned from the open gallery"
         )
     branch = sync_branch_from_overall(db, tenant_id, agent_id, skill)
+    dependency_warning = _check_gallery_sop_copy(db, tenant_id, agent_id, skill)
     db.commit()
-    return {"status": "synced", "skill_id": skill_id, "head_version": branch.head_version}
+    return {
+        "status": "synced", "skill_id": skill_id, "head_version": branch.head_version,
+        **({"dependency_warning": dependency_warning} if dependency_warning else {}),
+    }
 
 
 @enterprise_router.post("/{agent_id}/skills/{skill_id}/promote-to-overall")
@@ -808,9 +822,7 @@ def promote_agent_skill_to_overall(
     ).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
-    skill = promote_branch_to_overall(db, tenant_id, branch)
-    from app.api.skills import validate_published_sop
-    validate_published_sop(db, tenant_id, None, skill_id)
+    skill = _publish_branch_in_gallery(db, tenant_id, branch)
     db.commit()
     return {"status": "promoted", "skill_id": skill_id, "version": skill.version}
 
@@ -1547,15 +1559,71 @@ def _open_gallery_resource_enabled(
     return False
 
 
+def _publish_branch_in_gallery(
+    db: Session, tenant_id: str, branch: AgentSkillBranch,
+) -> Skill:
+    from app.api.skills import validate_published_sop
+
+    validate_published_sop(db, tenant_id, branch.agent_id, branch.skill_id)
+    skill = promote_branch_to_overall(db, tenant_id, branch)
+    validate_published_sop(db, tenant_id, None, skill.skill_id, gallery_template=True)
+    return skill
+
+
+def _check_gallery_sop_copy(
+    db: Session, tenant_id: str, agent_id: str, skill: Skill,
+) -> str | None:
+    from app.config import get_settings
+    from app.skills.nesting import SopNestingError
+    from staffdeck_harness.composition.sources import validate_configuration
+    from staffdeck_harness.contracts.errors import ModuleSdkError, RequiredSlotMissing, SlotNotBound
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.modules.registry import get_registry
+
+    db.flush()
+    branch = ensure_agent_skill_branch(db, tenant_id, agent_id, skill)
+    if branch.status != "active":
+        return None
+    # Sync can be called on an explicitly detached SOP. Only check copies
+    # that would otherwise run for this employee.
+    binding = db.exec(select(AgentResourceBinding).where(
+        AgentResourceBinding.tenant_id == tenant_id,
+        AgentResourceBinding.agent_id == agent_id,
+        AgentResourceBinding.resource_type == "skill",
+        AgentResourceBinding.resource_id == skill.id,
+        AgentResourceBinding.status == "active",
+    )).first()
+    if binding is None:
+        return None
+    try:
+        validate_configuration(
+            get_registry(get_settings()), db, SourceContext(tenant_id, agent_id),
+            sop_id=skill.skill_id,
+        )
+    except (RequiredSlotMissing, SlotNotBound, SopNestingError) as exc:
+        branch.status = "inactive"
+        db.add(branch)
+        _ensure_copied_skill_branch_version(db, branch, "从广场复制，等待配置资源")
+        if isinstance(exc, SlotNotBound) and (resource_id := exc.details.get("resource")):
+            tool = db.get(Tool, resource_id)
+            if tool and tool.tenant_id == tenant_id:
+                return f"{tool.display_name or tool.name} ({resource_id})"
+        return str(exc)
+    except (ModuleSdkError, ValueError, LookupError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"SOP 模块装配无效：{exc}") from exc
+    return None
+
+
 def _import_resource_to_overall(
     db: Session,
     tenant_id: str,
     source_agent: AgentProfile,
     resource_type: str,
     resolved: AgentResource,
-) -> None:
+) -> bool:
     if source_agent.is_overall:
-        return
+        return False
     if resource_type == "skill" and isinstance(resolved, Skill):
         branch = db.exec(
             select(AgentSkillBranch).where(
@@ -1564,11 +1632,14 @@ def _import_resource_to_overall(
                 AgentSkillBranch.skill_id == resolved.skill_id,
             )
         ).first()
-        if branch:
-            promote_branch_to_overall(db, tenant_id, branch)
-        return
+        if branch is None:
+            return False
+        _publish_branch_in_gallery(db, tenant_id, branch)
+        return True
     if resource_type == "knowledge_base" and isinstance(resolved, KnowledgeBase):
         promote_knowledge_branch_to_overall(db, tenant_id, source_agent.id, resolved.id)
+        return True
+    return False
 
 
 def _upsert_imported_resource_binding(
@@ -1599,6 +1670,12 @@ def _upsert_imported_resource_binding(
             AgentResourceBinding.resource_id == resolved.id,
         )
     ).first()
+    if source_agent.is_overall and isinstance(resolved, Skill):
+        # A template carries the SOP definition. Keep the receiving employee's
+        # existing slot configuration instead of copying provider settings.
+        metadata = agent_private_metadata(
+            target_agent.id, dict(existing.metadata_json or {}) if existing else {},
+        )
     if existing:
         existing.status = status
         existing.metadata_json = metadata
@@ -1616,7 +1693,11 @@ def _upsert_imported_resource_binding(
             )
         )
     if resource_type == "skill" and isinstance(resolved, Skill):
-        _copy_or_update_skill_branch(db, tenant_id, source_agent.id, target_agent.id, resolved)
+        if source_agent.is_overall:
+            branch = sync_branch_from_overall(db, tenant_id, target_agent.id, resolved)
+            _ensure_copied_skill_branch_version(db, branch, "导入自整体智能体")
+        else:
+            _copy_or_update_skill_branch(db, tenant_id, source_agent.id, target_agent.id, resolved)
     elif resource_type == "knowledge_base" and isinstance(resolved, KnowledgeBase):
         _copy_or_update_knowledge_branch(db, tenant_id, source_agent.id, target_agent.id, resolved)
     return resolved
