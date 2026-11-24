@@ -198,6 +198,9 @@ def test_http_provider_never_implements_a_second_transport(db, monkeypatch, mode
         def invoke(self, *args):
             pytest.fail('HTTP transport must be owned by the common executor')
     tool = _tool(db, 'common-http')
+    tool.input_schema = {
+        'type': 'object', 'properties': {'order_id': {'type': 'string'}}, 'required': ['order_id'],
+    }
     tool.config_json = {'execution': {'execution_mode': mode, 'timeout_seconds': 10}}
     ensure_private_resource_binding(db, 't1', 'a1', 'tool', tool.id)
     db.add_all([tool, ChatSession(id='s1', tenant_id='t1', agent_id='a1', user_id='u1')])
@@ -208,6 +211,7 @@ def test_http_provider_never_implements_a_second_transport(db, monkeypatch, mode
     calls = []
     def execute(self, definition, arguments, **kwargs):
         assert isinstance(definition, ResolvedHttpTool)
+        assert definition.input_schema == tool.input_schema
         calls.append(arguments)
         return ToolResult(tool_name=definition.name, success=True, data={'ok': True})
     monkeypatch.setattr('app.tools.tool_executor.ToolExecutor.execute_sync_http', execute)

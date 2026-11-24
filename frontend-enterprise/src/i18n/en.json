@@ -1600,6 +1600,7 @@
   "已创建知识库和入库任务": "Created Knowledge Base and Ingestion Task",
   "已从当前员工移除": "Removed from Current Employee",
   "已从广场同步": "Synced from Marketplace",
+  "{1} 已复制，配置所需资源后可启用。{2}": "{1} was copied. Configure its required resources before enabling it. {2}",
   "已从广场下架": "Unpublished from Marketplace",
   "已从广场移除": "Removed from Marketplace",
   "已存在": "Already Exists",

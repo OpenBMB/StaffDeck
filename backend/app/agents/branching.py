@@ -634,8 +634,14 @@ def promote_branch_to_overall(db: Session, tenant_id: str, branch: AgentSkillBra
         from fastapi import HTTPException
 
         raise HTTPException(status_code=404, detail="Skill not found")
+    content = {**branch.content_json, "version": skill.version}
+    if (
+        skill.status == "published"
+        and content == skill.content_json
+        and is_open_gallery_resource(db, tenant_id, "skill", skill)
+    ):
+        return skill
     next_version = next_global_version(skill.version)
-    content = dict(branch.content_json)
     content["version"] = next_version
     skill.version = next_version
     skill.name = str(content.get("name") or skill.name)

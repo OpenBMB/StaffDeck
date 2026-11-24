@@ -11,6 +11,7 @@ class HttpTaskDefinition:
     headers: Mapping[str, Any] = field(default_factory=dict, repr=False)
     auth: Mapping[str, Any] = field(default_factory=dict, repr=False)
     execution_policy: Mapping[str, Any] = field(default_factory=dict)
+    input_schema: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -33,3 +34,4 @@ class ResolvedHttpTool:
     headers_json: Mapping[str, Any] = field(repr=False)
     auth_json: Mapping[str, Any] = field(repr=False)
     config_json: Mapping[str, Any]
+    input_schema: Mapping[str, Any] = field(default_factory=dict)

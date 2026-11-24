@@ -103,7 +103,7 @@ def combined_capabilities(staff, sops):
     return tuple(values.values())
 
 
-def validate_configuration(registry, db, context, *, sop_id=None):
+def validate_configuration(registry, db, context, *, sop_id=None, gallery_template=False):
     """Management-side validation may edit inactive Staff; it grants no execution rights."""
     from staffdeck_harness.composition.compiler import CompositionCompiler
     source = resolve_source(registry, SlotName.STAFF_SOURCE, db)
@@ -117,5 +117,16 @@ def validate_configuration(registry, db, context, *, sop_id=None):
             raise ModuleSdkError("待发布的 SOP 不在员工配置中", code="SOP_NOT_AVAILABLE")
     if any(s.ref.tenant_id != context.tenant_id for s in sops):
         raise PermissionDenied("SOP configuration crossed tenant boundary")
+    if gallery_template:
+        if not staff.is_overall:
+            raise ValueError("Gallery template validation requires the overall agent")
+        # Publishing a template does not bind its tools to the overall agent.
+        # The publisher and each receiving employee are validated separately.
+        sops = tuple(
+            replace(sop, declared_slots=tuple(
+                slot for slot in sop.declared_slots if slot.resource_type != "tool"
+            ))
+            for sop in sops
+        )
     return CompositionCompiler().compile(replace(staff, sops=tuple(sops),
         capabilities=combined_capabilities(staff, sops)), generation=registry.generation)

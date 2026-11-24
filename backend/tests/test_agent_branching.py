@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import sqlite3
 
 import pytest
@@ -1804,6 +1805,154 @@ def _graph(name: str, version: str) -> dict[str, object]:
         "start_node_id": "collect",
         "terminal_node_ids": ["reply"],
     }
+
+
+
+def _gallery_sop_fixture(db):
+    tenant_id = "tenant_demo"
+    db.add(Tenant(id=tenant_id, name="Demo"))
+    for agent_id in ("source", "target", "other_target", "overall"):
+        db.add(AgentProfile(
+            id=agent_id, tenant_id=tenant_id, name=agent_id, is_overall=agent_id == "overall",
+        ))
+    original = Tool(
+        id="tool_original", tenant_id=tenant_id, name="lookup.original",
+        method="POST", url="https://example.invalid/original",
+        auth_json={"token": "source-fixture-secret"},
+    )
+    replacement = Tool(
+        id="tool_replacement", tenant_id=tenant_id, name="lookup.replacement",
+        method="POST", url="https://example.invalid/recipient",
+    )
+    graph = _graph("共享报销 SOP", "1.0.0")
+    graph["skill_id"] = "skill_gallery_quota"
+    graph["nodes"][0]["capability_refs"] = {
+        "tool_ids": [original.id], "required_tool_ids": [original.id],
+    }
+    skill = Skill(
+        id="skill_row_gallery_quota", tenant_id=tenant_id, skill_id=graph["skill_id"],
+        version="1.0.0", name=graph["name"], content_json=graph, status="draft",
+    )
+    db.add_all([original, replacement, skill])
+    db.flush()
+    ensure_private_resource_binding(db, tenant_id, "source", "tool", original.id)
+    ensure_private_resource_binding(db, tenant_id, "source", "skill", skill.id)
+    branch = agents_api.ensure_agent_skill_branch(db, tenant_id, "source", skill)
+    branch.status = "active"
+    db.add(branch)
+    db.commit()
+    return skill, original, replacement
+
+
+def test_gallery_shares_sop_requirements_without_copying_tool_access() -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api import skills as skills_api
+    from app.config import get_settings
+    from app.db import get_session
+    from app.db.models import SkillVersion
+    from app.security.auth import get_current_user
+    from staffdeck_harness.composition.sources import validate_configuration
+    from staffdeck_harness.contracts.sources import SourceContext
+    from staffdeck_harness.modules.registry import get_registry
+
+    with _test_session() as db:
+        skill, original, replacement = _gallery_sop_fixture(db)
+        tenant_id = skill.tenant_id
+        app = FastAPI()
+        app.include_router(agents_api.enterprise_router)
+        app.include_router(skills_api.router)
+        app.dependency_overrides[get_session] = lambda: db
+        app.dependency_overrides[get_current_user] = _admin_user
+        client = TestClient(app)
+        agents = "/api/enterprise/agents"
+        promote = f"{agents}/source/skills/{skill.skill_id}/promote-to-overall"
+
+        first = client.post(promote, params={"tenant_id": tenant_id})
+        assert first.status_code == 200, first.text
+        assert client.post(promote, params={"tenant_id": tenant_id}).json() == first.json()
+        share = client.post(f"{agents}/overall/resources/import", json={
+            "tenant_id": tenant_id, "source_agent_id": "source",
+            "resource_type": "skill", "resource_ids": [skill.id],
+        })
+        assert share.status_code == 200, share.text
+        assert len(share.json()["imported"]) == 1
+        assert len(db.exec(select(SkillVersion).where(SkillVersion.skill_id == skill.skill_id)).all()) == 1
+
+        unsupported = client.post(f"{agents}/overall/resources/import", json={
+            "tenant_id": tenant_id, "source_agent_id": "source",
+            "resource_type": "tool", "resource_ids": [original.id],
+        })
+        assert unsupported.status_code == 400, unsupported.text
+
+        def copy_to(agent_id):
+            response = client.post(f"{agents}/{agent_id}/resources/import", json={
+                "tenant_id": tenant_id, "source_agent_id": "overall",
+                "resource_type": "skill", "resource_ids": [skill.id],
+            })
+            assert response.status_code == 200, response.text
+            return response.json()["imported"][0]
+
+        assert copy_to("target")["dependency_warning"] == "lookup.original (tool_original)"
+        synced = client.post(
+            f"{agents}/target/skills/{skill.skill_id}/sync-from-overall",
+            params={"tenant_id": tenant_id},
+        )
+        assert synced.status_code == 200, synced.text
+        assert synced.json()["dependency_warning"] == "lookup.original (tool_original)"
+        rows = visible_skill_rows(db, tenant_id, "target")
+        assert rows[0].status == "archived"
+        assert visible_skill_rows(db, tenant_id, "target", include_inactive=False) == []
+        assert db.exec(select(AgentResourceBinding).where(
+            AgentResourceBinding.agent_id.in_(["overall", "target"]),
+            AgentResourceBinding.resource_type == "tool",
+        )).all() == []
+
+        # An existing tool grant is still usable. A different recipient can
+        # edit the copied draft to use its own tool and publish it.
+        ensure_private_resource_binding(db, tenant_id, "other_target", "tool", original.id)
+        assert "dependency_warning" not in copy_to("other_target")
+        ensure_private_resource_binding(db, tenant_id, "target", "tool", replacement.id)
+        db.commit()
+        content = deepcopy(rows[0].content_json)
+        content["nodes"][0]["capability_refs"] = {
+            "tool_ids": [replacement.id], "required_tool_ids": [replacement.id],
+        }
+        uri = f"/api/enterprise/skills/{skill.skill_id}"
+        updated = client.put(uri, params={"agent_id": "target"}, json={
+            "tenant_id": tenant_id, "content": content,
+        })
+        assert updated.status_code == 200, updated.text
+        published = client.post(f"{uri}/publish", params={
+            "tenant_id": tenant_id, "agent_id": "target",
+        })
+        assert published.status_code == 200, published.text
+        snapshot = validate_configuration(
+            get_registry(get_settings()), db, SourceContext(tenant_id, "target"),
+            sop_id=skill.skill_id,
+        )
+        assert {grant.resource_id for grant in snapshot.grants if grant.sop_id == skill.skill_id} == {
+            replacement.id,
+        }
+        assert "source-fixture-secret" not in str(skill.content_json)
+
+
+def test_gallery_promotion_requires_source_tool_access() -> None:
+    with _test_session() as db:
+        skill, original, _ = _gallery_sop_fixture(db)
+        binding = db.exec(select(AgentResourceBinding).where(
+            AgentResourceBinding.agent_id == "source",
+            AgentResourceBinding.resource_id == original.id,
+        )).one()
+        db.delete(binding)
+        db.commit()
+        with pytest.raises(HTTPException, match="tool_original") as failure:
+            agents_api.promote_agent_skill_to_overall(
+                "source", skill.skill_id, skill.tenant_id, db, _admin_user(),
+            )
+        assert failure.value.status_code == 400
+        assert skill.status == "draft"
+        assert skill.version == "1.0.0"
 
 
 def _test_session() -> Session:
