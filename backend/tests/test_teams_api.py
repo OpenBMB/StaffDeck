@@ -9,10 +9,15 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api import teams as teams_api
+from app.channels.adapters.feishu import FeishuAdapter
+from app.channels.service_outbox import run_delivery_daemon, stage_channel_delivery
 from app.core import AgentLoop
 from app.db.models import (
     AgentEvent,
     AgentProfile,
+    ChannelBinding,
+    ChannelDelivery,
+    ChannelInboundEvent,
     ChatSession,
     HarnessInvocationRecord,
     Message,
@@ -1112,6 +1117,115 @@ def test_team_synthesis_publishes_final_answer_on_original_tl_session(
         db.refresh(progress_message)
         assert progress_message.content == "已收到全部 2 项成员回复，汇总已完成。"
         assert progress_message.metadata_json["team_progress"]["phase"] == "completed"
+
+
+def test_team_synthesis_sends_a_second_reply_to_the_original_feishu_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posts = []
+
+    def post_reply(self, binding, url, *, params, body):
+        posts.append((binding.id, url, body))
+        return {"data": {"message_id": f"om_reply_{len(posts)}"}}
+
+    monkeypatch.setattr(FeishuAdapter, "_post", post_reply)
+    final_reply = "综合建议：优先方案 A。"
+    monkeypatch.setattr(wakeup, "run_agent_turn", lambda *args, **kwargs: final_reply)
+
+    with _test_session() as db:
+        team = _seed_team(db)
+        binding = ChannelBinding(
+            tenant_id=team.tenant_id,
+            agent_id="agent_tl",
+            channel="feishu",
+            team_id=team.id,
+            status="active",
+            external_account_key="feishu:app:team",
+        )
+        target = {"message_id": "om_original", "reply_in_thread": True}
+        inbound = ChannelInboundEvent(
+            tenant_id=team.tenant_id,
+            binding_id=binding.id,
+            channel="feishu",
+            event_id=target["message_id"],
+            target_json=target,
+            status="done",
+        )
+        tl_session = ChatSession(
+            id="session-feishu-team",
+            tenant_id=team.tenant_id,
+            agent_id="agent_tl",
+            team_id=team.id,
+            channel="feishu",
+            channel_binding_id=binding.id,
+            channel_account_key=binding.external_account_key,
+            channel_target_json=target,
+        )
+        source = Message(
+            tenant_id=team.tenant_id,
+            session_id=tl_session.id,
+            role="user",
+            content="请团队比较方案",
+            metadata_json={"client_turn_id": inbound.event_id},
+        )
+        run = TeamRun(
+            team_id=team.id,
+            tenant_id=team.tenant_id,
+            tl_session_id=tl_session.id,
+            source_turn_id=source.id,
+            status="synthesizing",
+        )
+        db.add_all([binding, inbound, tl_session, source, run])
+        task = _make_task(db, team, status="done")
+        task.team_run_id = run.id
+        task.report_json = {"full_reply": "方案 A 成本更低。"}
+        db.add(task)
+        dispatch_reply = "已完成 1 个团队任务的拆分与派发。"
+        AgentLoop(db)._finalize_turn(
+            tl_session,
+            team.tenant_id,
+            dispatch_reply,
+            user_message_id=source.id,
+            assistant_metadata_override={"team_run_id": run.id},
+        )
+        db.commit()
+        run_delivery_daemon(once=True, db_engine=db.get_bind())
+        assert len(posts) == 1
+
+        # A subsequent inbound message updates the session target before synthesis ends.
+        tl_session.channel_target_json = {"message_id": "om_newer"}
+        db.add(tl_session)
+        wake = enqueue_wake_event(
+            db,
+            team=team,
+            target_agent_id="agent_tl",
+            trigger_type="team_synthesis",
+            payload={"team_run_id": run.id},
+        )
+        db.commit()
+        assert claim_wake_event(db, wake.id)
+        execute_wake_event(db, db.get(TeamWakeEvent, wake.id))
+        assert run.status == "completed"
+
+        run_delivery_daemon(once=True, db_engine=db.get_bind())
+        assert [json.loads(body["content"])["text"] for _, _, body in posts] == [
+            dispatch_reply,
+            final_reply,
+        ]
+        for binding_id, url, body in posts:
+            assert binding_id == binding.id
+            assert url.endswith("/im/v1/messages/om_original/reply")
+            assert body["reply_in_thread"] is True
+        assert posts[0][2]["uuid"] != posts[1][2]["uuid"]
+        final_delivery = db.exec(
+            select(ChannelDelivery).where(ChannelDelivery.message_id == run.final_message_id)
+        ).one()
+        assert final_delivery.status == "delivered"
+        final_message = db.get(Message, run.final_message_id)
+        stage_channel_delivery(db, tl_session, final_message)
+        db.commit()
+        run_delivery_daemon(once=True, db_engine=db.get_bind())
+        assert len(posts) == 2
 
 
 def test_tl_review_verdicts(monkeypatch: pytest.MonkeyPatch) -> None:
