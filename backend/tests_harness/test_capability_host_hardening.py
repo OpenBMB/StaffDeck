@@ -576,3 +576,104 @@ def test_lark_app_secret_is_not_written_into_the_v3_invocation_audit():
     assert 'synthetic-private-secret' not in str(_audit(args))
     assert 'synthetic-token' not in str(_audit(args))
     assert args['args'][-1]=='synthetic-private-secret'
+
+
+def _guarded_http_host(db, monkeypatch, *, enabled=True, method="POST"):
+    from app.db.models import ChatSession
+    from staffdeck_harness.composition.compiler import SopExecutionPlan
+    from staffdeck_harness.modules.builtin import LocalCapabilityProvider
+
+    tool = _tool(db, "guarded-http", method=method)
+    ensure_private_resource_binding(db, "t1", "a1", "tool", tool.id)
+    db.add(ChatSession(id="s1", tenant_id="t1", agent_id="a1", user_id="u1",
+                       active_skill_id="guarded-sop", active_step_id="submit"))
+    db.commit()
+    _install_registry(monkeypatch, LocalCapabilityProvider())
+    snapshot = CompositionCompiler(hooks=()).compile(_staff([_cap("tool", tool.id)]))
+    plan = SopExecutionPlan(
+        skill_id="guarded-sop", version="1.0.0", name="Guarded",
+        content={"interruption_policy": {"write_tool_failure": "handoff"} if enabled else {}},
+        resolved_slots=(), sub_sop_ids=(),
+    )
+    host = _host(db, replace(snapshot, sops=(plan,)), active_sop_id=plan.skill_id)
+    host.slot.active_node_id = "submit"
+    return host, tool
+
+
+@pytest.mark.parametrize(("enabled", "method", "handoff"), [
+    (False, "POST", False), (True, "GET", False), (True, "POST", True),
+])
+def test_only_opted_in_writes_pause_on_an_ambiguous_http_failure(db, monkeypatch, enabled, method, handoff):
+    import httpx
+    from sqlmodel import select
+    from app.core.execution_failure import HANDOFF_CODE
+    from app.db.models import HumanHandoffRequest
+
+    host, tool = _guarded_http_host(db, monkeypatch, enabled=enabled, method=method)
+    real_client = httpx.Client
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        raise httpx.ReadTimeout("provider may have received request", request=request)
+
+    monkeypatch.setattr("app.tools.tool_executor.httpx.Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    result, receipt = host.invoke(ModuleInvocation(
+        "guarded-call", "tool", "tool.invoke/v1", {}, _ctx(), binding_id=tool.id,
+    ))
+    assert receipt.status == ("outcome_unknown" if method == "POST" else "failed")
+    assert len(requests) == 1
+    rows = db.exec(select(HumanHandoffRequest)).all()
+    if handoff:
+        assert result.error["code"] == HANDOFF_CODE
+        assert len(rows) == 1 and rows[0].assignee_user_id == "u1"
+        assert rows[0].metadata_json["receipt_id"] == receipt.ledger_id
+        denied, _ = host.invoke(ModuleInvocation(
+            "alternate", "sandbox", "sandbox.execute/v1", {}, _ctx(),
+        ))
+        assert denied.error["code"] == HANDOFF_CODE
+        from app.core.task_request_compiler import TaskRequirement
+        from staffdeck_harness.bridge.control import ExecutionHost
+
+        fresh = ExecutionHost(host, TaskRequirement(task_frame_id="tf1", kind="sop", goal="submit"))
+        blocked, _ = fresh.invoke_proxy(
+            "submit_step_result", {"status": "completed", "reply_fragment": "done"}, _ctx(),
+        )
+        assert blocked.error["code"] == HANDOFF_CODE
+        assert host.slot.finish is None
+        assert len(db.exec(select(HumanHandoffRequest)).all()) == 1
+    else:
+        assert result.error["code"] == "TIMEOUT"
+        assert rows == []
+
+
+@pytest.mark.parametrize("recovers", [True, False])
+def test_guarded_http_retries_only_the_same_request_before_any_send(db, monkeypatch, recovers):
+    import httpx
+    from sqlmodel import select
+    from app.core.execution_failure import NOT_SENT_CODE
+    from app.db.models import HumanHandoffRequest
+
+    host, tool = _guarded_http_host(db, monkeypatch)
+    real_client = httpx.Client
+    attempts = []
+
+    def handler(request):
+        attempts.append((request.method, str(request.url), request.content))
+        if len(attempts) == 1 or not recovers:
+            raise httpx.ConnectTimeout("connection not established", request=request)
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr("app.tools.tool_executor.httpx.Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    result, receipt = host.invoke(ModuleInvocation(
+        "guarded-retry", "tool", "tool.invoke/v1", {"order_id": "42"}, _ctx(), binding_id=tool.id,
+    ))
+    assert len(attempts) == 2 and attempts[0] == attempts[1]
+    assert result.success == recovers
+    assert receipt.status == ("completed" if recovers else "failed")
+    if not recovers:
+        assert result.error["code"] == NOT_SENT_CODE
+        assert receipt.side_effect_key is None
+    assert db.exec(select(HumanHandoffRequest)).all() == []

@@ -40,6 +40,15 @@ jobs:
           backend/tests/test_dev_scripts.py backend/tests/test_oss_preparation.py
           backend/tests_harness/test_capability_host_hardening.py
           backend/tests_harness/test_worker_config_preparation.py
+      - name: Check guarded SOP execution through the Harness engine
+        env:
+          ULTRARAG_DOTENV: /dev/null
+          PYTHONPATH: backend:backend/src
+          HARNESS_V3_ROOT: ${{ github.workspace }}/harness-engine
+        run: >-
+          backend/.venv/bin/python -m pytest -q
+          backend/tests_harness/test_sealed_e2e_engine.py
+          -k test_guarded_sop_stops_after_ambiguous_write_without_trying_a_second_tool
       - name: Checkout the last desktop release for upgrade acceptance
         uses: actions/checkout@v7
         with:

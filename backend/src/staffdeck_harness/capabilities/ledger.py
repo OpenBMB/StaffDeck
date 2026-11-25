@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -44,6 +44,7 @@ NOT_SENT_CODES = frozenset(
         "UNSUPPORTED_CAPABILITY", "PROVIDER_INVALID", "PROVIDER_UNAUTHORIZED", "ENGINE_UNAVAILABLE",
         "PROVIDER_UNAVAILABLE", "PROVIDER_VERSION_CHANGED", "PROVIDER_CONFLICT",
         "SOURCE_UNAVAILABLE", "RESOURCE_UNAVAILABLE", "RESOURCE_CONTRACT_INVALID",
+        "GUARDED_HTTP_NOT_SENT", "SCHEMA_INVALID",
     }
 )
 
@@ -186,7 +187,8 @@ class InvocationLedger:
         self.db.refresh(row)
         return LedgerEntry(row=row, invocation=invocation)
 
-    def finish(self, entry: LedgerEntry, result: ModuleResult, *, cache_result: bool = True) -> Receipt:
+    def finish(self, entry: LedgerEntry, result: ModuleResult, *, cache_result: bool = True,
+               on_unknown: Callable[[], None] | None = None) -> Receipt:
         row = entry.row
         # Normalize before persistence, but classify execution from the provider's
         # original outcome. A bad output must never release an executed write claim.
@@ -212,6 +214,8 @@ class InvocationLedger:
         row.finished_at = utc_now()
         row.updated_at = utc_now()
         self.db.add(row)
+        if row.status == "outcome_unknown" and on_unknown is not None:
+            on_unknown()
         self.db.commit()
         return entry.receipt
 

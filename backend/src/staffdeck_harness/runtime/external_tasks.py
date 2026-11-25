@@ -42,7 +42,7 @@ def transient_tool(definition, tenant_id, tool_id):
 
 
 def execute_http(inv, authorized, *, db, active_sop_id=None, active_node_id=None,
-                 timeout_seconds=None):
+                 timeout_seconds=None, guarded_write=False):
     """Both modes use the same transport; deferred mode adds the existing tracker."""
     from app.tools.tool_executor import ToolExecutor
     from staffdeck_harness.contracts.invocation import ModuleResult
@@ -53,7 +53,8 @@ def execute_http(inv, authorized, *, db, active_sop_id=None, active_node_id=None
     arguments.pop("tool_id", None)
     if definition.execution_policy.get("execution_mode") != "detached":
         result = ToolExecutor(db).execute_sync_http(tool, arguments,
-            timeout_seconds_override=timeout_seconds)
+            timeout_seconds_override=timeout_seconds,
+            **({"retry_before_send": True} if guarded_write else {}))
         return ModuleResult.ok(result.data) if result.success else ModuleResult.fail(result.error.code, result.error.message)
     if not authorized.digest:
         raise ModuleSdkError("异步工具缺少可校验的配置版本", code="ASYNC_CONTRACT_INCOMPLETE")
@@ -62,6 +63,7 @@ def execute_http(inv, authorized, *, db, active_sop_id=None, active_node_id=None
         "module_id": authorized.module_id, "module_version": authorized.module_version,
         "digest": authorized.digest, "operation": inv.operation,
         "sop_id": active_sop_id, "node_id": active_node_id,
+        **({"guarded_write": True} if guarded_write else {}),
         "channel": inv.context.channel,
         "proxy_name": str((inv.metadata or {}).get('proxy_name') or inv.operation),
     }

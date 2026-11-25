@@ -780,6 +780,10 @@ class TurnCoordinator:
                     step_result,
                 )
             )
+            from app.core.execution_failure import HANDOFF_CODE, NOT_SENT_CODE
+
+            if (combined.error or {}).get("code") in {HANDOFF_CODE, NOT_SENT_CODE}:
+                break
             if row.status == "completed":
                 released = self.store.ready_dependency_frames(
                     session,
@@ -842,7 +846,13 @@ class TurnCoordinator:
         if is_handoff:
             # Handoff is now queued for a human; do not let the execution model
             # describe the missing native channel as if the request failed.
-            reply = "已为你提交人工处理请求，请稍候，工作人员会尽快回复。"
+            from app.core.execution_failure import HANDOFF_CODE
+
+            guarded_handoff = next(
+                (r for r in execution_results if (r.error or {}).get("code") == HANDOFF_CODE), None,
+            )
+            reply = (guarded_handoff.reply_fragment if guarded_handoff else
+                     "已为你提交人工处理请求，请稍候，工作人员会尽快回复。")
         elif reply is None:
             response_args = (
                 execution_request.message,
@@ -1158,6 +1168,13 @@ class TurnCoordinator:
                 step_timeout_seconds=step_timeout_seconds,
                 checkpoint=loop_checkpoint,
             )
+            from app.core.execution_failure import HANDOFF_CODE, NOT_SENT_CODE
+
+            if (result.error or {}).get("code") in {HANDOFF_CODE, NOT_SENT_CODE}:
+                loop_checkpoint = dict(result.loop_checkpoint or {})
+                results.append(result)
+                last_step_result = _step_result(result)
+                break
             if request.channel == "human_handoff_resume" and result.status == "handoff":
                 # The human reply is already the handoff completion signal. Do not
                 # re-enter the same terminal handoff node during the resume turn.

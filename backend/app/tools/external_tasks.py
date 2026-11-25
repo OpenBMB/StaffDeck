@@ -222,6 +222,38 @@ def _prepare_sop_resume(db: Session, task: ExternalBusinessTask) -> None:
         # One SOP frame can submit several tasks in successive nodes. An older
         # completion must not resume the node currently waiting on another task.
         return
+    runtime = (task.status_config_json or {}).get("_runtime") or {}
+    if _guarded_write(task) and task.status in {"outcome_unknown", "expired", "failed"}:
+        from app.core.execution_failure import HANDOFF_CODE, NOT_SENT_CODE, stop_execution
+        from app.db.models import ChatSession
+
+        session = db.get(ChatSession, task.session_id)
+        if session is None or (session.tenant_id, session.agent_id, session.user_id) != (
+            task.tenant_id, task.agent_id, task.user_id,
+        ):
+            return
+        if (task.error_json or {}).get("code") == NOT_SENT_CODE:
+            frame.status = "failed"
+            frame.error_json = dict(task.error_json)
+        else:
+            handoff = stop_execution(
+                db, session, frame.task_id, operation=runtime.get("operation") or "tool.invoke/v1",
+                sop_id=runtime.get("sop_id"), node_id=runtime.get("node_id"), external_task_id=task.id,
+            )
+            if handoff.status not in {"pending", "assigned"}:
+                db.commit()
+                return
+            frame.status = "handoff"
+            frame.error_json = {"code": HANDOFF_CODE, "handoff_id": handoff.id,
+                                "message": handoff.pending_question}
+        frame.result_json = {**dict(frame.result_json or {}), "external_task_status": task.status}
+        frame.lease_owner = None
+        frame.lease_expires_at = None
+        frame.updated_at = utc_now()
+        frame.state_version += 1
+        db.add(frame)
+        db.commit()
+        return
     result = dict(task.result_json or {})
     frame.result_json = {
         **dict(frame.result_json or {}),
@@ -500,7 +532,9 @@ def _execute_local_task(db: Session, task: ExternalBusinessTask) -> None:
             if strategy == PROVIDER_TASK_STRATEGY:
                 _submit_provider_task(db, task, tool)
             else:
-                result = ToolExecutor(db).execute_sync_http(tool, task.request_json)
+                result = ToolExecutor(db).execute_sync_http(
+                    tool, task.request_json, **({"retry_before_send": True} if _guarded_write(task) else {}),
+                )
                 if result.success:
                     apply_task_event(
                         db,
@@ -572,6 +606,7 @@ def _submit_provider_task(db: Session, task: ExternalBusinessTask, tool: Tool) -
         tool,
         task.request_json,
         additional_headers=headers,
+        **({"retry_before_send": True} if _guarded_write(task) else {}),
     )
     if not response.result.success:
         error = (
@@ -634,6 +669,11 @@ def _submit_provider_task(db: Session, task: ExternalBusinessTask, tool: Tool) -
         status=next_status,
         data=data,
     )
+
+
+def _guarded_write(task: ExternalBusinessTask) -> bool:
+    runtime = (task.status_config_json or {}).get("_runtime") or {}
+    return runtime.get("guarded_write") is True
 
 
 def _task_strategy(task: ExternalBusinessTask) -> str:

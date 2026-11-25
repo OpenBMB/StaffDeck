@@ -599,6 +599,17 @@ class HarnessV3TaskAgent:
                             (execution_host.argument_repair or {}).get('phase') == 'sop_result'):
                         raise
                     outcome = ([], '', 'submission_blocked')
+                from app.core.execution_failure import HANDOFF_CODE, NOT_SENT_CODE
+
+                blocked = execution_host.control_blocked or {}
+                if blocked.get("code") in {HANDOFF_CODE, NOT_SENT_CODE}:
+                    handoff_id = blocked.get("handoff_id")
+                    return finish(TaskExecutionResult(
+                        task_frame_id=requirement.task_frame_id,
+                        status="handoff" if handoff_id else "failed",
+                        reply_fragment=blocked["message"], error=blocked,
+                        artifacts=[{"type": "human_handoff", "handoff_id": handoff_id}] if handoff_id else [],
+                    ))
                 if (execution_host.control_blocked or
                         (execution_host.argument_repair or {}).get('phase') == 'sop_result'):
                     failure = repair_submission()
