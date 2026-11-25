@@ -184,7 +184,11 @@ class LocalResourceCatalog:
                 server = self.db.get(MCPServer, row.mcp_server_id)
                 if server is None or server.tenant_id != context.tenant_id:
                     raise ModuleSdkError("MCP 服务不可用", code="RESOURCE_UNAVAILABLE")
-                related = (live_resource_ref(self.db, context.tenant_id, "mcp_server", server, agent=agent),)
+                from staffdeck_harness.composition.projection import related_mcp_server_ref
+
+                related = (related_mcp_server_ref(
+                    self.db, context.tenant_id, server, row, ref, agent=agent, user_id=context.user_id,
+                ),)
             return replace(descriptor, description=row.description or "",
                 input_schema=dict(row.input_schema or {}), digest=tool_snapshot_digest(self.db, row),
                 operation={"mcp": "mcp.invoke/v1", "a2a": "a2a.invoke/v1"}.get(row.tool_type, operation),
