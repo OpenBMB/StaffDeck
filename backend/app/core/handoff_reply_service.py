@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import threading
-from sqlmodel import Session
+from fastapi import HTTPException
+from sqlalchemy import update
+from sqlmodel import Session, select
 from app.db import engine
-from app.db.models import AgentEvent, ChatSession, HumanHandoffRequest, utc_now
+from app.db.models import AgentEvent, ChatSession, HarnessTaskFrameRecord, HumanHandoffRequest, Message, utc_now
 from app.session.session_schema import ChatTurnRequest
 
 
@@ -27,6 +29,16 @@ def apply_handoff_reply(
     from staffdeck_harness.handoff.core import authorize_reply
 
     reply = authorize_reply(db, row, reply, answered_by_user_id=answered_by_user_id, source=source)
+    execution_failure = bool((row.metadata_json or {}).get("execution_failure"))
+    if execution_failure:
+        claimed = db.exec(update(HumanHandoffRequest).where(
+            HumanHandoffRequest.id == row.id,
+            HumanHandoffRequest.tenant_id == row.tenant_id,
+            HumanHandoffRequest.status.in_(["pending", "assigned"]),
+        ).values(id=HumanHandoffRequest.id).execution_options(synchronize_session=False))
+        if claimed.rowcount != 1:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="此接管请求已处理")
     now = utc_now()
     row.status = "answered"
     row.human_reply = reply
@@ -39,7 +51,8 @@ def apply_handoff_reply(
     db.add(row)
 
     chat_session = db.get(ChatSession, row.session_id)
-    if chat_session and chat_session.tenant_id == row.tenant_id:
+    current_handoff = bool(chat_session and (chat_session.awaiting_input_json or {}).get("handoff_id") == row.id)
+    if chat_session and chat_session.tenant_id == row.tenant_id and (not execution_failure or current_handoff):
         chat_session.status = "active"
         chat_session.awaiting_input_json = None
         chat_session.slots_json = {
@@ -67,6 +80,34 @@ def apply_handoff_reply(
             created_at=now,
         )
     )
+    if execution_failure:
+        if chat_session and chat_session.tenant_id == row.tenant_id and chat_session.agent_id == row.agent_id:
+            # Record the human's reconciliation directly. Resuming the failed
+            # node would allow a second write without a known provider outcome.
+            task_id = (row.metadata_json or {}).get("task_frame_id")
+            frame = db.exec(select(HarnessTaskFrameRecord).where(
+                HarnessTaskFrameRecord.tenant_id == row.tenant_id,
+                HarnessTaskFrameRecord.session_id == row.session_id,
+                HarnessTaskFrameRecord.task_id == task_id,
+            )).first()
+            if frame and frame.status == "handoff":
+                frame.status = "cancelled"
+                frame.updated_at = now
+                frame.state_version += 1
+                db.add(frame)
+            if current_handoff and chat_session.active_skill_id == row.trigger_skill_id:
+                chat_session.active_skill_id = None
+                chat_session.active_step_id = None
+                chat_session.resume_after_answer_json = None
+                chat_session.skill_stack_json = []
+            message = Message(tenant_id=row.tenant_id, session_id=row.session_id, role="assistant",
+                              content=reply, metadata_json={"human_handoff_id": row.id})
+            db.add_all([chat_session, message])
+            from app.channels.service_outbox import stage_channel_delivery
+
+            stage_channel_delivery(db, chat_session, message)
+        db.commit()
+        return
     db.commit()
     db.refresh(row)
     (resume or resume_human_handoff_async)(row.id)
@@ -81,7 +122,8 @@ def resume_human_handoff_worker(handoff_id: str) -> None:
     try:
         with Session(engine) as db:
             handoff = db.get(HumanHandoffRequest, handoff_id)
-            if not handoff or handoff.status != "answered" or not handoff.human_reply:
+            if (not handoff or handoff.status != "answered" or not handoff.human_reply
+                    or (handoff.metadata_json or {}).get("execution_failure")):
                 return
             chat_session = db.get(ChatSession, handoff.session_id)
             if not chat_session or chat_session.tenant_id != handoff.tenant_id:

@@ -352,6 +352,12 @@ class CapabilityHost:
                 "next_action": "check_binding" if exc.details.get("reason") == "RESOURCE_NOT_BOUND" else "replan",
                 "details": dict(exc.details)}), None
 
+        from app.core.execution_failure import protected_write
+
+        session = self._session_for_invocation(inv.context)
+        if blocked := self.pending_write_handoff(inv.context, session=session):
+            return self._execution_handoff_result(blocked), None
+
         # 1b. pre_tool hooks. The default ``activation.allowlist`` narrows against the frozen
         #     snapshot; a ``capability.pep`` handler marks intent. Hooks can deny a call before it
         #     touches the ledger — nothing is recorded for a refused call, it is only traced.
@@ -387,6 +393,10 @@ class CapabilityHost:
         try:
             replay = self._ledger.replay_or_block(inv)
         except OutcomeUnknown as exc:
+            if session is not None and protected_write(self.slot, inv):
+                blocked = self._stop_write(inv, session, exc.details.get("prior_invocation_id"))
+                self.db.commit()
+                return self._execution_handoff_result(blocked), None
             return ModuleResult.fail(exc.code, exc.message, extensions={"details": exc.details}), None
         if replay is not None:
             return self._postprocess(inv, *replay)
@@ -416,11 +426,68 @@ class CapabilityHost:
         except Exception as exc:  # provider blew up: maybe sent
             result = ModuleResult.fail("HARNESS_TOOL_ERROR", str(exc))
 
-        # 4. ledger finish
-        receipt = self._ledger.finish(entry, result, cache_result=False)
-        self._emit("capability_invoked", {"operation": inv.operation, "resource": inv.binding_id, "status": receipt.status, "invocation_id": inv.invocation_id})
+        # 4. ledger finish. Commit the ambiguous receipt and its stop together.
+        guarded = session is not None and protected_write(self.slot, inv)
+        stopped = None
 
+        def on_unknown() -> None:
+            nonlocal stopped
+            stopped = self._stop_write(inv, session, entry.row.id)
+
+        receipt = self._ledger.finish(
+            entry, result, cache_result=False,
+            on_unknown=on_unknown if guarded else None,
+        )
+        self._emit("capability_invoked", {"operation": inv.operation, "resource": inv.binding_id, "status": receipt.status, "invocation_id": inv.invocation_id})
+        if stopped is not None:
+            return self._execution_handoff_result(stopped), receipt
+        if guarded and receipt.status == "failed":
+            from app.core.execution_failure import NOT_SENT_CODE
+
+            code = (result.error or {}).get("code")
+            if code not in {"INVALID_ARGUMENTS", "SCHEMA_INVALID", NOT_SENT_CODE}:
+                self._postprocess(inv, result, receipt)
+                return ModuleResult.fail(
+                    NOT_SENT_CODE, "业务请求未发送。请检查工具配置后重试原操作。",
+                    extensions={"original_code": code},
+                ), receipt
         return self._postprocess(inv, result, receipt)
+
+    def _session_for_invocation(self, ctx: InvocationContext):
+        from app.db.models import ChatSession
+
+        session = self.db.get(ChatSession, ctx.session_id)
+        if session is None or (session.tenant_id, session.agent_id, session.user_id or "anonymous") != (
+            ctx.tenant_id, ctx.agent_id, ctx.user_id,
+        ):
+            return None
+        return session
+
+    def pending_write_handoff(self, ctx: InvocationContext, *, session=None):
+        from app.core.execution_failure import pending_execution_handoff
+
+        session = session or self._session_for_invocation(ctx)
+        if session is None:
+            return None
+        return pending_execution_handoff(
+            self.db, session, ctx.task_frame_id, sop_id=self.slot.active_sop_id,
+        )
+
+    def _stop_write(self, inv, session, receipt_id):
+        from app.core.execution_failure import stop_execution
+
+        return stop_execution(
+            self.db, session, inv.context.task_frame_id, operation=inv.operation,
+            sop_id=self.slot.active_sop_id, node_id=self.slot.active_node_id, receipt_id=receipt_id,
+        )
+
+    @staticmethod
+    def _execution_handoff_result(handoff):
+        from app.core.execution_failure import HANDOFF_CODE
+
+        return ModuleResult.fail(
+            HANDOFF_CODE, handoff.pending_question, extensions={"handoff_id": handoff.id},
+        )
 
     def _postprocess(self, inv: ModuleInvocation, result: ModuleResult, receipt: Receipt) -> tuple[ModuleResult, Receipt]:
         # Output denial must not release the claim of an already-sent write.
@@ -726,10 +793,11 @@ class CapabilityHost:
                 installed.manifest.version, descriptor.digest if descriptor else "")
             if definition_only:
                 return authorized
+            from app.core.execution_failure import protected_write
             from staffdeck_harness.runtime.external_tasks import execute_http
             return execute_http(inv, authorized, db=self.db,
                 active_sop_id=self.slot.active_sop_id, active_node_id=self.slot.active_node_id,
-                timeout_seconds=self.slot.remaining_seconds())
+                timeout_seconds=self.slot.remaining_seconds(), guarded_write=protected_write(self.slot, inv))
         return invoke(context, inv)
 
     def _provider_pin(self, inv: ModuleInvocation) -> str | None:

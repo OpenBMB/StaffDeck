@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from datetime import timedelta
 from itertools import islice
+from time import monotonic
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -145,12 +146,14 @@ class ToolExecutor:
         arguments: dict[str, Any],
         *,
         timeout_seconds_override: float | None = None,
+        retry_before_send: bool = False,
     ) -> ToolResult:
         """Execute the HTTP request directly for the detached worker."""
         return self.execute_http_with_metadata(
             tool,
             arguments,
             timeout_seconds_override=timeout_seconds_override,
+            retry_before_send=retry_before_send,
         ).result
 
     def execute_http_with_metadata(
@@ -160,6 +163,7 @@ class ToolExecutor:
         *,
         timeout_seconds_override: float | None = None,
         additional_headers: dict[str, str] | None = None,
+        retry_before_send: bool = False,
     ) -> HttpExecutionResponse:
         """Execute HTTP while retaining the response status for async protocols."""
         if invalid := self._validate_http_arguments(tool, arguments):
@@ -184,15 +188,23 @@ class ToolExecutor:
             timeout_seconds_override=timeout_seconds_override,
         )
         try:
-            with httpx.Client(timeout=policy.timeout_seconds) as client:
-                if tool.method.upper() == "GET":
-                    request_url, request_kwargs = prepare_get_request(url, arguments)
+            method = tool.method.upper()
+            request_url, request_kwargs = (
+                prepare_get_request(url, arguments) if method == "GET" else (url, {"json": arguments})
+            )
+            timeout = policy.timeout_seconds
+            if retry_before_send:
+                timeout = httpx.Timeout(timeout, connect=timeout / 2)
+            with httpx.Client(timeout=timeout) as client:
+                deadline = monotonic() + policy.timeout_seconds
+                try:
+                    response = client.request(method, request_url, headers=headers, **request_kwargs)
+                except (httpx.ConnectError, httpx.ConnectTimeout):
+                    remaining = deadline - monotonic()
+                    if not retry_before_send or remaining <= 0:
+                        raise
                     response = client.request(
-                        tool.method.upper(), request_url, headers=headers, **request_kwargs
-                    )
-                else:
-                    response = client.request(
-                        tool.method.upper(), url, headers=headers, json=arguments
+                        method, request_url, headers=headers, timeout=remaining, **request_kwargs,
                     )
                 response.raise_for_status()
                 return HttpExecutionResponse(
@@ -204,6 +216,18 @@ class ToolExecutor:
                     ),
                     status_code=response.status_code,
                 )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            if retry_before_send:
+                from app.core.execution_failure import NOT_SENT_CODE
+
+                error = self._error(
+                    tool.name, NOT_SENT_CODE, "连接未建立，本次业务请求未发送。请检查连接后重试。",
+                )
+            elif isinstance(exc, httpx.ConnectTimeout):
+                error = self._error(tool.name, "TIMEOUT", f"工具调用超过 {policy.timeout_seconds:g} 秒未返回。")
+            else:
+                error = self._error(tool.name, "EXECUTION_ERROR", str(exc))
+            return HttpExecutionResponse(result=error)
         except httpx.TimeoutException:
             return HttpExecutionResponse(
                 result=self._error(

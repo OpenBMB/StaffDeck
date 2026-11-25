@@ -3,6 +3,7 @@
 from __future__ import annotations
 from contextlib import nullcontext
 
+from app.core.execution_failure import HANDOFF_CODE, NOT_SENT_CODE
 from staffdeck_harness.contracts.errors import ActivationFenced
 from staffdeck_harness.contracts.invocation import ModuleResult
 from staffdeck_harness.sop.submission import SopResultValidator, STEP_RESULT_SCHEMA
@@ -185,7 +186,11 @@ class ExecutionHost:
                     receipt = None
                 elif is_control_tool(name):
                     with host.registry.work_lease() if host.registry else nullcontext():
-                        result, receipt = self.completion.submit(dict(arguments)), None
+                        handoff = host.pending_write_handoff(ctx)
+                        if handoff is not None:
+                            result, receipt = host._execution_handoff_result(handoff), None
+                        else:
+                            result, receipt = self.completion.submit(dict(arguments)), None
                 else:
                     result, receipt = host.invoke_proxy(name, arguments, ctx)
                 self.actions += 1
@@ -193,6 +198,10 @@ class ExecutionHost:
                 if control:
                     self.control_blocked = self.submission_recovery.observe(result,
                         schema=STEP_RESULT_SCHEMA, allowed_next_steps=host.slot.allowed_next_steps)
+                if (result.error or {}).get("code") in {HANDOFF_CODE, NOT_SENT_CODE}:
+                    self.control_blocked = {
+                        **dict(result.error), **dict(result.extensions),
+                    }
                 from staffdeck_harness.runtime.structured_output import repair_candidate
                 self.argument_repair = repair_candidate(result, receipt, tool=name,
                     current=self.argument_repair,

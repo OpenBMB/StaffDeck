@@ -249,6 +249,11 @@ POST     /sops/{sop_id}/versions/{version}:rollback
 
 生成、改写和回滚只产生员工私有草稿。草稿必须显式发布后才能参与意图匹配和执行。
 
+要保护审批提交等写操作，可在该 SOP 的 `content.interruption_policy` 中设置
+`"write_tool_failure": "handoff"`，保存后发布。受保护的工具调用结果不明时，
+StaffDeck 会保留回执并在站内转给员工负责人或租户管理员。人工回复会记录核对结果。
+HTTP 连接未建立时可用同一工具和参数自动再试一次。
+
 ### 知识
 
 ```text

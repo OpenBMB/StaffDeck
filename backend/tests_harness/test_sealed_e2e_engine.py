@@ -1012,3 +1012,80 @@ def test_real_engine_budget_exit_preserves_completed_tool_results(db, fake_model
     assert result.status == "action_budget" and result.action_count == 1
     assert result.loop_checkpoint["transcript"] and result.loop_checkpoint["capability_results"]
     assert result.loop_checkpoint["capability_results"][0]["success"]
+
+
+def test_guarded_sop_stops_after_ambiguous_write_without_trying_a_second_tool(db, fake_model, monkeypatch):
+    from app.db.models import ChatSession, HarnessTaskFrameRecord, HumanHandoffRequest, Skill, Tool
+    from app.session.session_schema import PlannedTaskFrame, TurnPlan
+    from app.tools.tool_schema import ToolError, ToolResult
+    from staffdeck_harness.runtime.model_phases import EngineTurnPlanner
+
+    model, base = fake_model
+    agent, user = _seed(db, base)
+    tools = [
+        Tool(id=identifier, tenant_id=user.tenant_id, name=identifier, method="POST",
+             url="http://stop-fixture.invalid", tool_type="http", enabled=True)
+        for identifier in ("guarded-submit", "alternate-submit")
+    ]
+    sop = Skill(
+        id="guarded-sop", tenant_id=user.tenant_id, skill_id="guarded-flow",
+        name="Guarded workflow", status="published",
+        content_json={
+            "interruption_policy": {"write_tool_failure": "handoff"},
+            "start_node_id": "submit", "terminal_node_ids": ["submit"], "edges": [],
+            "nodes": [{
+                "node_id": "submit", "name": "Submit",
+                "capability_refs": {"tool_ids": [tool.id for tool in tools]},
+            }],
+        },
+    )
+    db.add_all([sop, *tools])
+    db.commit()
+    ensure_private_resource_binding(db, user.tenant_id, agent.id, "skill", sop.id)
+    for tool in tools:
+        ensure_private_resource_binding(db, user.tenant_id, agent.id, "tool", tool.id)
+    db.commit()
+
+    sends = []
+
+    def execute(self, row, arguments, **kwargs):
+        sends.append(row.id)
+        return ToolResult(tool_name=row.name, success=False,
+                          error=ToolError(code="TIMEOUT", message="submission may have been received"))
+
+    def plan(self, message, session, *args, **kwargs):
+        return TurnPlan(decision="start_new_task", task_frames=[PlannedTaskFrame(
+            task_id="guarded-frame", kind="sop", decision="start_new_task",
+            target_skill_id=sop.skill_id, target_step_id="submit",
+        )])
+
+    monkeypatch.setattr("app.tools.tool_executor.ToolExecutor.execute_sync_http", execute)
+    monkeypatch.setattr(EngineTurnPlanner, "plan", plan)
+
+    def reply(body):
+        model.requests.append(body)
+        results = any(message.get("role") == "tool" for message in body.get("messages", []))
+        if results:
+            return [_chunk("end", {"content": "等待核对"}), _chunk("end", {}, "stop")]
+        calls = [
+            {"index": index, "id": f"write-{index}", "type": "function", "function": {
+                "name": "mcp__staffdeck__tool_invoke",
+                "arguments": json.dumps({"tool_id": tool.id, "arguments": {}}),
+            }}
+            for index, tool in enumerate(tools)
+        ]
+        return [_chunk("submit", {"tool_calls": calls}), _chunk("submit", {}, "tool_calls")]
+
+    model.reply = reply
+    response = AgentLoop(db).handle_turn(ChatTurnRequest(
+        tenant_id=user.tenant_id, agent_id=agent.id, user_id=user.id,
+        message="提交审批", client_turn_id="guarded-turn",
+    ))
+    assert response.runtime_error_code is None, response.reply
+    assert sends == ["guarded-submit"]
+    handoff = db.exec(select(HumanHandoffRequest)).one()
+    assert handoff.assignee_user_id == user.id
+    assert db.get(ChatSession, response.session_id).status == "handoff"
+    assert db.exec(select(HarnessTaskFrameRecord)).one().status == "handoff"
+    assert db.exec(select(HarnessInvocationRecord)).one().status == "outcome_unknown"
+    assert "可能已执行" in response.reply
