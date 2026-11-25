@@ -98,6 +98,11 @@ def _message_client_turn_id(db: Session, message: Message) -> str:
 
 
 def _reply_idempotency_key(db: Session, binding_id: str, message: Message) -> str:
+    metadata = message.metadata_json or {}
+    team_run_id = metadata.get("team_run_id")
+    if metadata.get("team_synthesis") is True and team_run_id:
+        # A team run sends a final answer after acknowledging the same inbound turn.
+        return f"channel-team-synthesis:{binding_id}:{team_run_id}"
     client_turn_id = _message_client_turn_id(db, message)
     if client_turn_id:
         return f"channel-reply:{binding_id}:{client_turn_id}"
