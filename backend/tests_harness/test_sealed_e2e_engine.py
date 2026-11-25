@@ -1064,17 +1064,19 @@ def test_guarded_sop_stops_after_ambiguous_write_without_trying_a_second_tool(db
 
     def reply(body):
         model.requests.append(body)
-        results = any(message.get("role") == "tool" for message in body.get("messages", []))
-        if results:
+        results = {
+            message.get("tool_call_id")
+            for message in body.get("messages", []) if message.get("role") == "tool"
+        }
+        if "alternate-call" in results:
             return [_chunk("end", {"content": "等待核对"}), _chunk("end", {}, "stop")]
-        calls = [
-            {"index": index, "id": f"write-{index}", "type": "function", "function": {
-                "name": "mcp__staffdeck__tool_invoke",
-                "arguments": json.dumps({"tool_id": tool.id, "arguments": {}}),
-            }}
-            for index, tool in enumerate(tools)
-        ]
-        return [_chunk("submit", {"tool_calls": calls}), _chunk("submit", {}, "tool_calls")]
+        attempted = "original-call" in results
+        call = {"index": 0, "id": "alternate-call" if attempted else "original-call",
+                "type": "function", "function": {
+                    "name": "mcp__staffdeck__tool_invoke",
+                    "arguments": json.dumps({"tool_id": tools[int(attempted)].id, "arguments": {}}),
+                }}
+        return [_chunk("submit", {"tool_calls": [call]}), _chunk("submit", {}, "tool_calls")]
 
     model.reply = reply
     response = AgentLoop(db).handle_turn(ChatTurnRequest(
