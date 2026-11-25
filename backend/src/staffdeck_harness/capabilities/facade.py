@@ -192,13 +192,17 @@ class ToolFacade:
         if row.tool_type == "mcp" and row.mcp_server_id:
             server = db.get(MCPServer, row.mcp_server_id)
             if server is not None:
-                self.d.guard.require(self.d.security_context, "mcp.invoke/v1", projection.live_resource_ref(db, ctx.tenant_id, "mcp_server", server, agent=self.d.agent_row))
+                server_ref = projection.related_mcp_server_ref(
+                    db, ctx.tenant_id, server, row, ref, agent=self.d.agent_row, user_id=ctx.user_id,
+                )
+                self.d.guard.require(self.d.security_context, "mcp.invoke/v1", server_ref)
         remaining = self.d.remaining_seconds() if self.d.remaining_seconds else None
         result = ToolExecutor(db).execute(
             ctx.tenant_id,
             ToolCall(name=row.name, arguments=args),
             active_skill_id=active_skill_id,
             agent_id=None if not ctx.agent_id or ctx.agent_id.endswith(":overall") else ctx.agent_id,
+            user_id=ctx.user_id if row.tool_type == "mcp" else None,
             session_id=ctx.session_id,
             invocation_id=inv.invocation_id,
             timeout_seconds_override=remaining,

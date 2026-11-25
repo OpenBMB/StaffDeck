@@ -172,6 +172,47 @@ def live_resource_ref(db: Session, tenant_id: str, resource_type: str, resource:
     return bound_resource_ref(db, tenant_id, resource_type, resource, agent=agent, binding=binding)
 
 
+def related_mcp_server_ref(
+    db: Session, tenant_id: str, server: MCPServer, tool: Tool, tool_ref: ResourceRef,
+    *, agent: AgentProfile | None, user_id: str | None,
+) -> ResourceRef:
+    """Project a personally authorized parent connection for a specific child tool."""
+    from dataclasses import replace
+
+    from app.tools.mcp_oauth_store import OAuthOwnershipError, load_credentials
+
+    # A deleted parent binding is still an explicit restriction for this path.
+    binding = db.exec(select(AgentResourceBinding).where(
+        AgentResourceBinding.tenant_id == tenant_id,
+        AgentResourceBinding.agent_id == agent.id,
+        AgentResourceBinding.resource_type == "mcp_server",
+        AgentResourceBinding.resource_id == server.id,
+    )).first() if agent else None
+    ref = bound_resource_ref(db, tenant_id, "mcp_server", server, agent=agent, binding=binding)
+    if (binding is not None or not user_id or not tool.enabled or not server.enabled
+            or tool.mcp_server_id != server.id or tool.tenant_id != tenant_id
+            or server.tenant_id != tenant_id):
+        return ref
+    try:
+        credentials = load_credentials(db, tenant_id, user_id, server.id) or {}
+    except OAuthOwnershipError:
+        return ref
+    if not (credentials.get("tokens") or {}).get("access_token"):
+        return ref
+
+    attributes = tool_ref.attributes
+    if attributes.get("binding_status") == "active" and (
+        attributes.get("private_to_agent") or attributes.get("open_gallery")
+    ):
+        return replace(ref, attributes={
+            **ref.attributes, "binding_status": "active", "private_to_agent": True,
+            "via_tool_id": tool.id,
+        })
+    if attributes.get("open_gallery") and attributes.get("agent_is_overall"):
+        return replace(ref, attributes={**ref.attributes, "open_gallery": True, "via_tool_id": tool.id})
+    return ref
+
+
 def agent_bindings(db: Session, tenant_id: str, agent_id: str, resource_type: str | None = None) -> list[AgentResourceBinding]:
     stmt = select(AgentResourceBinding).where(
         AgentResourceBinding.tenant_id == tenant_id,

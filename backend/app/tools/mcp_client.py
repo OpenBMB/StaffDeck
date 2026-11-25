@@ -571,6 +571,15 @@ def _validate_stdio_launch(command: list[str], cwd: str | None) -> None:
 # HTTP (streamable_http) transport
 # --------------------------------------------------------------------------- #
 
+def _mcp_http_client(config: dict[str, Any], timeout: float | httpx.Timeout) -> httpx.Client:
+    admit = config.get("_oauth_admit")
+    if admit is None:
+        return httpx.Client(timeout=timeout)
+    from app.tools.mcp_oauth_http import oauth_http_client
+
+    return oauth_http_client(timeout=timeout, resource=config["url"], admit=admit)
+
+
 class _HttpSession(_MCPSession):
     def __init__(self, config: dict[str, Any], timeout_seconds: float) -> None:
         super().__init__(config, timeout_seconds)
@@ -579,7 +588,7 @@ class _HttpSession(_MCPSession):
         self._session_id: str | None = None
 
     def __enter__(self) -> "_HttpSession":
-        self._client = httpx.Client(timeout=self.timeout_seconds)
+        self._client = _mcp_http_client(self.config, self.timeout_seconds)
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -674,17 +683,24 @@ class _SseSession(_MCPSession):
         self._next_id = 0
 
     def __enter__(self) -> "_SseSession":
-        self._client = httpx.Client(timeout=httpx.Timeout(self.timeout_seconds, read=None))
+        timeout = httpx.Timeout(self.timeout_seconds, read=None)
+        if self.config.get("_oauth_admit") is not None:
+            timeout = httpx.Timeout(self.timeout_seconds)
+        self._client = _mcp_http_client(self.config, timeout)
         url = str(self.config.get("url") or self.config.get("endpoint") or "").strip()
         if not url:
             raise MCPClientError("SSE MCP 连接缺少 url/endpoint。")
         raw = self.config.get("headers") if isinstance(self.config.get("headers"), dict) else {}
         headers = {"Accept": "text/event-stream", **{str(k): str(v) for k, v in raw.items()}}
-        self._stream_ctx = self._client.stream("GET", url, headers=headers)
-        response = self._stream_ctx.__enter__()
-        response.raise_for_status()
-        self._events = _iter_sse_events(response)
-        self._message_url = self._await_endpoint(url)
+        try:
+            self._stream_ctx = self._client.stream("GET", url, headers=headers)
+            response = self._stream_ctx.__enter__()
+            response.raise_for_status()
+            self._events = _iter_sse_events(response)
+            self._message_url = self._await_endpoint(url)
+        except BaseException:
+            self.__exit__()
+            raise
         return self
 
     def __exit__(self, *exc: Any) -> None:
