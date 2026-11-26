@@ -60,3 +60,32 @@ The two-account regression completes independent administrator and member
 OAuth flows against a local provider fixture, then invokes the tools and unlinks
 one account. For a new deployment, verify the browser-reachable callback origin
 and proxy log redaction.
+
+## QCC connector preset (separate dependent PR)
+
+The tools page includes a QCC card. An administrator can add one idempotent
+`qcc_company` server at `https://agent.qcc.com/mcp/company/stream`, authorize a
+personal account, and **Discover and update tool catalog**. Existing conflicting
+configuration is never overwritten, and the card contains no API Key field.
+Members use their own OAuth authorization after an administrator adds the server.
+The generic server/tool authorization boundaries continue to apply.
+
+This is a single unified entry, not a fixed set of five resources. The number and
+availability of tools, including historical data, depend on QCC account entitlements
+and provider-side client admission for the client name `StaffDeck`. Seeing fewer
+than 186 tools is not evidence that StaffDeck dropped the rest: first check what
+the authorized provider actually returned. This PR changes no production admission.
+
+Directory synchronization uses the existing cursor-paginated MCP discovery and
+native server/tool bindings. Bind the required tools to the employee. Harness
+keeps the authorization snapshot on the server and projects a bounded catalog to
+the model; `capability_search` finds candidates and `capability_describe` loads only
+the selected schemas before invocation. No generic proxy call bypasses individual
+tool bindings, scope, schema validation or the native authorization snapshot.
+Refresh the directory and start a new conversation/run to pick up new tools.
+
+The regression fixture advertises 186 tools including a historical tool. It checks
+sync, a compact initial manifest with no expanded external schemas, search for the
+historical tool and invocation using personal OAuth. This is simulated protocol
+coverage, **not a real 186-tool production acceptance or historical data query**.
+The same runtime supports a changing directory size; 186 is not a hard-coded limit.

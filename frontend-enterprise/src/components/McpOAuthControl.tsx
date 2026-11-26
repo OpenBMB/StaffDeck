@@ -2,13 +2,16 @@ import { useEffect, useState } from 'react';
 import { api, TENANT_ID } from '../api/client';
 import { Button } from './ui/button';
 
-export function McpOAuthControl({ serverId, agentId }: { serverId: string; agentId?: string }) {
+export function McpOAuthControl({ serverId, agentId, onAuthorizedChange }: {
+  serverId: string; agentId?: string; onAuthorizedChange?: (authorized: boolean) => void;
+}) {
   const [available, setAvailable] = useState(false);
   const [pending, setPending] = useState(false);
   const [authorized, setAuthorized] = useState(false);
   const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  useEffect(() => { onAuthorizedChange?.(authorized); }, [authorized, onAuthorizedChange]);
   const endpoint = `/api/enterprise/mcp-oauth/${encodeURIComponent(serverId)}`;
   const query = new URLSearchParams({ tenant_id: TENANT_ID, ...(agentId ? { agent_id: agentId } : {}) }).toString();
   useEffect(() => {
