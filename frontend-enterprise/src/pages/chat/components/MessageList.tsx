@@ -178,6 +178,13 @@ export default function MessageList({
             attachments,
             harnessArtifacts,
             statusOnly,
+            traceTiming: item.role === 'assistant' && trace
+              ? {
+                startedAt: trace.startedAt,
+                completedAt: trace.completedAt,
+                durationMs: trace.durationMs,
+              }
+              : undefined,
           };
 
           return <MessageBubble key={`${item.id}:message`} chat={chat} item={item} render={render} />;

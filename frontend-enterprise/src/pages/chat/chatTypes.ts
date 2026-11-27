@@ -67,12 +67,20 @@ export type TraceLine = {
   provisional?: boolean;
   depth?: number;
   mcpApp?: MCPAppViewDescriptor;
+  /** 步骤耗时（毫秒）。历史轮次来自后端事件投影，实时轮次由前端计时。 */
+  durationMs?: number;
+  /** 前端实时计时起点（毫秒时间戳）。 */
+  startedAt?: number;
+  /** 前端实时计时终点（毫秒时间戳）。 */
+  completedAt?: number;
 };
 
 export type TurnTrace = {
   lines: TraceLine[];
   startedAt: number;
   completedAt?: number;
+  /** 整轮耗时（毫秒）。历史轮次来自后端事件投影。 */
+  durationMs?: number;
 };
 
 export type ComposerAttachment = ChatAttachmentRead & {
